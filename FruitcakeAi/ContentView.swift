@@ -2,65 +2,150 @@
 //  ContentView.swift
 //  FruitcakeAi
 //
-//  Created by jwomble on 2/28/26.
+//  Root router.
+//  • Unauthenticated → LoginView (credential entry, server URL)
+//  • Authenticated   → MainTabView (Chat · Library · Settings)
 //
 
 import SwiftUI
 import SwiftData
 
 struct ContentView: View {
-    @Environment(\.modelContext) private var modelContext
-    @Query private var items: [Item]
+
+    @Environment(AuthManager.self) private var authManager
 
     var body: some View {
-        NavigationSplitView {
-            List {
-                ForEach(items) { item in
-                    NavigationLink {
-                        Text("Item at \(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))")
-                    } label: {
-                        Text(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))
-                    }
-                }
-                .onDelete(perform: deleteItems)
-            }
-#if os(macOS)
-            .navigationSplitViewColumnWidth(min: 180, ideal: 200)
-#endif
-            .toolbar {
-#if os(iOS)
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    EditButton()
-                }
-#endif
-                ToolbarItem {
-                    Button(action: addItem) {
-                        Label("Add Item", systemImage: "plus")
-                    }
-                }
-            }
-        } detail: {
-            Text("Select an item")
+        if authManager.isAuthenticated {
+            MainTabView()
+        } else {
+            LoginView()
         }
     }
+}
 
-    private func addItem() {
-        withAnimation {
-            let newItem = Item(timestamp: Date())
-            modelContext.insert(newItem)
-        }
-    }
+// MARK: - Main tab container
 
-    private func deleteItems(offsets: IndexSet) {
-        withAnimation {
-            for index in offsets {
-                modelContext.delete(items[index])
+struct MainTabView: View {
+    var body: some View {
+        TabView {
+            Tab("Chat", systemImage: "bubble.left.and.bubble.right.fill") {
+                ChatView()
+            }
+            Tab("Library", systemImage: "books.vertical.fill") {
+                LibraryView()
+            }
+            Tab("Settings", systemImage: "gearshape.fill") {
+                SettingsView()
             }
         }
     }
 }
 
-#Preview {
-    ContentView()
-        .modelContainer(for: Item.self, inMemory: true)
+// MARK: - Login
+
+struct LoginView: View {
+
+    @Environment(AuthManager.self) private var authManager
+
+    @State private var username = ""
+    @State private var password = ""
+    @State private var serverURL = "http://localhost:8000"
+    @State private var loginError: String?
+    @State private var loading = false
+
+    var body: some View {
+        VStack(spacing: 24) {
+            Spacer()
+
+            Image(systemName: "birthday.cake")
+                .font(.system(size: 72))
+                .foregroundStyle(.orange)
+                .symbolEffect(.bounce, value: loading)
+
+            Text("FruitcakeAI")
+                .font(.largeTitle.bold())
+
+            Text("Family AI Assistant")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            Spacer().frame(height: 8)
+
+            VStack(spacing: 12) {
+                TextField("Server URL", text: $serverURL)
+                    .textContentType(.URL)
+                    .autocorrectionDisabled()
+                    #if os(iOS)
+                    .keyboardType(.URL)
+                    #endif
+
+                TextField("Username", text: $username)
+                    .textContentType(.username)
+                    .autocorrectionDisabled()
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never)
+                    #endif
+
+                SecureField("Password", text: $password)
+                    .textContentType(.password)
+            }
+            .textFieldStyle(.roundedBorder)
+
+            if let loginError {
+                Text(loginError)
+                    .foregroundStyle(.red)
+                    .font(.caption)
+                    .multilineTextAlignment(.center)
+            }
+
+            Button {
+                Task { await signIn() }
+            } label: {
+                if loading {
+                    ProgressView()
+                        .frame(maxWidth: .infinity)
+                } else {
+                    Text("Sign in")
+                        .frame(maxWidth: .infinity)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(loading || username.isEmpty || password.isEmpty)
+
+            Spacer()
+        }
+        .padding(32)
+        .frame(maxWidth: 380)
+    }
+
+    private func signIn() async {
+        guard let url = URL(string: serverURL.trimmingCharacters(in: .whitespaces)) else {
+            loginError = "Invalid server URL"
+            return
+        }
+        loading = true
+        loginError = nil
+        do {
+            try await authManager.login(username: username, password: password, serverURL: url)
+        } catch {
+            loginError = error.localizedDescription
+        }
+        loading = false
+    }
+}
+
+#Preview("Logged out") {
+    LoginView()
+        .environment(AuthManager())
+        .environment(ConnectivityMonitor(authManager: AuthManager()))
+}
+
+#Preview("Main tabs") {
+    MainTabView()
+        .environment(AuthManager())
+        .environment(ConnectivityMonitor(authManager: AuthManager()))
+        .modelContainer(
+            for: [ServerConfig.self, CachedConversation.self, CachedMessage.self],
+            inMemory: true
+        )
 }

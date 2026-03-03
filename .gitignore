@@ -1,0 +1,125 @@
+########################################
+# macOS
+########################################
+.DS_Store
+.AppleDouble
+.LSOverride
+
+Icon
+._*
+
+# Thumbnails
+Thumbs.db
+
+# macOS metadata
+.Spotlight-V100
+.Trashes
+
+
+########################################
+# Xcode / iOS
+########################################
+DerivedData/
+build/
+
+*.xcuserstate
+*.xccheckout
+*.moved-aside
+*.xcscmblueprint
+
+xcuserdata/
+*.xcuserdatad/
+
+profile
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+
+########################################
+# Swift Package Manager
+########################################
+.build/
+.swiftpm/
+
+
+########################################
+# CocoaPods (defensive)
+########################################
+Pods/
+Podfile.lock
+
+
+########################################
+# Carthage (defensive)
+########################################
+Carthage/Build/
+
+
+########################################
+# Fastlane / Tooling
+########################################
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots
+fastlane/test_output
+fastlane/readme.md
+
+
+########################################
+# Editor / Tooling
+########################################
+.vscode/
+.idea/
+*.swp
+*~
+
+
+########################################
+# Environment & Config (secrets)
+########################################
+.env
+.env.*
+.envrc
+.env.local
+.env.development.local
+.env.production.local
+
+
+########################################
+# Keys & Certificates
+########################################
+*.pem
+*.key
+*.crt
+*.cer
+*.der
+*.p12
+*.pfx
+
+
+########################################
+# Credential Stores / Local Data
+########################################
+*.keystore
+*.jks
+*.kdbx
+
+# Local-only SQLite databases (opt-in for secrets/personal data)
+# Uncomment if you start keeping sensitive data in local SQLite files
+# *.sqlite
+# *.sqlite-shm
+# *.sqlite-wal
+
+
+########################################
+# App-Specific Secret Locations (reserved)
+########################################
+# If you later introduce local-only secret config files, keep them ignored here.
+# FruitcakeAi/Config/Secrets*.plist
+# FruitcakeAi/Config/Private*.json
+
