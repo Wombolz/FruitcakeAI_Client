@@ -1,0 +1,242 @@
+//
+//  TaskCreateSheet.swift
+//  FruitcakeAi
+//
+//  Modal form for creating a new task. Presented as a sheet from InboxView.
+//
+
+import SwiftUI
+
+struct TaskCreateSheet: View {
+
+    @Environment(AuthManager.self) private var authManager
+    @Environment(\.dismiss) private var dismiss
+
+    var onCreated: () -> Void = {}
+
+    // MARK: - Form state
+
+    @State private var title = ""
+    @State private var instruction = ""
+    @State private var scheduleKey = "one_shot"
+    @State private var customCron = ""
+    @State private var deliver = true
+    @State private var requiresApproval = false
+    @State private var activeHoursEnabled = false
+    @State private var activeHoursStart = "07:00"
+    @State private var activeHoursEnd = "22:00"
+
+    // MARK: - Submission state
+
+    @State private var isSubmitting = false
+    @State private var submitError: String?
+
+    // MARK: - Schedule options
+
+    private let scheduleOptions: [(key: String, label: String)] = [
+        ("one_shot",   "One time"),
+        ("every:30m",  "Every 30 min"),
+        ("every:1h",   "Every hour"),
+        ("every:6h",   "Every 6 hours"),
+        ("every:12h",  "Every 12 hours"),
+        ("every:1d",   "Daily"),
+        ("custom",     "Custom cron…"),
+    ]
+
+    // MARK: - Validation
+
+    private var canCreate: Bool {
+        !title.trimmingCharacters(in: .whitespaces).isEmpty &&
+        !instruction.trimmingCharacters(in: .whitespaces).isEmpty &&
+        !isSubmitting
+    }
+
+    // MARK: - Body
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Text("New Task")
+                    .font(.headline)
+                Spacer()
+                Button("Create") {
+                    Task { await submit() }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canCreate)
+                .overlay {
+                    if isSubmitting {
+                        ProgressView().controlSize(.mini)
+                    }
+                }
+            }
+            .padding()
+
+            Divider()
+
+            // Scrollable form content
+            Form {
+                titleSection
+                instructionSection
+                scheduleSection
+                optionsSection
+                activeHoursSection
+                if let error = submitError {
+                    Section {
+                        Text(error)
+                            .foregroundStyle(.red)
+                            .font(.caption)
+                    }
+                }
+            }
+            .formStyle(.grouped)
+        }
+        .frame(width: 480, height: 520)
+    }
+
+    // MARK: - Sections
+
+    private var titleSection: some View {
+        Section("Title") {
+            TextField("e.g. Morning Briefing", text: $title)
+                .autocorrectionDisabled()
+        }
+    }
+
+    private var instructionSection: some View {
+        Section {
+            ZStack(alignment: .topLeading) {
+                if instruction.isEmpty {
+                    Text("What should FruitcakeAI do?")
+                        .foregroundStyle(.tertiary)
+                        .padding(.top, 8)
+                        .padding(.leading, 4)
+                        .allowsHitTesting(false)
+                }
+                TextEditor(text: $instruction)
+                    .frame(minHeight: 80)
+            }
+        } header: {
+            Text("Instruction")
+        }
+    }
+
+    private var scheduleSection: some View {
+        Section("Frequency") {
+            Picker("Schedule", selection: $scheduleKey) {
+                ForEach(scheduleOptions, id: \.key) { option in
+                    Text(option.label).tag(option.key)
+                }
+            }
+            .pickerStyle(.menu)
+
+            if scheduleKey == "custom" {
+                TextField("e.g. 0 7 * * 1-5", text: $customCron)
+                    .font(.system(.body, design: .monospaced))
+                    .autocorrectionDisabled()
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never)
+                    #endif
+            }
+        }
+    }
+
+    private var optionsSection: some View {
+        Section("Options") {
+            Toggle("Push when done", isOn: $deliver)
+            Toggle("Require approval before acting", isOn: $requiresApproval)
+        }
+    }
+
+    private var activeHoursSection: some View {
+        Section {
+            Toggle("Restrict to active hours", isOn: $activeHoursEnabled)
+            HStack {
+                Text("From")
+                Spacer()
+                TextField("07:00", text: $activeHoursStart)
+                    .font(.system(.body, design: .monospaced))
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 60)
+                    #if os(iOS)
+                    .keyboardType(.numbersAndPunctuation)
+                    #endif
+            }
+            .disabled(!activeHoursEnabled)
+            .foregroundStyle(activeHoursEnabled ? .primary : .secondary)
+            HStack {
+                Text("Until")
+                Spacer()
+                TextField("22:00", text: $activeHoursEnd)
+                    .font(.system(.body, design: .monospaced))
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 60)
+                    #if os(iOS)
+                    .keyboardType(.numbersAndPunctuation)
+                    #endif
+            }
+            .disabled(!activeHoursEnabled)
+            .foregroundStyle(activeHoursEnabled ? .primary : .secondary)
+        } header: {
+            Text("Active Hours (\(TimeZone.current.abbreviation() ?? "Local"))")
+        } footer: {
+            Text("The task will only run during this window.")
+        }
+    }
+
+    // MARK: - Submit
+
+    private func submit() async {
+        isSubmitting = true
+        submitError = nil
+        defer { isSubmitting = false }
+
+        let taskType: String
+        let schedule: String?
+
+        switch scheduleKey {
+        case "one_shot":
+            taskType = "one_shot"
+            schedule = nil
+        case "custom":
+            taskType = "recurring"
+            schedule = customCron.trimmingCharacters(in: .whitespaces).isEmpty ? nil : customCron
+        default:
+            taskType = "recurring"
+            schedule = scheduleKey
+        }
+
+        let tz = TimeZone.current.identifier
+        let req = CreateTaskRequest(
+            title: title.trimmingCharacters(in: .whitespaces),
+            instruction: instruction.trimmingCharacters(in: .whitespaces),
+            taskType: taskType,
+            schedule: schedule,
+            deliver: deliver,
+            requiresApproval: requiresApproval,
+            activeHoursStart: activeHoursEnabled ? activeHoursStart : nil,
+            activeHoursEnd:   activeHoursEnabled ? activeHoursEnd   : nil,
+            activeHoursTz:    activeHoursEnabled ? tz               : nil
+        )
+
+        do {
+            let api = APIClient(authManager: authManager)
+            _ = try await api.createTask(req)
+            onCreated()
+            dismiss()
+        } catch {
+            submitError = error.localizedDescription
+        }
+    }
+}
+
+// MARK: - Preview
+
+#Preview {
+    TaskCreateSheet()
+        .environment(AuthManager())
+}

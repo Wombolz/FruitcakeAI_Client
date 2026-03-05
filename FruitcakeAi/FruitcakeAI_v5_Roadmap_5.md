@@ -1,0 +1,1116 @@
+# 🍰 FruitcakeAI v5 — Rebuild Roadmap
+
+**Version**: 5.5  
+**Status**: Phase 1 ✅ · Phase 2 ✅ · Phase 3 ✅ · Sprint 3.7 ✅ · **Phase 4 Next**  
+**Philosophy**: Agent-first. Air-gapped by default. Knows its people.  
+**Build Location**: `/Users/jwomble/Development/fruitcake_v5/`  
+**Last Updated**: March 2026
+
+---
+
+## Executive Summary
+
+FruitcakeAI v5 is a clean rebuild that preserves the best ideas from v3/v4 — hybrid RAG retrieval, multi-user/persona support, MCP tool integration — while discarding the complexity that made v3/v4 cumbersome.
+
+The core mental model evolution:
+
+> **v3/v4**: A platform that contains an AI  
+> **v5**: An AI agent that has tools  
+> **v5 Phase 4+**: An AI agent that knows its people and acts without being prompted
+
+### What Makes FruitcakeAI Different From OpenClaw
+
+OpenClaw is optimized for a single power user who wants maximum connectivity and tool surface. FruitcakeAI optimizes for something different: a trusted, private, multi-user system that genuinely knows the people it serves — and gets better at knowing them over time.
+
+| Dimension | OpenClaw | FruitcakeAI |
+|-----------|----------|-------------|
+| Users | Single power user | Family / small team, multi-user |
+| Memory | Flat MEMORY.md + HEARTBEAT.md | Persistent per-user memory in pgvector |
+| Heartbeat context | Reads a markdown file | Semantically retrieves what's been relevant for this person lately |
+| RAG | SQLite-vec + FTS5 | pgvector + BM25 + RRF fusion + reranking |
+| Document library | Flat workspace files | Full ingest pipeline, per-user scoping |
+| Safety | Single-user, no controls | Persona-scoped tools, kids safety, role-based access |
+| Security | Cloud-first | Air-gapped by default, cloud opt-in per signal type |
+| Mobile | Telegram dependency | Native Swift, APNs, on-device FoundationModels fallback |
+
+The memory system is the core differentiator. OpenClaw's heartbeat knows what's in your checklist. FruitcakeAI's heartbeat knows *you*.
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────┐
+│              Swift Client                   │
+│  Chat · Library · Inbox (Ph4) · Settings    │
+│           Memories (in Settings)            │
+└─────────────────────┬───────────────────────┘
+                      │ WebSocket / REST / APNs
+┌─────────────────────▼───────────────────────┐
+│           FastAPI — Thin Layer              │
+│   Auth (JWT) · File Upload · Chat API       │
+│   User/Session · Task API (Ph4)             │
+│   Memory API (Ph4) · Webhook API (Ph5)      │
+└─────────────────────┬───────────────────────┘
+                      │
+┌─────────────────────▼───────────────────────┐
+│              Agent Core                     │
+│   LiteLLM (model-agnostic)                  │
+│   System prompt = user context + persona    │
+│     + standing memories (semantic/proc)     │
+│   Tool-calling drives all orchestration     │
+│   Mode-aware turn limits: chat=8 task=16    │
+└──────┬──────────┬──────────┬────────────────┘
+       │          │          │
+┌──────▼──┐ ┌─────▼───┐ ┌───▼────────────────┐
+│   RAG   │ │Calendar │ │  Web / RSS / etc    │
+│pgvector │ │  MCP    │ │   MCP Servers       │
+└──────┬──┘ └─────────┘ └────────────────────┘
+       │
+┌──────▼────────────────────────────────────────────────┐
+│   PostgreSQL + pgvector                               │
+│   Documents · Sessions · Memories · Tasks (Ph4)       │
+│   APScheduler in-process (Ph4)                        │
+└───────────────────────────────────────────────────────┘
+```
+
+---
+
+## ⚠️ Ground Truth: Verified Working Configuration
+
+### Hardware
+- **Machine**: M1 Max, 64GB RAM (macOS)
+- **Verified LLM**: `qwen2.5:14b` via Ollama ✅
+- **`llama3.3:70b`** (~43GB): crashes Ollama — memory pressure with embedding model + macOS overhead
+- **`qwen2.5:32b`** (~20GB): viable step-up if other apps closed first
+
+### LiteLLM / Ollama Critical Patterns
+
+```env
+LLM_MODEL=ollama_chat/qwen2.5:14b   # ✅ /api/chat — tool calling works
+# LLM_MODEL=ollama/qwen2.5:14b     # ❌ /api/generate — tool calls silently broken
+```
+
+```python
+# Always pass api_base explicitly — strip trailing /v1
+def _litellm_kwargs(self) -> dict:
+    base = settings.local_api_base.rstrip("/")
+    if base.endswith("/v1"):
+        base = base[:-3]
+    return {"api_base": base, "model": settings.llm_model}
+
+# Check message.tool_calls — not finish_reason
+while message.tool_calls:   # ✅ Ollama returns stop even with tool calls present
+    ...
+
+# _normalize_tool_calls() required — Ollama format inconsistent across model versions
+```
+
+---
+
+## Project Structure
+
+```
+fruitcake_v5/
+├── app/
+│   ├── main.py
+│   ├── config.py
+│   ├── auth/
+│   ├── agent/
+│   │   ├── core.py                  # Agent loop — mode-aware turn limits
+│   │   ├── context.py               # UserContext builder + memory injection
+│   │   ├── tools.py                 # Tool registry + create_memory tool (Ph4)
+│   │   └── prompts.py
+│   ├── memory/                      # Phase 4 — new module
+│   │   ├── service.py               # MemoryService — create, retrieve, prune
+│   │   └── extractor.py             # Nightly session extraction job
+│   ├── autonomy/                    # Phase 4 — new module
+│   │   ├── heartbeat.py             # Heartbeat runner
+│   │   ├── runner.py                # TaskRunner — isolated agent execution
+│   │   ├── scheduler.py             # APScheduler (in-process, persists to PG)
+│   │   └── push.py                  # APNs delivery via httpx HTTP/2
+│   ├── rag/
+│   ├── mcp/
+│   ├── api/
+│   │   ├── chat.py
+│   │   ├── library.py
+│   │   ├── tasks.py                 # Phase 4 — task CRUD + approval
+│   │   ├── devices.py               # Phase 4 — APNs token registration
+│   │   ├── memories.py              # Phase 4 — memory CRUD for Swift UI
+│   │   ├── webhooks.py              # Phase 5
+│   │   └── admin.py
+│   └── db/
+│       ├── models.py                # + Memory, Task, DeviceToken (Ph4)
+│       ├── session.py
+│       └── migrations/
+├── config/
+│   ├── mcp_config.yaml
+│   ├── personas.yaml
+│   ├── users.yaml
+│   └── heartbeat.yaml               # Phase 4 — per-checklist config
+├── tests/
+├── scripts/
+│   ├── start.sh
+│   └── reset.sh
+├── docker-compose.yml
+└── .env / .env.example
+```
+
+---
+
+## Completed Work
+
+### Phase 1 ✅ — Agent Core + RAG Foundation
+Agent loop, LiteLLM integration, pgvector RAG, hybrid BM25+vector+RRF retrieval, basic auth, PostgreSQL, document ingestion pipeline.
+
+### Phase 2 ✅ — MCP Tools + Multi-User Polish
+Calendar MCP, web research MCP, RSS MCP, persona system, library scoping (personal/family/shared), multi-user API, pre-sprint tech debt resolved.
+
+### Phase 3 ✅ — Frontend + Production Stability
+Swift client (chat, library, settings), WebSocket dual-auth, FoundationModels on-device fallback, health check fix (`/api/tags`), one-command startup with Ollama auto-start.
+
+### Sprint 3.7 ✅ — Library Management GUI
+Local filename filter, semantic search, scope editing, status polling, shared scope, `summarize_document` hallucination fix, `PATCH /library/documents/{id}`, FK constraint fix on session delete.
+
+---
+
+## Memory Architecture
+
+Memory is FruitcakeAI's primary differentiator. OpenClaw reads a flat HEARTBEAT.md checklist every 30 minutes. FruitcakeAI retrieves semantically relevant context about *this specific person* before every heartbeat and task run. The assistant doesn't just check a list — it reasons in light of what it knows.
+
+### Memory Types
+
+Three distinct types with different retrieval and lifecycle behavior:
+
+| Type | What it stores | Lifecycle | Retrieval |
+|------|---------------|-----------|-----------|
+| `episodic` | Events, facts with time context, things that happened | Expires (time-bound) | Semantic similarity + recency |
+| `semantic` | Persistent facts about the person's life, preferences, relationships | Never expires unless changed | Always included (small set) |
+| `procedural` | How to behave with this person | Never expires | Always injected into system prompt |
+
+**Examples:**
+- *"Sarah's mom had surgery this week"* → episodic, importance 0.9, expires in 30 days
+- *"James prefers conservative financial options first"* → semantic, importance 0.7
+- *"Always use bullet points for Sarah's task summaries"* → procedural, importance 0.8
+- *"Dentist appointment confirmed for Thursday 2pm"* → episodic, importance 0.85, expires in 7 days
+
+### DB Model
+
+```python
+class Memory(Base):
+    __tablename__ = "memories"
+    
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    
+    # Content
+    content: Mapped[str]
+    memory_type: Mapped[str]              # "episodic" | "semantic" | "procedural"
+    
+    # Source tracking — full audit trail
+    source: Mapped[str]                   # "agent" | "task" | "explicit" | "extracted"
+    source_session_id: Mapped[int | None] = mapped_column(ForeignKey("chat_sessions.id"))
+    source_task_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id"))
+    
+    # Retrieval
+    embedding: Mapped[Vector(384)]        # same dim as existing BAAI/bge-small-en-v1.5
+    
+    # Relevance management
+    importance: Mapped[float] = mapped_column(default=0.5)    # 0.0–1.0, agent-set
+    confidence: Mapped[float] = mapped_column(default=0.8)    # how certain is this
+    access_count: Mapped[int] = mapped_column(default=0)      # feedback loop
+    last_accessed_at: Mapped[datetime | None]
+    
+    # Lifecycle
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    expires_at: Mapped[datetime | None]    # None = never expires
+    is_active: Mapped[bool] = mapped_column(default=True)
+    
+    # Optional
+    tags: Mapped[list[str]] = mapped_column(ARRAY(String), default=[])
+```
+
+**Design notes:**
+- Memories are **immutable** — never edited, only deactivated. If something changes ("Sarah was promoted"), the agent creates a new memory and marks the old one `is_active=False`. Audit trail preserved.
+- `access_count` + `last_accessed_at` create a natural feedback loop. Frequently retrieved memories are demonstrably useful; rarely accessed ones are candidates for pruning. ⚠️ **The loop must be closed explicitly**: high `access_count` should raise `importance`; zero accesses over 30 days should flag as a pruning candidate. The `MemoryService` pruning job (Phase 8) handles bulk cleanup, but a lightweight inline adjustment on `_record_access()` — e.g. `importance = min(1.0, importance + 0.02)` per access — keeps scores meaningful before then. Without this, importance values drift stale and the ranking signal degrades.
+- `expires_at` is agent-settable. The `create_memory` tool accepts `expires_in_days`. Time-bound information (appointments, deadlines, temporary situations) should always expire.
+- Embedding uses the same BAAI/bge-small-en-v1.5 model already running for document RAG. No new model required.
+- ⚠️ **Memory scope is per-user only in Phase 4.** Family-level facts ("the Johnsons go camping every August") are not addressable — each user's heartbeat would rediscover them independently. A future `scope` field (`"personal" | "family" | "shared"`) on `Memory` would mirror the library scoping model and allow family-relevant memories to surface across all users. Deferred to Phase 5+.
+
+### Memory Creation
+
+**Primary path — agent tool call:**
+
+The agent receives a `create_memory` tool alongside its existing tool set. One line in the system prompt does the rest: *"Use create_memory when you learn something important about the user that should inform future interactions."*
+
+```python
+async def create_memory(
+    content: str,
+    memory_type: Literal["episodic", "semantic", "procedural"],
+    importance: float = 0.5,
+    expires_in_days: int | None = None,
+    tags: list[str] = []
+) -> str:
+    """
+    Store something worth remembering about the current user.
+
+    episodic: events, facts with time context, things that happened.
+    semantic: persistent facts — preferences, relationships, standing info.
+    procedural: how to behave with this user in future interactions.
+
+    Set expires_in_days for time-bound info (appointments, deadlines, current situations).
+    Set importance 0.8+ for things that should surface in future heartbeats.
+    """
+```
+
+⚠️ **Write-time deduplication is required.** The nightly extraction job deduplicates before inserting, but the live `create_memory` agent path does not. A user who mentions their bullet-point preference in three sessions will accumulate three near-identical procedural memories — all three will be retrieved, wasting token budget and degrading ranking. `MemoryService.create()` must run a similarity check before inserting:
+
+```python
+# In MemoryService.create() — before db.add(memory)
+embedding = await embed(content)
+duplicate = await db.execute(
+    select(Memory)
+    .where(Memory.user_id == user_id, Memory.is_active == True,
+           Memory.embedding.cosine_distance(embedding) < 0.12)
+    .limit(1)
+)
+if duplicate.scalar_one_or_none():
+    return "Memory already exists (duplicate suppressed)"
+```
+
+The 0.12 cosine distance threshold keeps near-verbatim duplicates out while allowing genuinely distinct updates. Tune after real usage data.
+
+**Secondary path — nightly extraction job:**
+
+After Phase 4 ships and real data accumulates, a nightly background task reviews the previous 24 hours of chat sessions and extracts memories the agent didn't explicitly create. This catches things the agent noted but didn't persist — patterns that only become obvious in retrospect.
+
+The extraction prompt is simple: *"Review this conversation. Extract any facts about the user that would be useful to remember in future sessions. Format as JSON list of {content, type, importance, expires_in_days}."*
+
+**Explicit path — user-created:**
+
+Via the Memories UI in Swift Settings. Users can write memories directly, edit importance, delete memories. Full control over what the assistant knows.
+
+### Memory Retrieval
+
+`app/memory/service.py` — called before every heartbeat and task run:
+
+```python
+class MemoryService:
+
+    async def retrieve_for_context(
+        self,
+        user_id: int,
+        query: str,
+        max_tokens: int = 400
+    ) -> MemoryContext:
+        
+        # Tier 1: Always include — semantic + procedural (standing facts)
+        # These are small, high-value, always relevant to this person
+        standing = await self._get_standing_memories(user_id)
+        
+        # Tier 2: Recent high-importance episodic (last 7 days, importance ≥ 0.6)
+        recent = await self._get_recent_episodic(
+            user_id, days=7, min_importance=0.6
+        )
+        
+        # Tier 3: Semantically similar episodic memories
+        # "check calendar for conflicts" → retrieves past calendar-related memories
+        similar = await self._get_similar(
+            user_id=user_id,
+            query=query,
+            memory_types=["episodic"],
+            limit=5
+        )
+        
+        # Deduplicate, rank by (similarity × importance × recency), truncate to budget
+        merged = self._rank_and_truncate(
+            standing + recent + similar,
+            max_tokens=max_tokens
+        )
+        
+        await self._record_access(merged)
+        return MemoryContext(memories=merged)
+
+    async def _get_similar(self, user_id, query, memory_types, limit):
+        embedding = await embed(query)
+        return await db.execute(
+            select(Memory)
+            .where(
+                Memory.user_id == user_id,
+                Memory.memory_type.in_(memory_types),
+                Memory.is_active == True,
+                or_(Memory.expires_at > datetime.utcnow(), Memory.expires_at.is_(None))
+            )
+            .order_by(Memory.embedding.cosine_distance(embedding))
+            .limit(limit)
+        )
+```
+
+### What the Heartbeat Prompt Looks Like
+
+```
+[Heartbeat for Sarah — Tuesday 8:15am ET]
+
+What I know about Sarah:
+• Always use bullet points for her summaries [procedural]
+• Prefers to be contacted in the morning [semantic]
+• Mom had surgery this week — check in if appropriate [episodic, imp: 0.9]
+• Thompson project deadline is Friday [episodic, imp: 0.85]
+• Asked about rescheduling Tuesday 2pm meeting yesterday [episodic, imp: 0.7]
+
+Checklist:
+- Check calendar for conflicts in next 24 hours
+- Review any pending task approvals
+
+Current time: Tuesday 8:15am (within active hours 7am–10pm ✓)
+
+If nothing needs attention, reply HEARTBEAT_OK.
+```
+
+The agent has genuine personal context before making any tool calls. It knows about the surgery, knows about the deadline, knows about the meeting. It doesn't need to rediscover these things — it reasons from them immediately.
+
+### Memory Management API + Swift UI
+
+```
+GET    /memories              list user's active memories (paginated, filterable by type)
+POST   /memories              create memory explicitly
+PATCH  /memories/{id}         update importance, tags, or deactivate
+DELETE /memories/{id}         deactivate (soft delete — audit trail preserved)
+```
+
+**Swift — Memories section in Settings:**
+- List grouped by type (Procedural · Semantic · Episodic)
+- Each row: content + type badge + importance dot + age
+- Swipe to delete
+- Tap to view source ("From conversation on March 3" / "From task: Morning briefing")
+- Search/filter
+- This is the answer to "why did it mention my dentist appointment?" — transparent and auditable
+
+---
+
+## Phase 4 — Memory + Heartbeat + Autonomous Tasks (~3 weeks)
+
+**Goal**: FruitcakeAI acts without being prompted — and does so with genuine knowledge of each person it serves.
+
+### What This Phase Borrows From OpenClaw (Proven)
+
+- **LLM-as-judgment-router**: no pre-built context aggregator. The agent calls its normal tools to gather what it needs. The instruction *is* the context directive.
+- **HEARTBEAT_OK suppression**: if the agent decides nothing needs attention, return the token and suppress delivery silently. Zero noise to the user.
+- **Isolated sessions for tasks**: task runs create their own `ChatSession` rows, hidden from chat UI, so background work never pollutes conversation history.
+- **Active hours**: heartbeat skips outside configured hours. A 3am notification is a product-killing failure mode.
+- **Exponential retry backoff**: a task that fails once does not fail forever. Transient errors (network, rate limit) retry with backoff; permanent errors (auth failure, config) disable immediately.
+- **Session cleanup**: task sessions are pruned after 24 hours. Background work doesn't accumulate dead session rows indefinitely.
+
+### What This Phase Adds Beyond OpenClaw
+
+- **Per-user persistent memory** in pgvector — retrieved semantically, injected into every heartbeat and task prompt
+- **`create_memory` agent tool** — agent persists what it learns during chat and task execution
+- **Multi-user scope enforcement** in the task runner — tasks inherit the owning user's persona scopes; no privilege escalation
+- **Approval workflow** for irreversible actions — task pauses with `waiting_approval` status, APNs push asks the user, resume on confirmation
+- **Native APNs push** — not Telegram, not webhooks. Real iOS notifications via the Swift client
+
+### What This Phase Intentionally Defers
+
+The `JudgmentRouter` and `ContextSanitizer` from Roadmap 4 are removed entirely. They solved a problem that doesn't exist until cloud LLM routing is actually opted into. Adding them now would be dead code and added complexity. The cloud routing path (`config/autonomy.yaml`) will be added as a focused sprint when the first user asks for it. Until then, local model only — air-gapped by default, no config required.
+
+---
+
+### Sprint 4.1 — DB Models + Memory Foundation (Days 1–4)
+
+> ⚠️ **This sprint is dense.** It covers: Memory + Task + DeviceToken DB models, `MemoryService` (including write-time dedup and retrieval tiers), the `create_memory` agent tool, three new API modules (`tasks.py`, `devices.py`, `memories.py`), schedule parsing, and Alembic migrations. Budget 5–6 days if the memory retrieval ranking or deduplication logic runs longer than expected. Sprint 4.2 (runner + scheduler) has a hard dependency on all of 4.1 shipping — do not start 4.2 until migrations are applied and `MemoryService.retrieve_for_context()` is tested.
+
+**New DB models** (`app/db/models.py`):
+
+```python
+class Memory(Base):
+    __tablename__ = "memories"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    content: Mapped[str]
+    memory_type: Mapped[str]              # "episodic" | "semantic" | "procedural"
+    source: Mapped[str]                   # "agent" | "task" | "explicit" | "extracted"
+    source_session_id: Mapped[int | None] = mapped_column(ForeignKey("chat_sessions.id"))
+    source_task_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id"))
+    embedding: Mapped[Vector(384)]
+    importance: Mapped[float] = mapped_column(default=0.5)
+    confidence: Mapped[float] = mapped_column(default=0.8)
+    access_count: Mapped[int] = mapped_column(default=0)
+    last_accessed_at: Mapped[datetime | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    expires_at: Mapped[datetime | None]
+    is_active: Mapped[bool] = mapped_column(default=True)
+    tags: Mapped[list[str]] = mapped_column(ARRAY(String), default=[])
+
+
+class Task(Base):
+    __tablename__ = "tasks"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    title: Mapped[str]
+    instruction: Mapped[str]              # natural language prompt for the agent
+    task_type: Mapped[str]               # "one_shot" | "recurring"
+    status: Mapped[str] = mapped_column(default="pending")
+                                          # pending | running | completed | failed
+                                          # cancelled | waiting_approval
+    schedule: Mapped[str | None]          # cron expr | "every:30m" | ISO timestamp
+    deliver: Mapped[bool] = mapped_column(default=True)
+    requires_approval: Mapped[bool] = mapped_column(default=False)
+    result: Mapped[str | None]
+    error: Mapped[str | None]
+    retry_count: Mapped[int] = mapped_column(default=0)
+    next_retry_at: Mapped[datetime | None]
+    active_hours_start: Mapped[str | None]    # "08:00"
+    active_hours_end: Mapped[str | None]      # "22:00"
+    active_hours_tz: Mapped[str | None]       # "America/New_York"
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    last_run_at: Mapped[datetime | None]
+    next_run_at: Mapped[datetime | None]
+
+
+class DeviceToken(Base):
+    __tablename__ = "device_tokens"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    token: Mapped[str] = mapped_column(unique=True)
+    environment: Mapped[str] = mapped_column(default="sandbox")
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+```
+
+Add `is_task_session: Mapped[bool] = mapped_column(default=False)` to `ChatSession`.
+
+**New module: `app/memory/service.py`** — `MemoryService` with `retrieve_for_context()`, `create()`, `deactivate()`, `_record_access()`.
+
+**New agent tool** (`app/agent/tools.py`): `create_memory` — registered alongside existing tools.
+
+**Alembic migration**: `memories`, `tasks`, `device_tokens` tables + `chat_sessions.is_task_session`.
+
+**New API** (`app/api/tasks.py`, `app/api/devices.py`, `app/api/memories.py`):
+
+```
+# Tasks
+POST   /tasks              create task
+GET    /tasks              list user's tasks
+GET    /tasks/{id}         detail + last result
+PATCH  /tasks/{id}         update / approve / reject
+DELETE /tasks/{id}         cancel
+POST   /tasks/{id}/run     manual trigger (dev/testing)
+
+# Devices
+POST   /devices/register   upsert APNs device token
+DELETE /devices/{token}    deregister on logout
+
+# Memories
+GET    /memories            list active memories (filterable by type)
+POST   /memories            create explicitly
+PATCH  /memories/{id}       update importance / tags / deactivate
+DELETE /memories/{id}       soft delete (is_active = False)
+```
+
+**Schedule parsing helper**:
+
+```python
+def compute_next_run_at(schedule: str, after: datetime | None = None) -> datetime:
+    """
+    Three schedule formats:
+    - "every:30m" / "every:1h" / "every:6h" / "every:12h" / "every:1d"
+    - Standard 5-field cron expression ("0 8 * * 1-5")
+    - ISO 8601 timestamp for one-shot tasks
+    """
+```
+
+---
+
+### Sprint 4.2 — Heartbeat + Task Runner (Days 5–9)
+
+**`app/autonomy/heartbeat.py`**
+
+```python
+class HeartbeatRunner:
+
+    async def run(self, user: User) -> HeartbeatResult:
+        config = load_heartbeat_config(user)
+
+        # Skip if checklist is empty — no wasted API calls
+        if not config.has_active_items():
+            return HeartbeatResult(notified=False, skipped=True)
+
+        # Skip if outside active hours
+        if not self._within_active_hours(user):
+            return HeartbeatResult(notified=False, skipped=True)
+
+        # Retrieve relevant memories — this is what makes it personal
+        memory_ctx = await memory_service.retrieve_for_context(
+            user_id=user.id,
+            query=config.checklist_text,
+            max_tokens=400
+        )
+
+        # Build prompt: memories + checklist + timestamp
+        prompt = self._compose_prompt(user, config, memory_ctx)
+
+        # Run isolated agent session (LLM gathers its own context via tools)
+        result = await self._run_isolated_agent(user, prompt)
+
+        # HEARTBEAT_OK — suppress silently
+        if result.strip().startswith("HEARTBEAT_OK"):
+            remaining = result[len("HEARTBEAT_OK"):].strip()
+            if len(remaining) <= 300:
+                return HeartbeatResult(notified=False)
+
+        # Real output — push to user
+        await self.push.send(
+            user_id=user.id,
+            title="FruitcakeAI",
+            body=result[:200],
+        )
+        return HeartbeatResult(notified=True)
+
+    def _within_active_hours(self, user: User) -> bool:
+        # ⚠️ Active hours has THREE potential config sources that must resolve to one:
+        #   1. heartbeat.yaml defaults.active_hours  (global fallback)
+        #   2. User model fields (user.active_hours_start / end / tz)  — set via Settings UI
+        #   3. Task model fields (task.active_hours_start / end / tz)  — per-task override
+        #
+        # Resolution order: task fields → user fields → heartbeat.yaml defaults
+        # HeartbeatRunner only uses user fields (source 2), falling back to yaml (source 1).
+        # TaskRunner uses task fields (source 3), falling back to user fields, then yaml.
+        # The User model must expose active_hours_start/end/tz columns (Alembic migration required).
+        ...
+
+    def _compose_prompt(self, user, config, memory_ctx) -> str:
+        lines = [f"[Heartbeat for {user.display_name} — {now_local(user)}]", ""]
+        if memory_ctx.memories:
+            lines.append("What I know about this person:")
+            for m in memory_ctx.memories:
+                lines.append(f"• {m.content} [{m.memory_type}]")
+            lines.append("")
+        lines.append("Checklist:")
+        for item in config.items:
+            lines.append(f"- {item.description}")
+        lines.append("")
+        lines.append("If nothing needs attention, reply HEARTBEAT_OK.")
+        return "\n".join(lines)
+```
+
+**`config/heartbeat.yaml`** — default checklist (per-user overrides via DB in the future):
+
+```yaml
+defaults:
+  active_hours:
+    start: "07:00"
+    end: "22:00"
+    timezone: "America/New_York"
+
+checklist:
+  - id: calendar_conflicts
+    description: "Check for scheduling conflicts or urgent events in the next 24 hours"
+    enabled: true
+
+  - id: pending_approvals
+    description: "Check for any tasks waiting user approval"
+    enabled: true
+
+  - id: overdue_tasks
+    description: "Check for any overdue recurring tasks"
+    enabled: true
+```
+
+**`app/autonomy/runner.py`** — TaskRunner:
+
+```python
+APPROVAL_REQUIRED_TOOLS = {"create_calendar_event", "send_email"}
+
+RETRY_BACKOFFS = [30, 60, 300, 900, 3600]   # seconds
+
+class TaskRunner:
+
+    async def execute(self, task_id: int, pre_approved: bool = False) -> None:
+        async with AsyncSessionLocal() as db:
+            task = await db.get(Task, task_id)
+            if not task or task.status not in ("pending", "waiting_approval"):
+                return
+
+            # Respect active hours per task
+            if not self._within_active_hours(task):
+                return
+
+            task.status = "running"
+            task.last_run_at = datetime.utcnow()
+            await db.commit()
+
+        try:
+            result_text = await self._run_isolated_agent(task, pre_approved)
+            await self._finalize(task, status="completed", result=result_text)
+
+            if task.deliver and result_text.strip():
+                await self.push.send(
+                    user_id=task.user_id,
+                    title=task.title,
+                    body=result_text[:200],
+                    data={"task_id": task.id},
+                )
+
+        except ApprovalRequired as e:
+            await self._finalize(task, status="waiting_approval", error=str(e))
+            await self.push.send(
+                user_id=task.user_id,
+                title=f"Approval needed: {task.title}",
+                body=f"Task wants to {e.tool_name}. Approve in Inbox.",
+                data={"task_id": task.id, "requires_approval": True},
+            )
+
+        except TransientError as e:
+            # Retry with exponential backoff — task stays alive
+            backoff = RETRY_BACKOFFS[min(task.retry_count, len(RETRY_BACKOFFS) - 1)]
+            task.retry_count += 1
+            task.next_retry_at = datetime.utcnow() + timedelta(seconds=backoff)
+            task.status = "pending"
+            await db.commit()
+
+        except Exception as e:
+            # Permanent error — disable task
+            await self._finalize(task, status="failed", error=str(e))
+
+    async def _run_isolated_agent(self, task: Task, pre_approved: bool) -> str:
+        user = await db.get(User, task.user_id)
+
+        # Retrieve relevant memories for this task
+        memory_ctx = await memory_service.retrieve_for_context(
+            user_id=task.user_id,
+            query=task.instruction,
+            max_tokens=300
+        )
+
+        # Create isolated session (hidden from chat UI)
+        session = await create_session_internal(
+            db, user_id=task.user_id,
+            title=f"[Task] {task.title}",
+            is_task_session=True,
+        )
+
+        # Compose prompt with memory context + timestamp
+        now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+        memory_block = ""
+        if memory_ctx.memories:
+            lines = [f"• {m.content}" for m in memory_ctx.memories]
+            memory_block = "Context about this person:\n" + "\n".join(lines) + "\n\n"
+
+        prompt = f"[Task: {task.title}]\n{memory_block}{task.instruction}\n\nCurrent time: {now}"
+
+        user_ctx = UserContext.from_user(user)
+        user_ctx.session_id = session.id
+        user_ctx._task_pre_approved = pre_approved
+        user_ctx._task_requires_approval = task.requires_approval
+        user_ctx._approval_required_tools = APPROVAL_REQUIRED_TOOLS
+
+        response = await run_agent(
+            session_id=session.id,
+            user_message=prompt,
+            user_context=user_ctx,
+            mode="task",
+        )
+        return response.get("content", "")
+```
+
+**`app/agent/core.py`** — mode-aware turn limits (surgical change only):
+
+```python
+TURN_LIMITS = {
+    "chat":  8,
+    "task": 16,
+}
+
+async def run_agent(session_id, user_message, user_context, mode: str = "chat"):
+    max_turns = TURN_LIMITS.get(mode, 8)
+    ...
+```
+
+**`app/autonomy/scheduler.py`** — APScheduler wired into FastAPI lifespan:
+
+```python
+scheduler = AsyncIOScheduler(
+    jobstores={"default": SQLAlchemyJobStore(url=settings.database_url_sync)}
+)
+
+async def start_scheduler(runner: TaskRunner, push: APNsPusher) -> None:
+    # Heartbeats — every 30 minutes
+    scheduler.add_job(
+        lambda: asyncio.create_task(_run_all_heartbeats(push)),
+        trigger="interval", minutes=30, id="heartbeat",
+    )
+    # Task dispatcher — every minute
+    scheduler.add_job(
+        lambda: asyncio.create_task(_dispatch_due_tasks(runner)),
+        trigger="interval", minutes=1, id="task_dispatcher",
+    )
+    # Session cleanup — every 6 hours (prune task sessions > 24h old)
+    scheduler.add_job(
+        _cleanup_task_sessions,
+        trigger="interval", hours=6, id="session_cleanup",
+    )
+    scheduler.start()
+
+_run_semaphore = asyncio.Semaphore(2)   # max 2 concurrent agent loops
+
+async def _dispatch_due_tasks(runner: TaskRunner) -> None:
+    async with AsyncSessionLocal() as db:
+        due = await db.execute(
+            select(Task).where(
+                Task.status == "pending",
+                Task.next_run_at <= datetime.utcnow(),
+            )
+        )
+    for task in due.scalars():
+        asyncio.create_task(_run_with_limit(runner, task.id))
+
+async def _run_with_limit(runner, task_id):
+    async with _run_semaphore:
+        await runner.execute(task_id)
+
+async def _cleanup_task_sessions():
+    cutoff = datetime.utcnow() - timedelta(hours=24)
+    async with AsyncSessionLocal() as db:
+        await db.execute(
+            delete(ChatSession).where(
+                ChatSession.is_task_session == True,
+                ChatSession.created_at < cutoff,
+            )
+        )
+        await db.commit()
+```
+
+---
+
+### Sprint 4.3 — APNs Push Notifications (Days 10–13)
+
+**`app/autonomy/push.py`**
+
+```python
+class APNsPusher:
+    _jwt_token: str | None = None
+    _jwt_expires_at: float = 0
+
+    def _make_jwt(self) -> str:
+        # Cache JWT — valid 1 hour, regenerate 60s before expiry
+        now = time.time()
+        if self._jwt_token and now < self._jwt_expires_at - 60:
+            return self._jwt_token
+        key = Path(settings.apns_auth_key_path).read_text()
+        self._jwt_token = jwt.encode(
+            {"iss": settings.apns_team_id, "iat": int(now)},
+            key, algorithm="ES256",
+            headers={"kid": settings.apns_key_id},
+        )
+        self._jwt_expires_at = now + 3600
+        return self._jwt_token
+
+    async def send(self, user_id: int, title: str, body: str, data: dict = {}) -> None:
+        tokens = await self._get_tokens(user_id)
+        for token in tokens:
+            await self._deliver(token, title, body, data)
+
+    async def _deliver(self, token: str, title: str, body: str, data: dict) -> None:
+        payload = {
+            "aps": {
+                "alert": {"title": title, "body": body[:200]},
+                "sound": "default",
+                "badge": 1,
+            },
+            **data,
+        }
+        async with httpx.AsyncClient(http2=True) as client:
+            resp = await client.post(
+                f"{self._base_url}/3/device/{token}",
+                json=payload,
+                headers={
+                    "authorization": f"bearer {self._make_jwt()}",
+                    "apns-topic": settings.apns_bundle_id,
+                    "apns-push-type": "alert",
+                    "apns-priority": "10",
+                },
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                log.warning("APNs delivery failed",
+                            token=token[:8], status=resp.status_code)
+```
+
+**Required `.env` additions:**
+
+```env
+APNS_KEY_ID=XXXXXXXXXX
+APNS_TEAM_ID=XXXXXXXXXX
+APNS_AUTH_KEY_PATH=./certs/AuthKey_XXXXXXXXXX.p8
+APNS_BUNDLE_ID=none.FruitcakeAi
+APNS_ENVIRONMENT=sandbox          # sandbox | production
+```
+
+**Swift — APNs registration** (`FruitcakeAiApp.swift`):
+
+```swift
+UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+UIApplication.shared.registerForRemoteNotifications()
+
+func application(_ app: UIApplication,
+                 didRegisterForRemoteNotificationsWithDeviceToken token: Data) {
+    let hex = token.map { String(format: "%02x", $0) }.joined()
+    Task {
+        try? await api.requestVoid("/devices/register", method: "POST",
+                                    body: ["token": hex, "environment": "sandbox"])
+    }
+}
+```
+
+---
+
+### Sprint 4.4 — Inbox Tab + Memory UI (Days 14–21)
+
+**Swift — Inbox tab** (`Views/Inbox/`):
+
+```
+Views/
+├── Inbox/
+│   ├── InboxView.swift           # Main list: pending approvals + recent task results
+│   ├── TaskRow.swift             # Status badge (green/blue/red/orange/gray)
+│   └── TaskCreateSheet.swift     # Create/edit task form
+```
+
+Status badge colors: `completed` → green · `running` → blue + spinner · `failed` → red · `waiting_approval` → orange + Approve/Reject buttons · `cancelled` → gray.
+
+`TaskCreateSheet` fields: Title · Instruction (multiline) · Schedule picker (one-time / every 30m / 1h / 6h / 12h / daily / custom cron) · Active hours toggle · Push when done toggle · Require approval toggle.
+
+**`ContentView.swift`** — add Inbox tab with approval badge:
+
+```swift
+TabView {
+    Tab("Chat",    systemImage: "bubble.left.and.bubble.right") { ChatView() }
+    Tab("Inbox",   systemImage: "envelope.badge") { InboxView() }
+        .badge(pendingApprovalCount)
+    Tab("Library", systemImage: "books.vertical") { LibraryView() }
+    Tab("Settings",systemImage: "gear") { SettingsView() }
+}
+```
+
+**Swift — Memories section in Settings** (`Views/Settings/MemoriesView.swift`):
+
+- List grouped by type: Procedural → Semantic → Episodic
+- Each row: content + type badge + importance dot (●●○ etc.) + age
+- Swipe to delete (calls `DELETE /memories/{id}`)
+- Tap → detail: full content, source attribution ("From conversation March 3" / "From task: Morning briefing"), importance slider
+- Search bar filters across all types
+
+---
+
+## Phase 5 — Webhooks + External Triggers (1 week)
+
+**Sprint 5.1** — Inbound webhook surface:
+
+```python
+class WebhookConfig(Base):
+    __tablename__ = "webhook_configs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    name: Mapped[str]
+    webhook_key: Mapped[str]          # random secret — appears in POST /webhooks/{key}
+    instruction: Mapped[str]           # what agent does when triggered
+    active: Mapped[bool] = mapped_column(default=True)
+```
+
+```
+POST   /webhooks/{key}   inbound trigger (GitHub, Zapier, IFTTT, etc.)
+GET    /webhooks         list
+POST   /webhooks         create
+DELETE /webhooks/{id}    remove
+```
+
+**Sprint 5.2** — Gmail Pub/Sub (`app/mcp/servers/gmail.py`):
+
+Tools: `read_email`, `send_email`, `search_emails`, `label_email`. Gmail push → Pub/Sub → `/webhooks/{key}` → agent wakes with memory context injected.
+
+---
+
+## Phase 6 — Cloud Judgment Routing (as needed)
+
+**Trigger**: A user requests it, or local judgment quality on heartbeats is demonstrably causing missed-important / false-alarm patterns in daily use.
+
+This is the `config/autonomy.yaml` per-signal-type routing system from Roadmap 4. It's deferred until real-world data shows where local judgment fails and cloud routing is worth the data exposure tradeoff.
+
+```yaml
+# config/autonomy.yaml — added when Phase 6 is built
+judgment:
+  default: local
+  routing:
+    calendar_conflicts: local
+    email_urgency: cloud        # opt-in per signal type
+    financial_signals: local    # never
+    document_content: local     # never
+  cloud:
+    provider: anthropic
+    model: claude-haiku-4-5
+    max_context_tokens: 500     # structural sanitization — forces abstraction
+    audit_log: true
+```
+
+The `ContextSanitizer` and `JudgmentRouter` classes are built in this phase, not Phase 4. They solve a problem that requires real-world data to scope correctly.
+
+---
+
+## Phase 7 — Filesystem + Sub-Agent Spawning (2 weeks)
+
+**Sprint 7.1** — Sandboxed filesystem MCP: `--allowed-paths /workspace`, per-user `workspace/{user_id}/`.
+
+**Sprint 7.2** — Shell MCP: `docker run --network none`, 30s timeout, 8k output cap, explicit blocked commands list.
+
+**Sprint 7.3** — Sub-agent spawning:
+
+```python
+async def spawn_agent(instruction: str, persona: str, timeout_seconds: int = 120):
+    """Delegate to a specialist sub-agent. Child cannot escalate parent scopes."""
+    child_session = create_child_session(parent=current_session, persona=persona)
+    result = await run_agent(child_session, mode="task", max_turns=16)
+    audit_log_child(parent=current_session, child=child_session)
+    return result
+```
+
+---
+
+## Phase 8 — Nightly Memory Extraction
+
+**Trigger**: Phase 4 has been running for several weeks and real-world data shows what the agent misses.
+
+A nightly background task reviews the previous 24 hours of chat sessions and extracts memories the agent didn't explicitly create via `create_memory`. This catches patterns that only become obvious in retrospect.
+
+The extraction prompt reviews each session: *"Extract any facts about the user worth remembering. Return JSON: [{content, type, importance, expires_in_days}]."* New memories are deduplicated against existing ones before insertion.
+
+---
+
+## Phase 9 — Enterprise Fork
+
+**Trigger**: Home version in stable daily use + confirmed business interest. Not speculative.
+
+**Delta from home version**: SSO/LDAP/SAML · Teams (10–500 users) · ACL role matrix · Compliance export + retention · Docker Compose / K8s manifests · All judgment routing locked to `local` = air-gapped compliance guarantee · HIPAA/SOC 2 path · Mandatory audit logging.
+
+**Why v5 already supports this**: persona=role mapping · library scopes→workspaces · LiteLLM model swap via env var · Memory scoped per-user already · `autonomy.yaml` all-local = one config change.
+
+---
+
+## LLM Backend Configuration
+
+```env
+# Default — local, privacy-first, verified M1 Max 64GB
+LLM_MODEL=ollama_chat/qwen2.5:14b
+LOCAL_API_BASE=http://localhost:11434/v1
+
+# Step up (close other apps first)
+# LLM_MODEL=ollama_chat/qwen2.5:32b
+
+# Cloud — best quality, opt-in only
+# LLM_MODEL=claude-sonnet-4-6
+# ANTHROPIC_API_KEY=sk-ant-...
+
+# Embeddings — shared across LLM backends and memory retrieval
+EMBEDDING_MODEL=BAAI/bge-small-en-v1.5
+
+# Phase 4 APNs
+APNS_KEY_ID=
+APNS_TEAM_ID=
+APNS_AUTH_KEY_PATH=./certs/AuthKey_XXXXXXXXXX.p8
+APNS_BUNDLE_ID=none.FruitcakeAi
+APNS_ENVIRONMENT=sandbox
+```
+
+---
+
+## Key Design Decisions
+
+**Memory is the core differentiator, not task execution.**
+OpenClaw's task execution model is simple and proven — adopt it. Where FruitcakeAI earns its advantage is in what the agent knows before it makes any tool call. Persistent per-user memory in pgvector, retrieved semantically, injected into every heartbeat and task prompt. This is not something OpenClaw can replicate without a major rearchitecture.
+
+**LLM-as-judgment-router — adopted from OpenClaw.**
+No pre-built context aggregator. The instruction is the context directive. The agent uses its normal tools to gather what it needs. Less code, more flexible, proven in production at scale.
+
+**Drop `JudgmentRouter` and `ContextSanitizer` from Roadmap 4.**
+They solved a problem that doesn't exist until cloud routing is actually opted into. Dead code in Phase 4 becomes tech debt before the product ships. Build them in Phase 6 when they're needed, with real-world data to inform exactly what needs sanitizing.
+
+**Air-gap is automatic, not configured.**
+Ollama runs locally. Tasks use the local model. The only thing that leaves the machine is the push notification body. No `autonomy.yaml` needed until Phase 6. Default is correct by construction.
+
+**HEARTBEAT_OK suppression — adopted from OpenClaw.**
+If the agent decides nothing needs attention, return the token and suppress delivery. No noise, no training users to ignore notifications. The suppression threshold (300 chars) is configurable.
+
+**Active hours — first class, not optional.**
+A heartbeat that can fire at 3am is a product-killing failure mode. `active_hours` is stored per-user and enforced at the heartbeat runner level. ⚠️ Three config sources must resolve to one: `heartbeat.yaml` defaults → user-level fields → per-task override. Resolution order is task → user → yaml. The `User` model needs `active_hours_start`, `active_hours_end`, `active_hours_tz` columns (add to Alembic migration in Sprint 4.1 alongside Task and DeviceToken).
+
+**Approval workflow for irreversible actions.**
+Primary documented failure mode in the OpenClaw community. Any tool in `APPROVAL_REQUIRED_TOOLS` pauses the task in `waiting_approval`, sends a push, and waits for the user to confirm from the Inbox tab. Safe-by-default is non-negotiable for a system that acts without the user present.
+
+**Exponential retry for transient errors.**
+A task that fails once because of a network timeout should not fail forever. Transient errors retry with backoff (30s → 1m → 5m → 15m → 60m). Permanent errors (auth failures, config errors) disable immediately.
+
+**APNs JWT caching.**
+The JWT must be cached and reused for up to 1 hour, regenerated 60 seconds before expiry. Generating a new JWT per delivery will hit Apple's rate limits under load.
+
+**Memory is immutable — no edits, only deactivation.**
+If a fact changes, the agent creates a new memory and marks the old one `is_active=False`. The full history of what the assistant knew and when is preserved. This is essential for debugging ("why did it mention that?") and for trust.
+
+---
+
+## Phase 4 Verification Checklist
+
+1. `POST /tasks` with `schedule: "every:1m"` + `deliver: false`
+   → `next_run_at` computed + stored ✓ task hidden from `GET /chat/sessions` ✓
+
+2. Wait 1 minute → `GET /tasks/{id}`
+   → `status: "completed"` · `result` populated · `last_run_at` updated ✓
+
+3. Create task outside active hours
+   → task skipped silently ✓
+
+4. Simulate transient error in agent loop
+   → `retry_count` incremented · `next_retry_at` set · status stays `pending` ✓
+
+5. `POST /devices/register` from Swift
+   → token stored in `device_tokens` ✓
+
+6. Create task with `deliver: true` + instruction that produces output
+   → APNs push arrives on sandbox device ✓
+
+7. Create task with `requires_approval: true` + `create_calendar_event` tool use
+   → `status: "waiting_approval"` · approval push received · task in Inbox ✓
+
+8. `PATCH /tasks/{id}` `{"approved": true}`
+   → task re-runs with `pre_approved=True` · completes · status → `completed` ✓
+
+9. `POST /memories` + verify embedding stored
+   → `GET /memories` returns it · visible in Swift Settings → Memories ✓
+
+10. Run heartbeat manually for a user with existing memories
+    → memory context injected into prompt · `access_count` incremented ✓
+
+11. Heartbeat agent returns `HEARTBEAT_OK`
+    → no push sent · logged silently ✓
+
+12. Task session cleanup job runs
+    → sessions older than 24h with `is_task_session=True` removed ✓
+
+13. `pytest tests/ -q` — existing 48 tests still pass ✓
+    New tests: task CRUD · schedule parser · runner isolation · approval intercept ·
+    memory CRUD · memory retrieval · heartbeat suppression · active hours
+
+---
+
+## Cursor Usage Notes
+
+- **`app/memory/`** and **`app/autonomy/`** are new top-level modules — create from scratch
+- **Agent core** (`core.py`) changes are surgical — preserve all existing `_normalize_tool_calls()` and `message.tool_calls` patterns
+- **`create_memory` tool** goes into `app/agent/tools.py` alongside existing tools — same registry pattern
+- **Memory embedding** reuses the same `BAAI/bge-small-en-v1.5` model already used for document RAG — no new model setup
+- **APScheduler wires into FastAPI lifespan** — not a separate process
+- **Test heartbeat manually** via `POST /tasks/{id}/run` before enabling the scheduler
+- **APNs sandbox** during all development — switch to production only when submitting to App Store
+- **JWT caching** in `APNsPusher` — this is not optional, Apple will rate-limit uncached JWT generation
+
+---
+
+*FruitcakeAI v5 — Simpler. Smarter. Knows its people.* 🍰  
+*Phases 1–3 + Sprint 3.7 complete March 2026 · Phase 4 next*

@@ -26,15 +26,30 @@ struct ContentView: View {
 // MARK: - Main tab container
 
 struct MainTabView: View {
+
+    @State private var pendingApprovalCount = 0
+    @State private var selectedTab = "chat"
+    @State private var openSessionId: Int? = nil
+
     var body: some View {
-        TabView {
-            Tab("Chat", systemImage: "bubble.left.and.bubble.right.fill") {
-                ChatView()
+        TabView(selection: $selectedTab) {
+            Tab("Chat", systemImage: "bubble.left.and.bubble.right.fill", value: "chat") {
+                ChatView(openSessionId: $openSessionId)
             }
-            Tab("Library", systemImage: "books.vertical.fill") {
+            Tab("Inbox", systemImage: "envelope.badge.fill", value: "inbox") {
+                InboxView(
+                    onCountChanged: { pendingApprovalCount = $0 },
+                    onReplyInChat: { sessionId in
+                        openSessionId = sessionId
+                        selectedTab = "chat"
+                    }
+                )
+            }
+            .badge(pendingApprovalCount)
+            Tab("Library", systemImage: "books.vertical.fill", value: "library") {
                 LibraryView()
             }
-            Tab("Settings", systemImage: "gearshape.fill") {
+            Tab("Settings", systemImage: "gearshape.fill", value: "settings") {
                 SettingsView()
             }
         }

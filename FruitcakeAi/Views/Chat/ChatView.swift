@@ -57,6 +57,9 @@ struct ChatView: View {
     @Environment(OnDeviceAgent.self) private var onDeviceAgent
     @Environment(\.modelContext) private var modelContext
 
+    /// Set from InboxView's "Reply in Chat" to auto-navigate to a session.
+    @Binding var openSessionId: Int?
+
     @Query(sort: \CachedConversation.lastActivity, order: .reverse)
     private var localConversations: [CachedConversation]
 
@@ -100,6 +103,17 @@ struct ChatView: View {
         .onChange(of: selectedSession?.id) { _, newId in
             guard let newId else { return }
             Task { await switchSession(sessionId: newId) }
+        }
+        .onChange(of: openSessionId) { _, id in
+            guard let id else { return }
+            openSessionId = nil
+            // Reload sessions then select the new one
+            Task {
+                await loadSessions()
+                if let match = sessions.first(where: { $0.id == id }) {
+                    selectedSession = match
+                }
+            }
         }
         .overlay(alignment: .top) {
             if let deleteError {
@@ -521,7 +535,7 @@ extension SessionSummary: Hashable, Equatable {
 }
 
 #Preview {
-    ChatView()
+    ChatView(openSessionId: .constant(nil))
         .environment(AuthManager())
         .environment(ConnectivityMonitor(authManager: AuthManager()))
         .environment(OnDeviceAgent())

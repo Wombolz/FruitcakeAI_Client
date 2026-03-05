@@ -31,6 +31,7 @@ struct SettingsView: View {
                 accountSection
                 serverSection
                 personaSection
+                memoriesSection
                 signOutSection
             }
             .navigationTitle("Settings")
@@ -135,6 +136,17 @@ struct SettingsView: View {
                 }
             }
             .foregroundStyle(.primary)
+        }
+    }
+
+    private var memoriesSection: some View {
+        Section("Assistant") {
+            NavigationLink {
+                MemoriesView()
+                    .environment(authManager)
+            } label: {
+                Label("Memories", systemImage: "brain")
+            }
         }
     }
 

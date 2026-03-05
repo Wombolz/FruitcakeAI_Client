@@ -9,6 +9,10 @@ import SwiftData
 @main
 struct FruitcakeAiApp: App {
 
+    // MARK: - APNs delegate bridge
+
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+
     // MARK: - Services (shared singletons)
 
     @State private var authManager = AuthManager()
@@ -52,6 +56,8 @@ struct FruitcakeAiApp: App {
                     await authManager.restoreSession()
                     connectivityMonitor.start()
                     onDeviceAgent.checkAvailability()
+                    // Register for push notifications (no-op if not authenticated yet)
+                    await APNsManager.shared.requestAndRegister()
                 }
         }
         .modelContainer(sharedModelContainer)

@@ -94,7 +94,9 @@ actor APIClient {
         req.timeoutInterval = timeout
 
         if let body {
-            req.httpBody = try JSONEncoder().encode(body)
+            let encoder = JSONEncoder()
+            encoder.keyEncodingStrategy = .convertToSnakeCase
+            req.httpBody = try encoder.encode(body)
         }
         return req
     }
@@ -115,9 +117,93 @@ actor APIClient {
     private func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        decoder.dateDecodingStrategy = .custom { dec in
+            let s = try dec.singleValueContainer().decode(String.self)
+            if let d = fmt.date(from: s) { return d }
+            fmt.formatOptions = [.withInternetDateTime]     // fallback: no fractional seconds
+            if let d = fmt.date(from: s) { return d }
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: dec.codingPath,
+                debugDescription: "Cannot decode date: \(s)"))
+        }
         return try decoder.decode(type, from: data)
     }
+
+    // MARK: - Tasks (Phase 4)
+
+    func fetchTasks() async throws -> [TaskSummary] {
+        try await request("/tasks")
+    }
+
+    func createTask(_ req: CreateTaskRequest) async throws -> TaskSummary {
+        try await request("/tasks", method: "POST", body: req)
+    }
+
+    func approveTask(_ id: Int, approved: Bool) async throws {
+        try await buildAndSendVoid("/tasks/\(id)", method: "PATCH",
+                                   body: ApproveBody(approved: approved))
+    }
+
+    func deleteTask(_ id: Int) async throws {
+        try await requestVoid("/tasks/\(id)", method: "DELETE")
+    }
+
+    func runTask(_ id: Int) async throws {
+        try await requestVoid("/tasks/\(id)/run", method: "POST")
+    }
+
+    // MARK: - Memories (Phase 4)
+
+    func fetchMemories(type: String? = nil) async throws -> [MemorySummary] {
+        let path = type.map { "/memories?type=\($0)" } ?? "/memories"
+        return try await request(path)
+    }
+
+    func deleteMemory(_ id: Int) async throws {
+        try await requestVoid("/memories/\(id)", method: "DELETE")
+    }
+
+    func updateMemoryImportance(_ id: Int, importance: Double) async throws {
+        try await buildAndSendVoid("/memories/\(id)", method: "PATCH",
+                                   body: ImportanceBody(importance: importance))
+    }
+
+    // MARK: - Task audit + Chat session helpers (Phase 4.5)
+
+    func fetchTaskAudit(_ id: Int) async throws -> TaskAuditOut {
+        try await request("/tasks/\(id)/audit")
+    }
+
+    func createChatSession(title: String) async throws -> Int {
+        struct Body: Encodable { let title: String }
+        struct Resp: Decodable { let id: Int }
+        let resp: Resp = try await request("/chat/sessions", method: "POST",
+                                           body: Body(title: title))
+        return resp.id
+    }
+
+    func sendMessage(sessionId: Int, content: String) async throws {
+        struct Body: Encodable { let content: String }
+        try await buildAndSendVoid("/chat/sessions/\(sessionId)/messages",
+                                   method: "POST", body: Body(content: content))
+    }
+
+    // MARK: - Private body-carrying void helper
+
+    private func buildAndSendVoid(_ path: String, method: String,
+                                   body: some Encodable) async throws {
+        let req = try await buildRequest(path, method: method, body: body)
+        let (_, response) = try await URLSession.shared.data(for: req)
+        try validate(response)
+    }
 }
+
+// MARK: - Phase 4 body helpers (file-private)
+
+private struct ApproveBody: Encodable { let approved: Bool }
+private struct ImportanceBody: Encodable { let importance: Double }
 
 // MARK: - Data multipart helpers
 
