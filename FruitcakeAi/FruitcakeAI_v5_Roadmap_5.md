@@ -1,10 +1,11 @@
 # 🍰 FruitcakeAI v5 — Rebuild Roadmap
 
 **Version**: 5.5  
-**Status**: Phase 1 ✅ · Phase 2 ✅ · Phase 3 ✅ · Sprint 3.7 ✅ · **Phase 4 Next**  
+**Status**: Phase 1 ✅ · Phase 2 ✅ · Phase 3 ✅ · Phase 4 ✅ · Phase 5.1 ✅ · Phase 5.2 ✅ · Phase 5.3 ✅ · Phase 5.4 Hardening (In Progress)  
 **Philosophy**: Agent-first. Air-gapped by default. Knows its people.  
 **Build Location**: `/Users/jwomble/Development/fruitcake_v5/`  
-**Last Updated**: March 2026
+**Last Updated**: March 9, 2026  
+**Checkpoint Note**: Phase 5.4 is a pre-Phase-6 reliability gate (MCP + execution profile hardening).
 
 ---
 
@@ -927,11 +928,102 @@ DELETE /webhooks/{id}    remove
 
 Tools: `read_email`, `send_email`, `search_emails`, `label_email`. Gmail push → Pub/Sub → `/webhooks/{key}` → agent wakes with memory context injected.
 
+### Phase 5.3 — Completed (Task Persona Routing + Runner Stability)
+
+Shipped outcomes:
+- Removed brittle, domain-specific task-runner orchestration instructions (news mode rollback).
+- Added task-level persona support:
+  - `tasks.persona` column + migration
+  - `/tasks` `POST`/`PATCH`/`GET`/list include persona behavior
+- Added deterministic persona routing from `config/personas.yaml` via `persona_router`.
+- Introduced execution profile seam:
+  - `resolve_execution_profile(task, user)`
+  - returns `persona`, `allowed_tools`, `blocked_tools`
+- Added lazy backfill for legacy tasks with null persona at execution time.
+- Hardened MCP stdio stream handling for large Playwright payloads.
+
+Verification highlights:
+- Task persona inference and explicit override behavior validated in API tests.
+- Resolver integration validated in runner tests (explicit persona + lazy backfill).
+- Large-page Playwright `browser_navigate` no longer fails with separator/chunk limit error.
+
+### Phase 5.4 — Pre-Phase-6 Hardening Gate
+
+**Goal**: Stabilize execution/tool reliability and observability before any cloud judgment routing.
+
+#### Phase 5.4.x — Completed in This Branch (Checkpoint)
+
+Shipped outcomes:
+- Added stage-based task model routing for autonomous paths (tasks + webhooks):
+  - planning model
+  - execution model
+  - final synthesis model
+- Added configurable large-model fallback retries for qualifying non-final step failures.
+- Extended agent core interface for model routing:
+  - `run_agent(..., model_override=..., stage=...)`
+  - `stream_agent(..., model_override=..., stage=...)`
+- Added model-stage observability counters and surfaced them through metrics/admin diagnostics.
+- Hardened RSS task behavior:
+  - expanded fake/synthetic feed URL guardrails
+  - `search_my_feeds` empty-query behavior returns recent headlines instead of hard-failing
+  - `search_feeds` invalid-URL path can recover to curated feed search when user context exists
+
+Validation checkpoint:
+- Routing + regression suites passed in `fruitcake_v5`.
+- RSS/MCP suites passed after hardening and fallback updates.
+- Changes are additive; no API-breaking removals.
+
+#### Sprint 5.4.1 — MCP runtime reliability
+- Add per-client request serialization lock in MCP client.
+- Add reconnect + one retry for EOF/broken pipe/timeout scenarios.
+- Add stderr ring buffer capture for Docker MCP clients.
+
+#### Sprint 5.4.2 — Registry and tool contract hardening
+- Add deterministic duplicate-tool-name policy (no silent overrides).
+- Add optional alias/prefix strategy in MCP config.
+- Keep internal `web_search`/`fetch_page` as the stable primary web contract.
+
+#### Sprint 5.4.3 — Admin observability
+- Expand `/admin/tools` diagnostics with last error, connection state, and server health.
+- Add `/admin/mcp/diagnostics` endpoint for targeted checks.
+
+#### Sprint 5.4.4 — Execution profile v1 formalization
+- Keep resolver persona-derived for now.
+- Document extension path for future merge of:
+  - persona
+  - capability profile
+  - user policy
+  - task overrides
+
+#### Deferred from Future Architecture (explicitly out of 5.4)
+- Memory budgets (deferred post-5.4 unless prompt bloat metrics demand early pull-in).
+- Layered memory semantics expansion (deferred).
+- Event-driven heartbeat triggers (deferred).
+- Dream-cycle consolidation (deferred).
+
+#### Reference Inputs
+- `/Users/jwomble/Development/fruitcake_v5/Docs/phase_5_3_persona_routing_rollback_plan.md`
+- `/Users/jwomble/Development/fruitcake_v5/Docs/MCP_Modernization_Plan.md`
+- `/Users/jwomble/Development/fruitcake_v5/Docs/FruitcakeAI – Future Architecture Update.md`
+
 ---
+
+## Phase 6 Entry Criteria
+
+Phase 6 starts only when all are true:
+1. MCP error rate is below agreed threshold in daily use.
+2. No unresolved duplicate-tool ambiguity exists in registry.
+3. Admin diagnostics can identify failing MCP server causes without reading raw logs.
+4. Execution profile seam is stable in task runs.
+5. At least one week of stable Phase 5.4 soak is complete.
 
 ## Phase 6 — Cloud Judgment Routing (as needed)
 
+**Dependency**: Depends on completion of the Phase 5.4 reliability gate.
+
 **Trigger**: A user requests it, or local judgment quality on heartbeats is demonstrably causing missed-important / false-alarm patterns in daily use.
+
+Cloud routing remains opt-in and justified by measured local judgment gaps.
 
 This is the `config/autonomy.yaml` per-signal-type routing system from Roadmap 4. It's deferred until real-world data shows where local judgment fails and cloud routing is worth the data exposure tradeoff.
 
