@@ -6,14 +6,18 @@
 //
 //  Flow:
 //    1. FruitcakeAiApp calls requestAndRegister() after session restore (or login).
-//    2. If permission is granted, NSApplication.registerForRemoteNotifications() fires.
-//    3. macOS calls AppDelegate.didRegisterForRemoteNotificationsWithDeviceToken(_:).
+//    2. If permission is granted, registerForRemoteNotifications() fires.
+//    3. AppDelegate receives didRegisterForRemoteNotificationsWithDeviceToken(_:).
 //    4. AppDelegate calls APNsManager.shared.uploadToken(_:).
 //    5. uploadToken reads the auth JWT + server URL from Keychain and POSTs
 //       to POST /devices/register — no dependency on live AuthManager state.
 //
 
+#if os(iOS)
+import UIKit
+#elseif os(macOS)
 import AppKit
+#endif
 import UserNotifications
 
 @Observable
@@ -29,8 +33,7 @@ final class APNsManager {
     // MARK: - Permission + registration
 
     /// Request notification permission (if not already decided) and register with APNs.
-    /// Safe to call on every launch — iOS caches the token and callbacks are synchronous
-    /// after the first successful registration.
+    /// Safe to call on every launch.
     func requestAndRegister() async {
         let center = UNUserNotificationCenter.current()
         let settings = await center.notificationSettings()
@@ -44,13 +47,17 @@ final class APNsManager {
         }
 
         await MainActor.run {
+            #if os(iOS)
+            UIApplication.shared.registerForRemoteNotifications()
+            #elseif os(macOS)
             NSApplication.shared.registerForRemoteNotifications()
+            #endif
         }
     }
 
     // MARK: - Token upload
 
-    /// Called by AppDelegate when iOS delivers the device token.
+    /// Called by AppDelegate when APNs delivers the device token.
     /// Reads auth credentials from Keychain and registers the token with the backend.
     func uploadToken(_ hexToken: String) async {
         deviceToken = hexToken

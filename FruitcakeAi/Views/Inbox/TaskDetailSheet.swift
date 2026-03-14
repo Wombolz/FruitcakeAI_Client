@@ -14,8 +14,12 @@ struct TaskDetailSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     let task: TaskSummary
+    var onApprove: (() -> Void)? = nil
+    var onReject: (() -> Void)? = nil
+    var onStop: (() -> Void)? = nil
 
     @State private var audit: TaskAuditOut? = nil
+    @State private var steps: [TaskStepSummary] = []
     @State private var isLoading = false
     @State private var loadError: String?
 
@@ -44,13 +48,66 @@ struct TaskDetailSheet: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let audit {
                 List {
+                    if task.isPendingApproval {
+                        Section("Approval Required") {
+                            Text(task.approvalContextLabel)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.orange)
+                            HStack(spacing: 10) {
+                                Button {
+                                    onApprove?()
+                                    dismiss()
+                                } label: {
+                                    Label("Approve", systemImage: "checkmark")
+                                        .frame(maxWidth: .infinity)
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(.green)
+
+                                Button(role: .destructive) {
+                                    onReject?()
+                                    dismiss()
+                                } label: {
+                                    Label("Reject", systemImage: "xmark")
+                                        .frame(maxWidth: .infinity)
+                                }
+                                .buttonStyle(.bordered)
+                            }
+                        }
+                    }
+
+                    if task.canStop {
+                        Section {
+                            Button(role: .destructive) {
+                                onStop?()
+                                dismiss()
+                            } label: {
+                                Label("Stop Task", systemImage: "stop.circle")
+                            }
+                        }
+                    }
+
+                    if !steps.isEmpty {
+                        Section("Plan Steps") {
+                            ForEach(steps) { step in
+                                stepRow(step)
+                            }
+                        }
+                    }
+
                     // ── Result ────────────────────────────────────────────
                     if let result = audit.result {
                         Section("Result") {
-                            Text(result)
-                                .font(.body)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text(linkifiedAttributedString(result))
+                                    .font(.body)
+                                    .lineSpacing(5)
+                                    .textSelection(.enabled)
+                                    .tint(.accentColor)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .padding(12)
+                            .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
                         }
                     }
 
@@ -78,6 +135,28 @@ struct TaskDetailSheet: View {
 
     // MARK: - Tool call row
 
+    private func stepRow(_ step: TaskStepSummary) -> some View {
+        let isCurrent = (task.currentStepTitle == step.title) || (step.status == "running" || step.status == "waiting_approval")
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("\(step.stepIndex). \(step.title)")
+                    .font(.subheadline.weight(isCurrent ? .semibold : .regular))
+                Spacer()
+                Text(step.status.replacingOccurrences(of: "_", with: " ").capitalized)
+                    .font(.caption2)
+                    .foregroundStyle(isCurrent ? .orange : .secondary)
+            }
+            if let tool = step.waitingApprovalTool, !tool.isEmpty {
+                Text("Tool: \(tool)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 2)
+        .padding(.horizontal, 6)
+        .background(isCurrent ? .orange.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 6))
+    }
+
     private func toolCallRow(_ entry: TaskAuditEntry) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
@@ -91,17 +170,17 @@ struct TaskDetailSheet: View {
 
             if !entry.arguments.isEmpty {
                 let argsStr = entry.arguments.map { "\($0.key): \($0.value)" }.joined(separator: ", ")
-                Text(String(argsStr.prefix(150)))
+                Text(String(argsStr.prefix(220)))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .lineLimit(3)
             }
 
             if !entry.resultSummary.isEmpty {
-                Text(String(entry.resultSummary.prefix(150)))
+                Text(String(entry.resultSummary.prefix(220)))
                     .font(.caption)
                     .foregroundStyle(.primary)
-                    .lineLimit(3)
+                    .lineLimit(4)
             }
         }
         .padding(.vertical, 2)
@@ -115,10 +194,45 @@ struct TaskDetailSheet: View {
         defer { isLoading = false }
         do {
             let api = APIClient(authManager: authManager)
-            audit = try await api.fetchTaskAudit(task.id)
+            async let auditData = api.fetchTaskAudit(task.id)
+            async let stepData = api.fetchTaskSteps(task.id)
+            audit = try await auditData
+            steps = (try? await stepData) ?? []
         } catch {
             loadError = error.localizedDescription
         }
+    }
+
+    private func linkifiedAttributedString(_ text: String) -> AttributedString {
+        // Preserve single newlines as markdown line breaks (two trailing spaces + newline)
+        let prepared = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\n\n", with: "\u{0000}PARA\u{0000}")
+            .replacingOccurrences(of: "\n", with: "  \n")
+            .replacingOccurrences(of: "\u{0000}PARA\u{0000}", with: "\n\n")
+
+        let base: NSAttributedString
+        if let markdown = try? AttributedString(
+            markdown: prepared,
+            options: .init(
+                interpretedSyntax: .full,
+                failurePolicy: .returnPartiallyParsedIfPossible
+            )
+        ) {
+            base = NSAttributedString(markdown)
+        } else {
+            base = NSAttributedString(string: text)
+        }
+
+        let mutable = NSMutableAttributedString(attributedString: base)
+        let fullRange = NSRange(location: 0, length: (mutable.string as NSString).length)
+        if let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) {
+            detector.enumerateMatches(in: mutable.string, options: [], range: fullRange) { match, _, _ in
+                guard let match, let url = match.url else { return }
+                mutable.addAttribute(.link, value: url, range: match.range)
+            }
+        }
+        return AttributedString(mutable)
     }
 }
 
@@ -137,7 +251,9 @@ struct TaskDetailSheet: View {
         result: "You have 3 meetings today: standup at 9am, design review at 2pm, and dentist at 5pm.",
         error: nil,
         lastRunAt: Date(),
-        nextRunAt: Calendar.current.date(byAdding: .day, value: 1, to: Date())
+        nextRunAt: Calendar.current.date(byAdding: .day, value: 1, to: Date()),
+        currentStepTitle: nil,
+        waitingApprovalTool: nil
     ))
     .environment(AuthManager())
 }

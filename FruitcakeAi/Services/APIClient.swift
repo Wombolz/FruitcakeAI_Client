@@ -9,7 +9,8 @@
 
 import Foundation
 
-actor APIClient {
+@MainActor
+final class APIClient {
 
     private let authManager: AuthManager
 
@@ -117,13 +118,16 @@ actor APIClient {
     private func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
-        let fmt = ISO8601DateFormatter()
-        fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         decoder.dateDecodingStrategy = .custom { dec in
             let s = try dec.singleValueContainer().decode(String.self)
-            if let d = fmt.date(from: s) { return d }
-            fmt.formatOptions = [.withInternetDateTime]     // fallback: no fractional seconds
-            if let d = fmt.date(from: s) { return d }
+            let withFractional = ISO8601DateFormatter()
+            withFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let d = withFractional.date(from: s) { return d }
+
+            let withoutFractional = ISO8601DateFormatter()
+            withoutFractional.formatOptions = [.withInternetDateTime]
+            if let d = withoutFractional.date(from: s) { return d }
+
             throw DecodingError.dataCorrupted(.init(
                 codingPath: dec.codingPath,
                 debugDescription: "Cannot decode date: \(s)"))
@@ -135,6 +139,14 @@ actor APIClient {
 
     func fetchTasks() async throws -> [TaskSummary] {
         try await request("/tasks")
+    }
+
+    func fetchTask(_ id: Int) async throws -> TaskSummary {
+        try await request("/tasks/\(id)")
+    }
+
+    func fetchTaskSteps(_ id: Int) async throws -> [TaskStepSummary] {
+        try await request("/tasks/\(id)/steps")
     }
 
     func createTask(_ req: CreateTaskRequest) async throws -> TaskSummary {
@@ -152,6 +164,10 @@ actor APIClient {
 
     func runTask(_ id: Int) async throws {
         try await requestVoid("/tasks/\(id)/run", method: "POST")
+    }
+
+    func stopTask(_ id: Int) async throws {
+        try await requestVoid("/tasks/\(id)/stop", method: "POST")
     }
 
     // MARK: - Memories (Phase 4)
@@ -182,6 +198,22 @@ actor APIClient {
         let resp: Resp = try await request("/chat/sessions", method: "POST",
                                            body: Body(title: title))
         return resp.id
+    }
+
+    func sendTestPush(title: String, body: String) async throws -> String {
+        struct Req: Encodable { let title: String; let body: String }
+        struct Resp: Decodable {
+            let ok: Bool
+            let attempted: Int
+            let delivered: Int
+            let message: String
+        }
+        let resp: Resp = try await request(
+            "/admin/push/test",
+            method: "POST",
+            body: Req(title: title, body: body)
+        )
+        return resp.message
     }
 
     func sendMessage(sessionId: Int, content: String) async throws {

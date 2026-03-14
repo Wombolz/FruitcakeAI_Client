@@ -995,6 +995,45 @@ Validation checkpoint:
   - user policy
   - task overrides
 
+#### Sprint 5.4.5 — Profile-driven execution extraction
+- Added task profile contract (`tasks.profile`) with runtime default resolution to `default`.
+- Added profile modules under `autonomy/profiles/`:
+  - `default`
+  - `news_magazine`
+  - resolver + shared profile interface hooks
+- Refactored planner to use profile-owned planning (`plan_steps`) instead of inline magazine special-casing.
+- Refactored runner to use profile hooks for:
+  - run-context preparation (`prepare_run_context`)
+  - prompt augmentation (`augment_prompt`)
+  - effective blocked tool policy (`effective_blocked_tools`)
+  - finalize validation (`validate_finalize`)
+  - standardized artifact emission (`artifact_payloads`)
+- Standardized profile artifact types:
+  - `prepared_dataset`, `draft_output`, `final_output`, `validation_report`, `run_diagnostics`
+- Added API-level profile validation for create/patch/get/list tasks:
+  - allowed in this sprint: `default`, `news_magazine`
+  - unknown profile returns `400`
+
+Verification highlights:
+- Profile create/patch validation covered by task API tests.
+- `news_magazine` deterministic 2-step planning validated via planner/task-step tests.
+- Runner/profile integration validated with artifact persistence and grounding checks.
+
+#### Sprint 5.4.6 — Python 3.11 Upgrade + Security Cleanup
+- Upgraded backend runtime baseline to Python 3.11 and pinned local default via `.python-version`.
+- Updated startup/runtime docs and startup script to create/use a 3.11 virtual environment path consistently.
+- Remediated blocked dependency advisories in active requirements set, including:
+  - `python-multipart` >= 0.0.22
+  - `nltk` >= 3.9.3
+  - `filelock` >= 3.20.3
+  - `pillow` >= 12.1.1
+- Kept Task 48 (`news_magazine`) reliability behavior stable after dependency/runtime upgrades (fuzzy link repair + partial publish path).
+
+Verification highlights:
+- Full suite passes on Python 3.11 in branch validation.
+- `pip check` reports no broken requirements.
+- Security audit reduced to residual advisories only; remaining items are explicitly tracked in release notes.
+
 #### Deferred from Future Architecture (explicitly out of 5.4)
 - Memory budgets (deferred post-5.4 unless prompt bloat metrics demand early pull-in).
 - Layered memory semantics expansion (deferred).
@@ -1005,6 +1044,121 @@ Validation checkpoint:
 - `/Users/jwomble/Development/fruitcake_v5/Docs/phase_5_3_persona_routing_rollback_plan.md`
 - `/Users/jwomble/Development/fruitcake_v5/Docs/MCP_Modernization_Plan.md`
 - `/Users/jwomble/Development/fruitcake_v5/Docs/FruitcakeAI – Future Architecture Update.md`
+
+---
+
+## Phase 5.5 — Adaptive Chat Orchestration (Quality Parity)
+
+**Goal**: close the quality gap between single-turn chat and task-mode execution on local models by adding optional task-like scaffolding to chat only when complexity warrants it.
+
+**Why now**:
+- Current task runs outperform chat on reliability because tasks use explicit planning, tool-grounding, and final synthesis.
+- Chat remains intentionally lightweight, but this causes inconsistent quality for multi-part prompts on local 14B/16B models.
+
+**Sprint 5.5.1 — Chat complexity detector**
+- Add lightweight complexity scoring for chat turns (multi-part asks, high-stakes asks, tool-heavy asks).
+- Route low-complexity requests through existing fast single-pass chat path.
+- Route high-complexity requests to orchestrated chat path.
+
+**Sprint 5.5.2 — Orchestrated chat path (non-task UX)**
+- Add internal micro-plan for complex chat turns (2-3 steps max).
+- Reuse existing tool + grounding patterns from task runner where safe.
+- Keep response as a single chat answer (no task creation required).
+
+**Sprint 5.5.3 — Grounding and output checks for chat**
+- Add optional validation for news/research style answers:
+  - link presence checks
+  - invalid link rejection
+  - empty-result retry policy
+- Add “deep mode” switch in API/UI later (optional), defaulting to auto-routing.
+
+**Sprint 5.5.4 — Observability and controls**
+- Add counters for:
+  - chat turns routed to orchestrated path
+  - fallback/retry rates
+  - latency delta vs single-pass path
+- Add kill switch env flag to disable orchestrated chat instantly.
+
+**Memory relevance follow-up (carryover)**
+- Keep general retrieval/search from automatically raising memory relevance.
+- Reintroduce relevance updates for explicit/direct recalls only:
+  - direct user confirmation ("yes, that's correct")
+  - successful task use where recalled memory materially informed outcome
+  - explicit memory-open/recall actions in UI/API
+- Track this as a scoring-policy hardening item before Phase 6 entry.
+
+**Acceptance criteria**
+1. Complex chat prompts show measurable quality improvement without forcing heavy orchestration on simple chat.
+2. Median chat latency for simple prompts stays near current baseline.
+3. No API-breaking changes; feature is additive and flag-gated.
+
+---
+
+## Phase 5.6 — Release Prep: Repository Realignment (Planning Only)
+
+**Status**: Planned only. Do not execute until Phase 5.5 stabilization is complete.
+
+**Goal**: align repository boundaries before Phase 6 so ownership, release flow, and open-source onboarding are clean.
+
+Target repository layout:
+- `FruitcakeAI` = backend/runtime app (current `fruitcake_v5` codebase)
+- `FruitcakeAI_iOS` = Swift client app (current `FruitcakeAi` codebase)
+
+**Scope**
+- Repo rename/move with full git history preservation.
+- Remote/branch/README/docs link updates.
+- CI/workflow path updates.
+- Cross-repo references and setup docs cleanup.
+
+**Out of scope (for this sprint)**
+- New product features.
+- Architecture changes unrelated to repo boundaries.
+- Phase 6 cloud-routing implementation.
+
+**Sprint 5.6.1 — Pre-move safety and freeze**
+- Create pre-move checkpoint tags on both repos.
+- Freeze feature work during the move window.
+- Record rollback commands and branch protection expectations.
+
+**Sprint 5.6.2 — Backend repo transition**
+- Rename/move backend repo identity to `FruitcakeAI`.
+- Update remotes, badges, clone URLs, and contributor docs.
+- Validate backend startup, MCP health, and full test suite.
+
+**Sprint 5.6.3 — iOS repo transition**
+- Rename/move Swift repo identity to `FruitcakeAI_iOS`.
+- Update project docs, build references, and CI workflows.
+- Validate simulator/device build and API connectivity.
+
+**Sprint 5.6.4 — Cross-repo release validation**
+- Run end-to-end smoke flow (chat, task, RSS, push path).
+- Confirm release tags and rollback path on both repos.
+- Publish updated onboarding docs for open-source readiness.
+
+**Sprint 5.6.5 — Knowledge Skills System (Admin-managed, additive)**
+- Add DB-backed `skills` records (frozen content at install time) with scope support (`shared` and `personal`).
+- Add admin two-step install flow: `POST /admin/skills/preview` then `POST /admin/skills/install` (no runtime URL fetch).
+- Inject relevant skills in `UserContext.build()` with semantic gating and explicit prompt-budget caps.
+- Keep skill tool grants additive but bounded: grants must intersect both persona `blocked_tools` and `resolve_execution_profile(...)` output.
+- Add `/admin/skills/{id}/preview-injection` diagnostics for threshold tuning and explainability.
+
+Guardrails locked for this sprint:
+1. Query-empty behavior: do not inject all skills by default; only inject explicitly pinned/global-safe skills.
+2. Install safety: URL preview fetch (if used) must enforce allowlist, timeout, and response-size limits.
+3. Versioning/scope safety: avoid brittle global-name collisions by supporting update-friendly identity (versioned slug or scoped uniqueness).
+4. Prompt budget: enforce per-skill and total skill token limits to prevent prompt bloat/drift.
+
+Acceptance additions for Sprint 5.6.5:
+1. Skills are additive only and cannot bypass persona or execution-profile tool restrictions.
+2. Skill injection remains context-relevant and bounded by token budget.
+3. Existing chat/task APIs and runner behavior remain backward compatible.
+4. Admin diagnostics can explain why a skill did or did not inject for a sample query.
+
+**Acceptance criteria**
+1. Both repos are renamed/repositioned with history intact.
+2. All documentation and remotes point to new canonical names.
+3. Backend tests and iOS build checks pass after transition.
+4. Rollback tags exist and are verified before Phase 6 work begins.
 
 ---
 
@@ -1063,6 +1217,39 @@ async def spawn_agent(instruction: str, persona: str, timeout_seconds: int = 120
     audit_log_child(parent=current_session, child=child_session)
     return result
 ```
+
+**Sprint 7.4** — Graph Memory Foundation (MCP-informed, Fruitcake-native)
+
+Goal: add durable relationship memory for long-horizon reasoning without adopting the MCP demo memory server as a production dependency.
+
+Scope:
+- Keep Fruitcake's existing memory stack as primary (semantic/procedural/episodic retrieval).
+- Add a graph-memory layer in the same Postgres DB, user-scoped and auditable.
+- Use MCP memory-server concepts (entity/relation/observation) as interface inspiration only.
+
+Data model additions (Phase 7 candidate):
+- `memory_entities` (id, user_id, name, entity_type, aliases, confidence, active, created_at, updated_at)
+- `memory_relations` (id, user_id, from_entity_id, to_entity_id, relation_type, confidence, source_ref, created_at)
+- `memory_observations` (id, user_id, entity_id, content, observed_at, confidence, source_ref, created_at)
+
+Tool/API contract direction:
+- `create_entities`
+- `create_relations`
+- `add_observations`
+- `search_memory_graph`
+- `open_memory_graph_nodes`
+
+Guardrails:
+- Persona-aware tool filtering via execution profile.
+- Full provenance (`source_session_id`, `source_task_id`, webhook/run linkage).
+- Confidence decay + conflict handling instead of silent overwrite.
+- No cross-user graph joins by default.
+
+Rollout:
+1. Ship graph tables + service layer behind feature flag.
+2. Add additive tool/API interfaces and admin diagnostics.
+3. Run recall/grounding evals in soak before default enablement.
+4. Keep cloud routing and graph memory decoupled; either can ship independently once Phase 6 gate is open.
 
 ---
 
@@ -1205,4 +1392,4 @@ If a fact changes, the agent creates a new memory and marks the old one `is_acti
 ---
 
 *FruitcakeAI v5 — Simpler. Smarter. Knows its people.* 🍰  
-*Phases 1–3 + Sprint 3.7 complete March 2026 · Phase 4 next*
+*Phases 1–3 + Sprint 3.7 complete March 2026 · 

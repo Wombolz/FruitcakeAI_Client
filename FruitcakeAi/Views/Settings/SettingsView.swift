@@ -20,6 +20,8 @@ struct SettingsView: View {
     @State private var serverURLInput: String = ""
     @State private var urlSaveState: URLSaveState = .idle
     @State private var showPersonaPicker = false
+    @State private var isSendingPushTest = false
+    @State private var pushTestMessage: String?
 
     enum URLSaveState { case idle, saved, error }
 
@@ -31,6 +33,7 @@ struct SettingsView: View {
                 accountSection
                 serverSection
                 personaSection
+                pushTestSection
                 memoriesSection
                 signOutSection
             }
@@ -150,6 +153,30 @@ struct SettingsView: View {
         }
     }
 
+    @ViewBuilder
+    private var pushTestSection: some View {
+        if authManager.currentUser?.isAdmin == true {
+            Section("Push Testing") {
+                Button {
+                    Task { await sendPushTest() }
+                } label: {
+                    if isSendingPushTest {
+                        ProgressView()
+                    } else {
+                        Label("Send Test Push", systemImage: "bell.badge")
+                    }
+                }
+                .disabled(isSendingPushTest)
+
+                if let pushTestMessage {
+                    Text(pushTestMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
     private var signOutSection: some View {
         Section {
             Button("Sign out", role: .destructive) {
@@ -189,6 +216,22 @@ struct SettingsView: View {
         Task {
             try? await Task.sleep(for: .seconds(2))
             urlSaveState = .idle
+        }
+    }
+
+    private func sendPushTest() async {
+        isSendingPushTest = true
+        defer { isSendingPushTest = false }
+
+        do {
+            let api = APIClient(authManager: authManager)
+            let message = try await api.sendTestPush(
+                title: "Fruitcake Test Push",
+                body: "Manual test from Settings."
+            )
+            pushTestMessage = message
+        } catch {
+            pushTestMessage = "Push test failed: \(error.localizedDescription)"
         }
     }
 }

@@ -23,6 +23,8 @@ struct TaskSummary: Identifiable, Codable {
     let error: String?
     let lastRunAt: Date?
     let nextRunAt: Date?
+    let currentStepTitle: String?
+    let waitingApprovalTool: String?
 
     // MARK: - Computed
 
@@ -51,6 +53,29 @@ struct TaskSummary: Identifiable, Codable {
 
     var isPendingApproval: Bool { status == "waiting_approval" }
     var isRunning: Bool { status == "running" }
+    var canStop: Bool { status == "running" || status == "pending" }
+
+    var approvalContextLabel: String {
+        if let step = currentStepTitle, !step.isEmpty {
+            return "Waiting on step: \(step)"
+        }
+        if let tool = waitingApprovalTool, !tool.isEmpty {
+            return "Approval needed for tool: \(tool)"
+        }
+        return "Approval required"
+    }
+}
+
+struct TaskStepSummary: Identifiable, Codable {
+    let id: Int
+    let stepIndex: Int
+    let title: String
+    let instruction: String
+    let status: String
+    let requiresApproval: Bool
+    let outputSummary: String?
+    let error: String?
+    let waitingApprovalTool: String?
 }
 
 // MARK: - CreateTaskRequest

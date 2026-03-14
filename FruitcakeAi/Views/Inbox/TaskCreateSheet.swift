@@ -22,6 +22,7 @@ struct TaskCreateSheet: View {
     @State private var customCron = ""
     @State private var deliver = true
     @State private var requiresApproval = false
+    @State private var runNow = true
     @State private var activeHoursEnabled = false
     @State private var activeHoursStart = "07:00"
     @State private var activeHoursEnd = "22:00"
@@ -95,7 +96,11 @@ struct TaskCreateSheet: View {
             }
             .formStyle(.grouped)
         }
+        #if os(macOS)
         .frame(width: 480, height: 520)
+        #else
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        #endif
     }
 
     // MARK: - Sections
@@ -149,6 +154,9 @@ struct TaskCreateSheet: View {
         Section("Options") {
             Toggle("Push when done", isOn: $deliver)
             Toggle("Require approval before acting", isOn: $requiresApproval)
+            if scheduleKey == "one_shot" {
+                Toggle("Run immediately after create", isOn: $runNow)
+            }
         }
     }
 
@@ -225,7 +233,10 @@ struct TaskCreateSheet: View {
 
         do {
             let api = APIClient(authManager: authManager)
-            _ = try await api.createTask(req)
+            let created = try await api.createTask(req)
+            if taskType == "one_shot" && runNow {
+                try await api.runTask(created.id)
+            }
             onCreated()
             dismiss()
         } catch {

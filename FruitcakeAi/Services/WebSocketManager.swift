@@ -59,7 +59,11 @@ final class WebSocketManager: NSObject {
 
     /// Sends a message and returns a fresh AsyncStream of events for this response.
     /// The stream finishes when a terminal event (.done, .error, .personaSwitched) arrives.
-    func sendAndReceive(_ content: String) throws -> AsyncStream<WSEvent> {
+    func sendAndReceive(
+        _ content: String,
+        allowedTools: [String]? = nil,
+        blockedTools: [String]? = nil
+    ) throws -> AsyncStream<WSEvent> {
         guard let task = webSocketTask, isConnected else {
             return AsyncStream { $0.finish() }
         }
@@ -70,8 +74,15 @@ final class WebSocketManager: NSObject {
         let (stream, continuation) = AsyncStream<WSEvent>.makeStream()
         responseContinuation = continuation
 
-        let payload = try JSONEncoder().encode(["content": content])
-        let text = String(data: payload, encoding: .utf8) ?? "{}"
+        var payload: [String: Any] = ["content": content]
+        if let allowedTools, !allowedTools.isEmpty {
+            payload["allowed_tools"] = allowedTools
+        }
+        if let blockedTools, !blockedTools.isEmpty {
+            payload["blocked_tools"] = blockedTools
+        }
+        let data = try JSONSerialization.data(withJSONObject: payload, options: [])
+        let text = String(data: data, encoding: .utf8) ?? "{}"
 
         Task {
             try await task.send(.string(text))

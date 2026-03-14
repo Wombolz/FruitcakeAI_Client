@@ -25,13 +25,20 @@ struct InboxView: View {
     // MARK: - Derived
 
     private var pendingApprovals: [TaskSummary] {
-        tasks.filter { $0.isPendingApproval }
+        tasks
+            .filter { $0.isPendingApproval }
+            .sorted { ($0.lastRunAt ?? .distantPast) > ($1.lastRunAt ?? .distantPast) }
     }
 
     private var recentTasks: [TaskSummary] {
         tasks
             .filter { !$0.isPendingApproval }
-            .sorted { ($0.lastRunAt ?? .distantPast) > ($1.lastRunAt ?? .distantPast) }
+            .sorted {
+                let lhsRank = statusRank($0.status)
+                let rhsRank = statusRank($1.status)
+                if lhsRank != rhsRank { return lhsRank < rhsRank }
+                return ($0.lastRunAt ?? .distantPast) > ($1.lastRunAt ?? .distantPast)
+            }
     }
 
     // MARK: - Body
@@ -63,6 +70,10 @@ struct InboxView: View {
                     Task { await loadTasks() }
                 }
                 .environment(authManager)
+                #if os(iOS)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                #endif
             }
             .refreshable { await loadTasks() }
             .task { await loadTasks() }
@@ -94,6 +105,7 @@ struct InboxView: View {
                             task: task,
                             onApprove: { Task { await approve(task, approved: true) } },
                             onReject:  { Task { await approve(task, approved: false) } },
+                            onStop:    { Task { await stop(task) } },
                             onDelete:  { Task { await delete(task) } }
                         )
                     }
@@ -107,6 +119,7 @@ struct InboxView: View {
                 ForEach(recentTasks) { task in
                     TaskRow(
                         task: task,
+                        onStop:        { Task { await stop(task) } },
                         onDelete:      { Task { await delete(task) } },
                         onReplyInChat: { Task { await replyInChat(task) } }
                     )
@@ -178,8 +191,17 @@ struct InboxView: View {
         do {
             let api = APIClient(authManager: authManager)
             try await api.deleteTask(task.id)
-            tasks.removeAll { $0.id == task.id }
-            onCountChanged(pendingApprovals.count)
+            await loadTasks()
+        } catch {
+            loadError = error.localizedDescription
+        }
+    }
+
+    private func stop(_ task: TaskSummary) async {
+        do {
+            let api = APIClient(authManager: authManager)
+            try await api.stopTask(task.id)
+            await loadTasks()
         } catch {
             loadError = error.localizedDescription
         }
@@ -198,6 +220,17 @@ struct InboxView: View {
             onReplyInChat?(sessionId)
         } catch {
             loadError = error.localizedDescription
+        }
+    }
+
+    private func statusRank(_ status: String) -> Int {
+        switch status {
+        case "running", "pending":
+            return 0
+        case "completed", "failed", "cancelled":
+            return 1
+        default:
+            return 2
         }
     }
 }

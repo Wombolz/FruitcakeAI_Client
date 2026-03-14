@@ -15,6 +15,7 @@ struct TaskRow: View {
     let task: TaskSummary
     var onApprove:     (() -> Void)? = nil
     var onReject:      (() -> Void)? = nil
+    var onStop:        (() -> Void)? = nil
     var onDelete:      (() -> Void)? = nil
     var onReplyInChat: (() -> Void)? = nil
 
@@ -37,7 +38,12 @@ struct TaskRow: View {
             }
 
             if task.isPendingApproval {
+                approvalCallout
                 approvalButtons
+            }
+
+            if task.canStop {
+                stopButton
             }
 
             if task.result != nil {
@@ -53,7 +59,7 @@ struct TaskRow: View {
             }
         }
         .sheet(isPresented: $showDetail) {
-            TaskDetailSheet(task: task)
+            TaskDetailSheet(task: task, onApprove: onApprove, onReject: onReject, onStop: onStop)
                 .environment(authManager)
         }
     }
@@ -76,7 +82,7 @@ struct TaskRow: View {
                     .foregroundStyle(.secondary)
             }
 
-            if task.result != nil {
+            if task.result != nil || task.isPendingApproval {
                 Button { showDetail = true } label: {
                     Image(systemName: "list.bullet.rectangle")
                         .imageScale(.small)
@@ -113,6 +119,27 @@ struct TaskRow: View {
             .lineLimit(2)
     }
 
+    private var approvalCallout: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(task.approvalContextLabel)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.orange)
+            if let tool = task.waitingApprovalTool, !tool.isEmpty {
+                Text("Tool: \(tool)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Button("Review Details") {
+                showDetail = true
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.mini)
+        }
+        .padding(8)
+        .background(.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+        .padding(.top, 4)
+    }
+
     @ViewBuilder
     private var resultRow: some View {
         if let result = task.result {
@@ -146,16 +173,20 @@ struct TaskRow: View {
 
                 if showResult {
                     ScrollView {
-                        Text(result)
-                            .font(.caption)
-                            .foregroundStyle(.primary)
-                            .multilineTextAlignment(.leading)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .textSelection(.enabled)
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(linkifiedAttributedString(result))
+                                .font(.callout)
+                                .lineSpacing(4)
+                                .foregroundStyle(.primary)
+                                .multilineTextAlignment(.leading)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .textSelection(.enabled)
+                                .tint(.accentColor)
+                        }
                     }
                     .frame(maxHeight: 200)
-                    .padding(8)
-                    .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+                    .padding(10)
+                    .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
                 }
             }
         }
@@ -166,6 +197,17 @@ struct TaskRow: View {
             onReplyInChat?()
         } label: {
             Label("Reply in Chat", systemImage: "bubble.left.and.text.bubble.right")
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .padding(.top, 2)
+    }
+
+    private var stopButton: some View {
+        Button(role: .destructive) {
+            onStop?()
+        } label: {
+            Label("Stop Task", systemImage: "stop.circle")
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
@@ -195,6 +237,39 @@ struct TaskRow: View {
         }
         .padding(.top, 2)
     }
+
+    private func linkifiedAttributedString(_ text: String) -> AttributedString {
+        // Preserve single newlines as markdown line breaks (two trailing spaces + newline)
+        // and convert double newlines to paragraph breaks.
+        let prepared = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\n\n", with: "\u{0000}PARA\u{0000}")  // protect double newlines
+            .replacingOccurrences(of: "\n", with: "  \n")                    // single \n → md line break
+            .replacingOccurrences(of: "\u{0000}PARA\u{0000}", with: "\n\n")  // restore paragraphs
+
+        let base: NSAttributedString
+        if let markdown = try? AttributedString(
+            markdown: prepared,
+            options: .init(
+                interpretedSyntax: .full,
+                failurePolicy: .returnPartiallyParsedIfPossible
+            )
+        ) {
+            base = NSAttributedString(markdown)
+        } else {
+            base = NSAttributedString(string: text)
+        }
+
+        let mutable = NSMutableAttributedString(attributedString: base)
+        let fullRange = NSRange(location: 0, length: (mutable.string as NSString).length)
+        if let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) {
+            detector.enumerateMatches(in: mutable.string, options: [], range: fullRange) { match, _, _ in
+                guard let match, let url = match.url else { return }
+                mutable.addAttribute(.link, value: url, range: match.range)
+            }
+        }
+        return AttributedString(mutable)
+    }
 }
 
 // MARK: - Preview
@@ -214,6 +289,9 @@ struct TaskRow: View {
             error: nil,
             lastRunAt: Date(),
             nextRunAt: Calendar.current.date(byAdding: .day, value: 1, to: Date())
+            ,
+            currentStepTitle: nil,
+            waitingApprovalTool: nil
         ))
     }
 }
@@ -233,7 +311,9 @@ struct TaskRow: View {
                 result: nil,
                 error: nil,
                 lastRunAt: nil,
-                nextRunAt: nil
+                nextRunAt: nil,
+                currentStepTitle: "Create calendar event",
+                waitingApprovalTool: "create_event"
             ),
             onApprove: { print("Approved") },
             onReject:  { print("Rejected") }
@@ -255,7 +335,9 @@ struct TaskRow: View {
             result: nil,
             error: "LLM call failed: connection timeout after 30s",
             lastRunAt: Date(timeIntervalSinceNow: -3600),
-            nextRunAt: Date(timeIntervalSinceNow: 1800)
+            nextRunAt: Date(timeIntervalSinceNow: 1800),
+            currentStepTitle: nil,
+            waitingApprovalTool: nil
         ))
     }
 }

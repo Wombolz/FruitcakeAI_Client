@@ -11,7 +11,11 @@ struct FruitcakeAiApp: App {
 
     // MARK: - APNs delegate bridge
 
+    #if os(iOS)
+    @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    #elseif os(macOS)
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    #endif
 
     // MARK: - Services (shared singletons)
 

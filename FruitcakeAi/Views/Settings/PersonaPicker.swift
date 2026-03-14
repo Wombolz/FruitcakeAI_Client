@@ -15,10 +15,10 @@ import SwiftUI
 // MARK: - API type
 
 struct PersonaInfo: Codable {
-    let description: String
-    let tone: String
-    let blockedTools: [String]
-    let contentFilter: String
+    let description: String?
+    let tone: String?
+    let blockedTools: [String]?
+    let contentFilter: String?
 
     enum CodingKeys: String, CodingKey {
         case description, tone
@@ -140,23 +140,23 @@ private struct PersonaRow: View {
                     }
                 }
 
-                if !info.description.isEmpty {
-                    Text(info.description)
+                if let description = info.description, !description.isEmpty {
+                    Text(description)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
                 HStack(spacing: 8) {
-                    if !info.tone.isEmpty {
-                        Badge(text: info.tone, icon: "waveform", color: .blue)
+                    if let tone = info.tone, !tone.isEmpty {
+                        Badge(text: tone, icon: "waveform", color: .blue)
                     }
                     if info.contentFilter == "strict" {
                         Badge(text: "Kids safe", icon: "shield.fill", color: .green)
                     }
-                    if !info.blockedTools.isEmpty {
+                    if let blocked = info.blockedTools, !blocked.isEmpty {
                         Badge(
-                            text: "\(info.blockedTools.count) tools restricted",
+                            text: "\(blocked.count) tools restricted",
                             icon: "minus.circle",
                             color: .orange
                         )
