@@ -184,7 +184,7 @@ struct MemoriesView: View {
 
 // MARK: - MemoryRow
 
-struct MemoryRow: View {
+private struct MemoryRow: View {
 
     let memory: MemorySummary
 

@@ -19,12 +19,6 @@ struct PersonaInfo: Codable {
     let tone: String?
     let blockedTools: [String]?
     let contentFilter: String?
-
-    enum CodingKeys: String, CodingKey {
-        case description, tone
-        case blockedTools    = "blocked_tools"
-        case contentFilter   = "content_filter"
-    }
 }
 
 // MARK: - PersonaPicker
@@ -78,12 +72,14 @@ struct PersonaPicker: View {
 
     private var personaList: some View {
         List(personas.keys.sorted(), id: \.self) { name in
-            PersonaRow(
-                name: name,
-                info: personas[name]!,
-                isSelected: name == selectedPersona
-            ) {
-                selectPersona(name)
+            if let info = personas[name] {
+                PersonaRow(
+                    name: name,
+                    info: info,
+                    isSelected: name == selectedPersona
+                ) {
+                    selectPersona(name)
+                }
             }
         }
         #if os(iOS)

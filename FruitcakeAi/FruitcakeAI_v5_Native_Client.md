@@ -165,7 +165,7 @@ Uses `URLSession` with async/await. All requests include the JWT bearer token fr
 
 ```swift
 class APIClient {
-    let baseURL: URL       // e.g. http://192.168.1.100:8000
+    let baseURL: URL       // e.g. http://192.168.1.100:30417
     let authManager: AuthManager
 
     func sendMessage(sessionId: UUID, content: String) async throws -> ChatResponse {
@@ -287,7 +287,7 @@ class CachedConversation {
 
 @Model
 class ServerConfig {
-    var serverURL: String     // e.g. "http://192.168.1.100:8000"
+    var serverURL: String     // e.g. "http://192.168.1.100:30417"
     var isDefault: Bool
 }
 ```
