@@ -1102,7 +1102,7 @@ Verification highlights:
 
 Target repository layout:
 - `FruitcakeAI` = backend/runtime app (current `fruitcake_v5` codebase)
-- `FruitcakeAI_iOS` = Swift client app (current `FruitcakeAi` codebase)
+- `FruitcakeAI_Client` = shared Apple client app for iOS and macOS (current `FruitcakeAi` codebase)
 
 **Scope**
 - Repo rename/move with full git history preservation.
@@ -1125,8 +1125,8 @@ Target repository layout:
 - Update remotes, badges, clone URLs, and contributor docs.
 - Validate backend startup, MCP health, and full test suite.
 
-**Sprint 5.6.3 — iOS repo transition**
-- Rename/move Swift repo identity to `FruitcakeAI_iOS`.
+**Sprint 5.6.3 — Swift client repo transition**
+- Rename/move Swift repo identity to `FruitcakeAI_Client`.
 - Update project docs, build references, and CI workflows.
 - Validate simulator/device build and API connectivity.
 

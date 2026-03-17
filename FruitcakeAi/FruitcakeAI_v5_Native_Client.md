@@ -2,8 +2,8 @@
 
 **Context**: This document describes the native iOS/macOS Swift client that replaces the React frontend in Phase 3 of the FruitcakeAI v5 roadmap. The Python backend (FastAPI + LiteLLM + LlamaIndex RAG + MCP tools) is built separately and unchanged. This client consumes its API.
 
-**Xcode Project**: `/Users/jwomble/Development/FruitcakeAi/`  
-**Python Backend**: `/Users/jwomble/Development/fruitcake_v5/`
+**Repository**: `FruitcakeAI_Client`  
+**Backend Repository**: `FruitcakeAI`
 
 ---
 
@@ -301,7 +301,7 @@ Store JWT tokens and server credentials in Keychain, never in SwiftData or UserD
 ## Project Structure
 
 ```
-FruitcakeAi/
+FruitcakeAI_Client/
 ├── App/
 │   └── FruitcakeAiApp.swift
 ├── Models/
