@@ -21,6 +21,7 @@ struct InboxView: View {
     @State private var isLoading = false
     @State private var showCreate = false
     @State private var loadError: String?
+    @State private var isVisible = false
 
     // MARK: - Derived
 
@@ -77,6 +78,16 @@ struct InboxView: View {
             }
             .refreshable { await loadTasks() }
             .task { await loadTasks() }
+            .task(id: isVisible) {
+                guard isVisible else { return }
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(15))
+                    guard !Task.isCancelled else { break }
+                    await loadTasks()
+                }
+            }
+            .onAppear { isVisible = true }
+            .onDisappear { isVisible = false }
             .overlay {
                 if let error = loadError {
                     VStack {
