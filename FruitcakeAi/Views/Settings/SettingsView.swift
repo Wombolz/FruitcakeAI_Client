@@ -37,7 +37,10 @@ struct SettingsView: View {
                 memoriesSection
                 signOutSection
             }
+            .formStyle(.grouped)
             .navigationTitle("Settings")
+            .frame(maxWidth: 600)
+            .frame(maxWidth: .infinity)  // centers the constrained form
             .sheet(isPresented: $showPersonaPicker) {
                 PersonaPicker()
             }

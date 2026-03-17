@@ -54,6 +54,8 @@ struct TaskSummary: Identifiable, Codable {
     var isPendingApproval: Bool { status == "waiting_approval" }
     var isRunning: Bool { status == "running" }
     var canStop: Bool { status == "running" || status == "pending" }
+    var canRun: Bool { status == "completed" || status == "failed" || status == "cancelled" }
+    var canReset: Bool { status == "completed" || status == "failed" || status == "cancelled" }
 
     var approvalContextLabel: String {
         if let step = currentStepTitle, !step.isEmpty {

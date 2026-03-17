@@ -17,6 +17,8 @@ struct TaskDetailSheet: View {
     var onApprove: (() -> Void)? = nil
     var onReject: (() -> Void)? = nil
     var onStop: (() -> Void)? = nil
+    var onRun: (() -> Void)? = nil
+    var onReset: (() -> Void)? = nil
 
     @State private var audit: TaskAuditOut? = nil
     @State private var steps: [TaskStepSummary] = []
@@ -76,13 +78,42 @@ struct TaskDetailSheet: View {
                         }
                     }
 
-                    if task.canStop {
-                        Section {
-                            Button(role: .destructive) {
-                                onStop?()
-                                dismiss()
-                            } label: {
-                                Label("Stop Task", systemImage: "stop.circle")
+                    if task.canStop || task.canRun || task.canReset {
+                        Section("Actions") {
+                            HStack(spacing: 10) {
+                                if task.canRun {
+                                    Button {
+                                        onRun?()
+                                        dismiss()
+                                    } label: {
+                                        Label("Run", systemImage: "play.circle")
+                                            .frame(maxWidth: .infinity)
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .tint(.blue)
+                                }
+
+                                if task.canReset {
+                                    Button {
+                                        onReset?()
+                                        dismiss()
+                                    } label: {
+                                        Label("Reset", systemImage: "arrow.counterclockwise.circle")
+                                            .frame(maxWidth: .infinity)
+                                    }
+                                    .buttonStyle(.bordered)
+                                }
+
+                                if task.canStop {
+                                    Button(role: .destructive) {
+                                        onStop?()
+                                        dismiss()
+                                    } label: {
+                                        Label("Stop", systemImage: "stop.circle")
+                                            .frame(maxWidth: .infinity)
+                                    }
+                                    .buttonStyle(.bordered)
+                                }
                             }
                         }
                     }
@@ -131,6 +162,7 @@ struct TaskDetailSheet: View {
             }
         }
         .task { await load() }
+        .frame(minWidth: 400, idealWidth: 500, minHeight: 400, idealHeight: 550)
     }
 
     // MARK: - Tool call row

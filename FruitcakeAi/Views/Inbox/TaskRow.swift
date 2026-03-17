@@ -16,6 +16,8 @@ struct TaskRow: View {
     var onApprove:     (() -> Void)? = nil
     var onReject:      (() -> Void)? = nil
     var onStop:        (() -> Void)? = nil
+    var onRun:         (() -> Void)? = nil
+    var onReset:       (() -> Void)? = nil
     var onDelete:      (() -> Void)? = nil
     var onReplyInChat: (() -> Void)? = nil
 
@@ -59,7 +61,7 @@ struct TaskRow: View {
             }
         }
         .sheet(isPresented: $showDetail) {
-            TaskDetailSheet(task: task, onApprove: onApprove, onReject: onReject, onStop: onStop)
+            TaskDetailSheet(task: task, onApprove: onApprove, onReject: onReject, onStop: onStop, onRun: onRun, onReset: onReset)
                 .environment(authManager)
         }
     }

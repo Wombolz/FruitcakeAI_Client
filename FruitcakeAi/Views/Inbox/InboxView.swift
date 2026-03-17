@@ -106,6 +106,8 @@ struct InboxView: View {
                             onApprove: { Task { await approve(task, approved: true) } },
                             onReject:  { Task { await approve(task, approved: false) } },
                             onStop:    { Task { await stop(task) } },
+                            onRun:     { Task { await run(task) } },
+                            onReset:   { Task { await reset(task) } },
                             onDelete:  { Task { await delete(task) } }
                         )
                     }
@@ -120,6 +122,8 @@ struct InboxView: View {
                     TaskRow(
                         task: task,
                         onStop:        { Task { await stop(task) } },
+                        onRun:         { Task { await run(task) } },
+                        onReset:       { Task { await reset(task) } },
                         onDelete:      { Task { await delete(task) } },
                         onReplyInChat: { Task { await replyInChat(task) } }
                     )
@@ -201,6 +205,26 @@ struct InboxView: View {
         do {
             let api = APIClient(authManager: authManager)
             try await api.stopTask(task.id)
+            await loadTasks()
+        } catch {
+            loadError = error.localizedDescription
+        }
+    }
+
+    private func run(_ task: TaskSummary) async {
+        do {
+            let api = APIClient(authManager: authManager)
+            try await api.runTask(task.id)
+            await loadTasks()
+        } catch {
+            loadError = error.localizedDescription
+        }
+    }
+
+    private func reset(_ task: TaskSummary) async {
+        do {
+            let api = APIClient(authManager: authManager)
+            try await api.resetTask(task.id)
             await loadTasks()
         } catch {
             loadError = error.localizedDescription

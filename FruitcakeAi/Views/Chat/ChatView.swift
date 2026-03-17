@@ -46,6 +46,12 @@ private struct HistoryMessage: Codable {
     let id: Int
     let role: String
     let content: String
+    let createdAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id, role, content
+        case createdAt = "created_at"
+    }
 }
 
 private struct ChatToolsResponse: Decodable {
@@ -640,7 +646,12 @@ struct ChatView: View {
         let api = APIClient(authManager: authManager)
         if let history: SessionHistoryResponse = try? await api.request("/chat/sessions/\(sessionId)") {
             messages = history.messages.map {
-                CachedMessage(serverMessageId: $0.id, role: $0.role, content: $0.content)
+                CachedMessage(
+                    serverMessageId: $0.id,
+                    role: $0.role,
+                    content: $0.content,
+                    timestamp: $0.createdAt
+                )
             }
         }
 

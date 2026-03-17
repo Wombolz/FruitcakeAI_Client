@@ -170,6 +170,10 @@ final class APIClient {
         try await requestVoid("/tasks/\(id)/stop", method: "POST")
     }
 
+    func resetTask(_ id: Int) async throws {
+        try await requestVoid("/tasks/\(id)/reset", method: "POST")
+    }
+
     // MARK: - Memories (Phase 4)
 
     func fetchMemories(type: String? = nil) async throws -> [MemorySummary] {

@@ -53,6 +53,7 @@ struct PersonaPicker: View {
                 }
                 .task { await loadPersonas() }
         }
+    .frame(minWidth: 400, idealWidth: 500, minHeight: 400, idealHeight: 550)
     }
 
     // MARK: - Content
@@ -152,7 +153,7 @@ private struct PersonaRow: View {
                         Badge(text: tone, icon: "waveform", color: .blue)
                     }
                     if info.contentFilter == "strict" {
-                        Badge(text: "Kids safe", icon: "shield.fill", color: .green)
+                        Badge(text: "Filtered access", icon: "shield.fill", color: .green)
                     }
                     if let blocked = info.blockedTools, !blocked.isEmpty {
                         Badge(
