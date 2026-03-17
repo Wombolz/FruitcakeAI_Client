@@ -46,6 +46,41 @@ private struct HistoryMessage: Codable {
     let id: Int
     let role: String
     let content: String
+    let createdAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id, role, content
+        case createdAt = "created_at"
+    }
+}
+
+private struct ChatToolsResponse: Decodable {
+    let persona: String
+    let tools: [String]
+    let blockedTools: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case persona, tools
+        case blockedTools = "blocked_tools"
+    }
+}
+
+private struct ChatPersonaInfo: Decodable {
+    let description: String?
+    let tone: String?
+    let blockedTools: [String]?
+    let contentFilter: String?
+
+    enum CodingKeys: String, CodingKey {
+        case description, tone
+        case blockedTools = "blocked_tools"
+        case contentFilter = "content_filter"
+    }
+}
+
+private struct SessionToolOverrides {
+    var allowedTools: [String] = []
+    var blockedTools: [String] = []
 }
 
 // MARK: - ChatView
@@ -56,6 +91,9 @@ struct ChatView: View {
     @Environment(ConnectivityMonitor.self) private var connectivity
     @Environment(OnDeviceAgent.self) private var onDeviceAgent
     @Environment(\.modelContext) private var modelContext
+
+    /// Set from InboxView's "Reply in Chat" to auto-navigate to a session.
+    @Binding var openSessionId: Int?
 
     @Query(sort: \CachedConversation.lastActivity, order: .reverse)
     private var localConversations: [CachedConversation]
@@ -74,7 +112,18 @@ struct ChatView: View {
     @State private var inputText: String = ""
     @State private var loadingError: String?
     @State private var deleteError: String?
+    @State private var renameError: String?
     @State private var isSending: Bool = false
+    @State private var renameTarget: SessionSummary?
+    @State private var renameInput: String = ""
+    @State private var showProfileSheet: Bool = false
+    @State private var availablePersonas: [String] = []
+    @State private var availableTools: [String] = []
+    @State private var sessionToolOverrides: [Int: SessionToolOverrides] = [:]
+    @State private var profilePersona: String = "family_assistant"
+    @State private var profileAllowedCSV: String = ""
+    @State private var profileBlockedCSV: String = ""
+    @State private var profileError: String?
 
     @State private var wsManager = WebSocketManager()
 
@@ -96,10 +145,24 @@ struct ChatView: View {
                 )
             }
         }
-        .task { await loadSessions() }
+        .task {
+            await loadSessions()
+            await loadChatCapabilities()
+        }
         .onChange(of: selectedSession?.id) { _, newId in
             guard let newId else { return }
             Task { await switchSession(sessionId: newId) }
+        }
+        .onChange(of: openSessionId) { _, id in
+            guard let id else { return }
+            openSessionId = nil
+            // Reload sessions then select the new one
+            Task {
+                await loadSessions()
+                if let match = sessions.first(where: { $0.id == id }) {
+                    selectedSession = match
+                }
+            }
         }
         .overlay(alignment: .top) {
             if let deleteError {
@@ -111,6 +174,85 @@ struct ChatView: View {
                     .clipShape(Capsule())
                     .padding(.top, 8)
                     .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .sheet(item: $renameTarget) { session in
+            NavigationStack {
+                Form {
+                    Section("Title") {
+                        TextField("Conversation title", text: $renameInput)
+                    }
+                    if let renameError {
+                        Section {
+                            Text(renameError)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
+                    }
+                }
+                .navigationTitle("Rename Conversation")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") {
+                            renameError = nil
+                            renameTarget = nil
+                        }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Save") {
+                            Task { await renameSession(session) }
+                        }
+                        .disabled(renameInput.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showProfileSheet) {
+            NavigationStack {
+                Form {
+                    Section("Persona") {
+                        Picker("Persona", selection: $profilePersona) {
+                            ForEach(availablePersonas, id: \.self) { persona in
+                                Text(persona.replacingOccurrences(of: "_", with: " ").capitalized).tag(persona)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                    }
+                    Section("Allowed Tools (comma separated)") {
+                        TextField("search_library, web_search", text: $profileAllowedCSV)
+                    }
+                    Section("Blocked Tools (comma separated)") {
+                        TextField("fetch_page", text: $profileBlockedCSV)
+                    }
+                    if !availableTools.isEmpty {
+                        Section("Available Tools") {
+                            Text(availableTools.joined(separator: ", "))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    if let profileError {
+                        Section {
+                            Text(profileError)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
+                    }
+                }
+                .navigationTitle("Chat Profile")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") {
+                            profileError = nil
+                            showProfileSheet = false
+                        }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Save") {
+                            Task { await saveProfileSettings() }
+                        }
+                    }
+                }
             }
         }
     }
@@ -130,6 +272,11 @@ struct ChatView: View {
                 }
                 .tag(session)
                 .contextMenu {
+                    Button("Rename") {
+                        renameInput = session.displayTitle
+                        renameError = nil
+                        renameTarget = session
+                    }
                     Button("Delete", role: .destructive) {
                         Task { await deleteSession(session) }
                     }
@@ -161,6 +308,15 @@ struct ChatView: View {
             } label: {
                 Label("New Conversation", systemImage: "plus")
             }
+        }
+        ToolbarItem(placement: .automatic) {
+            Button {
+                prepareProfileEditor()
+                showProfileSheet = true
+            } label: {
+                Label("Profile", systemImage: "slider.horizontal.3")
+            }
+            .disabled(selectedSession == nil)
         }
         ToolbarItem(placement: .navigation) {
             Button("Sign out") { authManager.logout() }
@@ -211,7 +367,9 @@ struct ChatView: View {
             inputBar(sessionId: session.id)
         }
         .navigationTitle(session.displayTitle)
+        #if os(macOS)
         .navigationSubtitle(session.persona.replacingOccurrences(of: "_", with: " ").capitalized)
+        #endif
     }
 
     private var streamingBubble: some View {
@@ -283,6 +441,78 @@ struct ChatView: View {
         }
     }
 
+    private func loadChatCapabilities() async {
+        guard connectivity.isBackendReachable else { return }
+        let api = APIClient(authManager: authManager)
+        do {
+            let personas: [String: ChatPersonaInfo] = try await api.request("/chat/personas")
+            availablePersonas = personas.keys.sorted()
+            let toolsResp: ChatToolsResponse = try await api.request("/chat/tools")
+            availableTools = toolsResp.tools.sorted()
+        } catch {
+            loadingError = error.localizedDescription
+        }
+    }
+
+    private func prepareProfileEditor() {
+        guard let selected = selectedSession else { return }
+        profilePersona = selected.persona
+        let overrides = sessionToolOverrides[selected.id] ?? SessionToolOverrides()
+        profileAllowedCSV = overrides.allowedTools.joined(separator: ", ")
+        profileBlockedCSV = overrides.blockedTools.joined(separator: ", ")
+        profileError = nil
+    }
+
+    private func saveProfileSettings() async {
+        guard let selected = selectedSession else { return }
+        guard connectivity.isBackendReachable else {
+            profileError = "Backend is not reachable."
+            return
+        }
+
+        let parsedAllowed = parseCSV(profileAllowedCSV)
+        let parsedBlocked = parseCSV(profileBlockedCSV)
+        sessionToolOverrides[selected.id] = SessionToolOverrides(
+            allowedTools: parsedAllowed,
+            blockedTools: parsedBlocked
+        )
+
+        struct PersonaBody: Encodable { let persona: String }
+        let api = APIClient(authManager: authManager)
+        do {
+            let updated: SessionSummary = try await api.request(
+                "/chat/sessions/\(selected.id)/persona",
+                method: "PATCH",
+                body: PersonaBody(persona: profilePersona)
+            )
+            if let idx = sessions.firstIndex(where: { $0.id == selected.id }) {
+                sessions[idx] = updated
+            }
+            if selectedSession?.id == selected.id {
+                selectedSession = updated
+            }
+            if selectedConversation?.serverSessionId == selected.id {
+                selectedConversation?.persona = updated.persona
+                try? modelContext.save()
+            }
+            profileError = nil
+            showProfileSheet = false
+        } catch {
+            profileError = "Could not save chat profile."
+        }
+    }
+
+    private func parseCSV(_ value: String) -> [String] {
+        Array(
+            Set(
+                value
+                    .split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+            )
+        ).sorted()
+    }
+
     private func createSession() async {
         let api = APIClient(authManager: authManager)
         do {
@@ -347,6 +577,47 @@ struct ChatView: View {
         }
     }
 
+    private func renameSession(_ session: SessionSummary) async {
+        let newTitle = renameInput.trimmingCharacters(in: .whitespaces)
+        guard !newTitle.isEmpty else {
+            renameError = "Title cannot be blank."
+            return
+        }
+        guard connectivity.isBackendReachable else {
+            renameError = "Backend is not reachable."
+            return
+        }
+
+        struct RenameBody: Encodable { let title: String }
+        let api = APIClient(authManager: authManager)
+        do {
+            let updated: SessionSummary = try await api.request(
+                "/chat/sessions/\(session.id)",
+                method: "PATCH",
+                body: RenameBody(title: newTitle)
+            )
+
+            if let idx = sessions.firstIndex(where: { $0.id == session.id }) {
+                sessions[idx] = updated
+            }
+            if selectedSession?.id == session.id {
+                selectedSession = updated
+            }
+            if let cached = localConversations.first(where: { $0.serverSessionId == session.id }) {
+                cached.title = updated.displayTitle
+                try? modelContext.save()
+            }
+            if selectedConversation?.serverSessionId == session.id {
+                selectedConversation?.title = updated.displayTitle
+            }
+
+            renameError = nil
+            renameTarget = nil
+        } catch {
+            renameError = "Could not rename conversation."
+        }
+    }
+
     private func deleteSessions(at offsets: IndexSet) async {
         // Snapshot the sessions to delete before indices shift
         let toDelete = offsets.map { sessions[$0] }
@@ -375,7 +646,12 @@ struct ChatView: View {
         let api = APIClient(authManager: authManager)
         if let history: SessionHistoryResponse = try? await api.request("/chat/sessions/\(sessionId)") {
             messages = history.messages.map {
-                CachedMessage(serverMessageId: $0.id, role: $0.role, content: $0.content)
+                CachedMessage(
+                    serverMessageId: $0.id,
+                    role: $0.role,
+                    content: $0.content,
+                    timestamp: $0.createdAt
+                )
             }
         }
 
@@ -390,6 +666,7 @@ struct ChatView: View {
         isSending = true
         showToolIndicator = true
         streamingContent = ""
+        let overrides = sessionToolOverrides[sessionId] ?? SessionToolOverrides()
 
         // Optimistic user message
         let userMsg = CachedMessage(role: "user", content: text)
@@ -407,7 +684,7 @@ struct ChatView: View {
 
         guard wsManager.isConnected else {
             // Backend reachable but WebSocket not yet connected → REST POST
-            await sendViaREST(text, sessionId: sessionId)
+            await sendViaREST(text, sessionId: sessionId, overrides: overrides)
             isSending = false
             showToolIndicator = false
             return
@@ -415,7 +692,11 @@ struct ChatView: View {
 
         let responseStream: AsyncStream<WSEvent>
         do {
-            responseStream = try wsManager.sendAndReceive(text)
+            responseStream = try wsManager.sendAndReceive(
+                text,
+                allowedTools: overrides.allowedTools,
+                blockedTools: overrides.blockedTools
+            )
         } catch {
             loadingError = error.localizedDescription
             isSending = false
@@ -451,6 +732,9 @@ struct ChatView: View {
                 if let idx = sessions.firstIndex(where: { $0.id == sessionId }) {
                     let old = sessions[idx]
                     sessions[idx] = SessionSummary(id: old.id, title: old.title, persona: name, llmModel: old.llmModel)
+                    if selectedSession?.id == sessionId {
+                        selectedSession = sessions[idx]
+                    }
                 }
                 selectedConversation?.persona = name
 
@@ -489,15 +773,29 @@ struct ChatView: View {
         selectedConversation?.lastActivity = .now
     }
 
-    private func sendViaREST(_ text: String, sessionId: Int) async {
-        struct SendBody: Encodable { let content: String }
+    private func sendViaREST(_ text: String, sessionId: Int, overrides: SessionToolOverrides) async {
+        struct SendBody: Encodable {
+            let content: String
+            let allowedTools: [String]?
+            let blockedTools: [String]?
+
+            enum CodingKeys: String, CodingKey {
+                case content
+                case allowedTools = "allowed_tools"
+                case blockedTools = "blocked_tools"
+            }
+        }
         struct SendResponse: Decodable { let role: String; let content: String }
         let api = APIClient(authManager: authManager)
         do {
             let resp: SendResponse = try await api.request(
                 "/chat/sessions/\(sessionId)/messages",
                 method: "POST",
-                body: SendBody(content: text),
+                body: SendBody(
+                    content: text,
+                    allowedTools: overrides.allowedTools.isEmpty ? nil : overrides.allowedTools,
+                    blockedTools: overrides.blockedTools.isEmpty ? nil : overrides.blockedTools
+                ),
                 timeout: 120
             )
             let msg = CachedMessage(role: resp.role, content: resp.content)
@@ -521,7 +819,7 @@ extension SessionSummary: Hashable, Equatable {
 }
 
 #Preview {
-    ChatView()
+    ChatView(openSessionId: .constant(nil))
         .environment(AuthManager())
         .environment(ConnectivityMonitor(authManager: AuthManager()))
         .environment(OnDeviceAgent())
