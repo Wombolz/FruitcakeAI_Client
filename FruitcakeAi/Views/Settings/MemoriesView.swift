@@ -25,9 +25,10 @@ struct MemoriesView: View {
 
     private var displayed: [MemorySummary] {
         memories.filter { memory in
+            let matchesType = filterType == nil || memory.memoryType == filterType
             let matchesSearch = searchText.isEmpty ||
                 memory.content.localizedCaseInsensitiveContains(searchText)
-            return matchesSearch
+            return matchesType && matchesSearch
         }
     }
 
@@ -184,7 +185,7 @@ struct MemoriesView: View {
 
 // MARK: - MemoryRow
 
-struct MemoryRow: View {
+private struct MemoryRow: View {
 
     let memory: MemorySummary
 

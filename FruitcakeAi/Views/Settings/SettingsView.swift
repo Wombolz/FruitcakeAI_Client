@@ -73,7 +73,7 @@ struct SettingsView: View {
 
     private var serverSection: some View {
         Section {
-            TextField("http://192.168.1.x:8000", text: $serverURLInput)
+            TextField("http://192.168.1.x:30417", text: $serverURLInput)
                 .textContentType(.URL)
                 .autocorrectionDisabled()
                 #if os(iOS)
@@ -124,7 +124,7 @@ struct SettingsView: View {
         } header: {
             Text("Server")
         } footer: {
-            Text("Enter the IP address and port of your FruitcakeAI backend (e.g. http://192.168.1.100:8000).")
+            Text("Enter the IP address and port of your FruitcakeAI backend (e.g. http://192.168.1.100:30417).")
         }
     }
 

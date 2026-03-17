@@ -229,7 +229,7 @@ struct LibraryView: View {
 
     private func startPollingIfNeeded() {
         guard documents.contains(where: { $0.processingStatus == "processing" }) else { return }
-        guard pollingTask == nil || pollingTask!.isCancelled else { return }
+        guard pollingTask?.isCancelled ?? true else { return }
         pollingTask = Task {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(5))
@@ -301,6 +301,7 @@ private struct SemanticSearchSheet: View {
     @State private var query = ""
     @State private var results: [SemanticResult] = []
     @State private var isSearching = false
+    @State private var searchError: String?
 
     var body: some View {
         NavigationStack {
@@ -319,7 +320,13 @@ private struct SemanticSearchSheet: View {
                 .padding(.vertical, 2)
             }
             .overlay {
-                if results.isEmpty && !isSearching {
+                if let searchError {
+                    ContentUnavailableView(
+                        "Search failed",
+                        systemImage: "exclamationmark.triangle",
+                        description: Text(searchError)
+                    )
+                } else if results.isEmpty && !isSearching {
                     ContentUnavailableView(
                         "Search your library",
                         systemImage: "doc.text.magnifyingglass",
@@ -350,6 +357,7 @@ private struct SemanticSearchSheet: View {
     private func runSearch() async {
         guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         isSearching = true
+        searchError = nil
         defer { isSearching = false }
         do {
             struct QueryResult: Decodable {
@@ -368,7 +376,7 @@ private struct SemanticSearchSheet: View {
                                filename: $0.metadata["filename"] ?? "Unknown")
             }
         } catch {
-            // silently show empty results on error
+            searchError = error.localizedDescription
         }
     }
 }

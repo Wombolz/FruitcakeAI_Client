@@ -83,27 +83,6 @@ struct MessageBubble: View {
 
 // MARK: - Asymmetric rounded corners helper
 
-private extension Shape where Self == RoundedRectangle {
-    func corners(topLeft: CGFloat, topRight: CGFloat, bottomLeft: CGFloat, bottomRight: CGFloat) -> some Shape {
-        self
-    }
-}
-
-// SwiftUI doesn't have a built-in per-corner shape — use UnevenRoundedRectangle (iOS 16+)
-private extension View {
-    @ViewBuilder
-    func clipShape(topLeft: CGFloat, topRight: CGFloat, bottomLeft: CGFloat, bottomRight: CGFloat) -> some View {
-        clipShape(
-            UnevenRoundedRectangle(
-                topLeadingRadius: topLeft,
-                bottomLeadingRadius: bottomLeft,
-                bottomTrailingRadius: bottomRight,
-                topTrailingRadius: topRight
-            )
-        )
-    }
-}
-
 private extension RoundedRectangle {
     func corners(topLeft: CGFloat, topRight: CGFloat, bottomLeft: CGFloat, bottomRight: CGFloat) -> UnevenRoundedRectangle {
         UnevenRoundedRectangle(

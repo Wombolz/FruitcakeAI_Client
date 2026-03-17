@@ -64,7 +64,7 @@ struct LoginView: View {
 
     @State private var username = ""
     @State private var password = ""
-    @State private var serverURL = "http://localhost:8000"
+    @State private var serverURL = "http://localhost:30417"
     @State private var loginError: String?
     @State private var loading = false
 

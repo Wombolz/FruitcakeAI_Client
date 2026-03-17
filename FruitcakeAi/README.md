@@ -45,7 +45,7 @@ Set up and run the backend from the `FruitcakeAI` repo.
 
 Expected local backend default:
 
-- `http://localhost:8000`
+- `http://localhost:30417`
 
 For a second machine or phone on LAN, point the client to the reachable backend host/IP instead.
 

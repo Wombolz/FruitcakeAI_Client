@@ -18,6 +18,8 @@ struct UserProfile: Codable, Equatable {
     let libraryScopes: [String]
     let isActive: Bool
 
+    // Decoded via plain JSONDecoder in AuthManager (not APIClient),
+    // so snake_case CodingKeys are required here.
     enum CodingKeys: String, CodingKey {
         case id, username, email, role, persona
         case fullName      = "full_name"

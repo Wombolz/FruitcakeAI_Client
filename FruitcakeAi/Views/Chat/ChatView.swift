@@ -21,11 +21,6 @@ private struct SessionSummary: Codable, Identifiable {
     let persona: String
     let llmModel: String?
 
-    enum CodingKeys: String, CodingKey {
-        case id, title, persona
-        case llmModel = "llm_model"
-    }
-
     var displayTitle: String { title ?? "Conversation \(id)" }
 }
 
@@ -47,22 +42,12 @@ private struct HistoryMessage: Codable {
     let role: String
     let content: String
     let createdAt: Date
-
-    enum CodingKeys: String, CodingKey {
-        case id, role, content
-        case createdAt = "created_at"
-    }
 }
 
 private struct ChatToolsResponse: Decodable {
     let persona: String
     let tools: [String]
     let blockedTools: [String]
-
-    enum CodingKeys: String, CodingKey {
-        case persona, tools
-        case blockedTools = "blocked_tools"
-    }
 }
 
 private struct ChatPersonaInfo: Decodable {
@@ -70,12 +55,6 @@ private struct ChatPersonaInfo: Decodable {
     let tone: String?
     let blockedTools: [String]?
     let contentFilter: String?
-
-    enum CodingKeys: String, CodingKey {
-        case description, tone
-        case blockedTools = "blocked_tools"
-        case contentFilter = "content_filter"
-    }
 }
 
 private struct SessionToolOverrides {
@@ -148,6 +127,13 @@ struct ChatView: View {
         .task {
             await loadSessions()
             await loadChatCapabilities()
+        }
+        .onChange(of: connectivity.isBackendReachable) { _, reachable in
+            guard reachable else { return }
+            Task {
+                await loadSessions()
+                await loadChatCapabilities()
+            }
         }
         .onChange(of: selectedSession?.id) { _, newId in
             guard let newId else { return }
@@ -644,7 +630,8 @@ struct ChatView: View {
 
         // Load history from backend
         let api = APIClient(authManager: authManager)
-        if let history: SessionHistoryResponse = try? await api.request("/chat/sessions/\(sessionId)") {
+        do {
+            let history: SessionHistoryResponse = try await api.request("/chat/sessions/\(sessionId)")
             messages = history.messages.map {
                 CachedMessage(
                     serverMessageId: $0.id,
@@ -653,6 +640,8 @@ struct ChatView: View {
                     timestamp: $0.createdAt
                 )
             }
+        } catch {
+            loadingError = error.localizedDescription
         }
 
         // Connect WebSocket
@@ -778,12 +767,6 @@ struct ChatView: View {
             let content: String
             let allowedTools: [String]?
             let blockedTools: [String]?
-
-            enum CodingKeys: String, CodingKey {
-                case content
-                case allowedTools = "allowed_tools"
-                case blockedTools = "blocked_tools"
-            }
         }
         struct SendResponse: Decodable { let role: String; let content: String }
         let api = APIClient(authManager: authManager)
