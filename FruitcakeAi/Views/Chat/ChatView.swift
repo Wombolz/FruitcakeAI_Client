@@ -128,6 +128,13 @@ struct ChatView: View {
             await loadSessions()
             await loadChatCapabilities()
         }
+        .onChange(of: connectivity.isBackendReachable) { _, reachable in
+            guard reachable else { return }
+            Task {
+                await loadSessions()
+                await loadChatCapabilities()
+            }
+        }
         .onChange(of: selectedSession?.id) { _, newId in
             guard let newId else { return }
             Task { await switchSession(sessionId: newId) }
