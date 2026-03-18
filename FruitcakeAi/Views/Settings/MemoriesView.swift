@@ -8,6 +8,7 @@
 //
 
 import SwiftUI
+import UniformTypeIdentifiers
 
 // MARK: - MemoriesView
 
@@ -20,6 +21,12 @@ struct MemoriesView: View {
     @State private var searchText = ""
     @State private var isLoading = false
     @State private var loadError: String?
+    @State private var actionError: String?
+    @State private var showDeleteAllConfirmation = false
+    @State private var isRunningAction = false
+    @State private var exportDocument = MemoryExportDocument(data: Data())
+    @State private var exportFilename = "fruitcakeai-memories"
+    @State private var isExportingFile = false
 
     // MARK: - Derived
 
@@ -53,6 +60,37 @@ struct MemoriesView: View {
         .searchable(text: $searchText, prompt: "Search memories")
         .task { await loadMemories() }
         .refreshable { await loadMemories() }
+        .toolbar { toolbarContent }
+        .confirmationDialog(
+            "Delete all memories?",
+            isPresented: $showDeleteAllConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Delete All", role: .destructive) {
+                Task { await deleteAllMemories() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will deactivate all memories for your account. Export first if you want a copy.")
+        }
+        .fileExporter(
+            isPresented: $isExportingFile,
+            document: exportDocument,
+            contentType: .json,
+            defaultFilename: exportFilename
+        ) { result in
+            if case .failure(let error) = result {
+                actionError = error.localizedDescription
+            }
+        }
+        .alert("Memory Error", isPresented: Binding(
+            get: { actionError != nil || loadError != nil },
+            set: { if !$0 { actionError = nil; loadError = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(actionError ?? loadError ?? "Unknown error")
+        }
     }
 
     // MARK: - Filter chips
@@ -72,7 +110,6 @@ struct MemoriesView: View {
         let selected = filterType == type
         return Button {
             filterType = type
-            Task { await loadMemories() }
         } label: {
             Text(label)
                 .font(.subheadline.weight(.medium))
@@ -166,7 +203,7 @@ struct MemoriesView: View {
         defer { isLoading = false }
         do {
             let api = APIClient(authManager: authManager)
-            memories = try await api.fetchMemories(type: filterType)
+            memories = try await api.fetchMemories()
         } catch {
             loadError = error.localizedDescription
         }
@@ -180,6 +217,59 @@ struct MemoriesView: View {
         } catch {
             loadError = error.localizedDescription
         }
+    }
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItemGroup(placement: .primaryAction) {
+            Button {
+                Task { await exportMemories() }
+            } label: {
+                Label("Export Memories", systemImage: "square.and.arrow.up")
+            }
+            .disabled(isLoading || isRunningAction)
+
+            Button(role: .destructive) {
+                showDeleteAllConfirmation = true
+            } label: {
+                Label("Delete All Memories", systemImage: "trash")
+            }
+            .disabled(memories.isEmpty || isLoading || isRunningAction)
+        }
+    }
+
+    private func exportMemories() async {
+        isRunningAction = true
+        defer { isRunningAction = false }
+        do {
+            let api = APIClient(authManager: authManager)
+            let data = try await api.exportMemories()
+            exportDocument = MemoryExportDocument(data: data)
+            exportFilename = "fruitcakeai-memories-\(timestampStamp())"
+            isExportingFile = true
+        } catch {
+            actionError = error.localizedDescription
+        }
+    }
+
+    private func deleteAllMemories() async {
+        isRunningAction = true
+        defer { isRunningAction = false }
+        do {
+            let api = APIClient(authManager: authManager)
+            _ = try await api.bulkDeleteMemories()
+            memories.removeAll()
+        } catch {
+            actionError = error.localizedDescription
+        }
+    }
+
+    private func timestampStamp() -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return formatter.string(from: .now)
     }
 }
 
@@ -241,6 +331,24 @@ private struct MemoryRow: View {
                 }
             }
         }
+    }
+}
+
+private struct MemoryExportDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.json] }
+
+    var data: Data
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        self.data = configuration.file.regularFileContents ?? Data()
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
     }
 }
 

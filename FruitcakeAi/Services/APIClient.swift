@@ -181,8 +181,19 @@ final class APIClient {
         return try await request(path)
     }
 
+    func exportMemories() async throws -> Data {
+        let req = try await buildRequest("/memories/export", method: "GET")
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response)
+        return data
+    }
+
     func deleteMemory(_ id: Int) async throws {
         try await requestVoid("/memories/\(id)", method: "DELETE")
+    }
+
+    func bulkDeleteMemories() async throws -> MemoryBulkDeleteResponse {
+        try await request("/memories/bulk-delete", method: "POST")
     }
 
     func updateMemoryImportance(_ id: Int, importance: Double) async throws {

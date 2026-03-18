@@ -85,7 +85,6 @@ struct ChatView: View {
 
     @State private var messages: [CachedMessage] = []
     @State private var streamingContent: String = ""
-    @State private var isStreaming: Bool = false
     @State private var showToolIndicator: Bool = false
 
     @State private var inputText: String = ""

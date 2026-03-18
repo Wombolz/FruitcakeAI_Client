@@ -50,3 +50,8 @@ struct MemorySummary: Identifiable, Codable {
         memoryType.capitalized
     }
 }
+
+struct MemoryBulkDeleteResponse: Codable {
+    let deactivatedCount: Int
+    let deletedAt: Date
+}
