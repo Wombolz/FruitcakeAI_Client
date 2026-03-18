@@ -2,8 +2,8 @@
 //  ConnectivityMonitor.swift
 //  FruitcakeAi
 //
-//  Pings GET /admin/health every 30 seconds and publishes whether the
-//  Python backend is reachable. Views observe isBackendReachable to
+//  Pings GET /health every 30 seconds and publishes whether the
+//  Python backend is reachable for any authenticated user or guest liveness check. Views observe isBackendReachable to
 //  switch between full-backend mode and on-device fallback mode.
 //
 
@@ -59,7 +59,7 @@ final class ConnectivityMonitor {
             return
         }
 
-        let url = serverURL.appendingPathComponent("/admin/health")
+        let url = serverURL.appendingPathComponent("/health")
         var request = URLRequest(url: url)
         request.timeoutInterval = 5
 
