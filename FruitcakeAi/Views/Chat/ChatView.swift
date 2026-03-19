@@ -616,6 +616,7 @@ struct ChatView: View {
         messages = []
         streamingContent = ""
         showToolIndicator = false
+        loadingError = nil
 
         // Find or create SwiftData conversation
         if let existing = localConversations.first(where: { $0.serverSessionId == sessionId }) {
@@ -654,6 +655,7 @@ struct ChatView: View {
         isSending = true
         showToolIndicator = true
         streamingContent = ""
+        loadingError = nil
         let overrides = sessionToolOverrides[sessionId] ?? SessionToolOverrides()
 
         // Optimistic user message
@@ -703,11 +705,12 @@ struct ChatView: View {
                 fullResponse += chunk
 
             case .done(let complete):
-                fullResponse = complete
+                let finalResponse = complete.isEmpty ? fullResponse : complete
+                fullResponse = finalResponse
                 streamingContent = ""
                 showToolIndicator = false
 
-                let assistantMsg = CachedMessage(role: "assistant", content: complete)
+                let assistantMsg = CachedMessage(role: "assistant", content: finalResponse)
                 messages.append(assistantMsg)
                 selectedConversation?.messages.append(assistantMsg)
                 selectedConversation?.lastActivity = .now
