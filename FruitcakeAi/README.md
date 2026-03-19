@@ -8,61 +8,139 @@ This repository contains the native client only. The backend, agent runtime, MCP
 
 FruitcakeAI Client provides:
 
-- native chat, inbox, library, and settings UI
-- APNs device registration and notification handling
+- Native chat, inbox, library, and settings UI
 - WebSocket and REST connectivity to the FruitcakeAI backend
-- local Apple-framework integrations where supported
-- a shared SwiftUI codebase for iOS and macOS
+- On-device AI fallback via Apple FoundationModels (offline mode)
+- Local tool integrations (Calendar, Reminders, Contacts)
+- APNs push notification support (optional)
+- A shared SwiftUI codebase for iOS and macOS
 
 It is not a standalone assistant runtime. It depends on a running FruitcakeAI backend for chat history sync, tasks, memory, RAG, MCP-backed tools, and admin functionality.
 
 ## Repository Relationship
 
-- Backend/runtime repo: `FruitcakeAI`
-- Shared Apple client repo: `FruitcakeAI_Client`
-
-The client is intentionally named for the Apple platform as a whole, not iPhone only. The current Xcode project supports iOS and macOS from the same codebase.
+| Repo | Purpose |
+|------|---------|
+| `FruitcakeAI` | Backend — FastAPI, LiteLLM, LlamaIndex, MCP tools |
+| `FruitcakeAI_Client` | Native Apple client — SwiftUI, iOS + macOS |
 
 ## Quick Start
 
 ### Prerequisites
 
-- Xcode 16+
+- **Xcode 16+** (macOS 15 Sequoia or later)
 - A running FruitcakeAI backend server
-- An Apple developer account only if you want to test APNs on device
+- An Apple Developer account (free or paid — needed for code signing)
 
-### Open and run
+### 1. Clone and configure signing
+
+```bash
+git clone https://github.com/Wombolz/FruitcakeAI_Client.git
+cd FruitcakeAI_Client
+cp Local.xcconfig.example Local.xcconfig
+```
+
+Edit `Local.xcconfig` with your values:
+
+```
+DEVELOPMENT_TEAM = YOUR_TEAM_ID_HERE
+PRODUCT_BUNDLE_IDENTIFIER = com.yourname.FruitcakeAi
+```
+
+**Finding your Team ID:** Sign in at [developer.apple.com](https://developer.apple.com), go to Account → Membership → Team ID.
+
+### 2. Open and build
 
 1. Open `FruitcakeAi.xcodeproj` in Xcode.
-2. Choose a supported destination (`iPhone Simulator`, device, or `My Mac`).
-3. Build and run.
-4. In Settings, set the backend server URL.
-5. Log in with a backend user account.
+2. Choose a destination: `My Mac`, an iPhone simulator, or a connected device.
+3. Build and run (`Cmd+R`).
+
+### 3. Connect to your backend
+
+On the login screen, enter:
+- **Server URL** — your backend address (e.g., `http://192.168.1.100:30417`)
+- **Username / Password** — a user account from the backend
+
+For local development on the same machine, use `http://localhost:30417`.
+
+## Configuration
+
+### `Local.xcconfig`
+
+This file holds per-developer build settings and is **gitignored**. Each contributor creates their own from the provided template:
+
+| Setting | Description |
+|---------|-------------|
+| `DEVELOPMENT_TEAM` | Your Apple Developer Team ID |
+| `PRODUCT_BUNDLE_IDENTIFIER` | Unique reverse-domain app identifier |
+
+### Push Notifications (Optional)
+
+APNs push notifications require:
+
+1. A **paid** Apple Developer account
+2. The **Push Notifications** capability added in Xcode → Signing & Capabilities
+3. APNs credentials configured on the backend (see backend repo docs)
+
+If you skip this, the app works normally without push — you just won't get background task notifications. No code changes needed.
+
+To enable APNs:
+1. In Xcode, select the FruitcakeAi target → Signing & Capabilities
+2. Click **+ Capability** → **Push Notifications**
+3. This will add the `aps-environment` entitlement automatically
+
+### On-Device AI (Offline Mode)
+
+When the backend is unreachable, the app falls back to Apple's on-device FoundationModels framework. This requires:
+
+- macOS 26+ or iOS 26+
+- Apple Intelligence enabled on the device
+- A compatible Apple Silicon device
+
+Available offline: Calendar, Reminders, and Contacts tools. Document search, web/RSS, and task management require the backend.
+
+## Project Structure
+
+```
+FruitcakeAi/
+├── Models/              # Codable data types (Task, Memory, UserProfile, etc.)
+├── Services/            # API client, auth, connectivity, WebSocket, on-device agent
+├── Tools/               # On-device tool implementations (Calendar, Reminders, Contacts)
+├── Utilities/           # Keychain helper, markdown text utilities
+├── Views/
+│   ├── Chat/            # Chat UI, message bubbles, streaming
+│   ├── Components/      # Shared components (ConnectionStatus)
+│   ├── Inbox/           # Task list, detail sheet, creation
+│   ├── Library/         # Document browsing and upload
+│   └── Settings/        # Settings, persona picker, memories
+├── AppDelegate.swift    # APNs token handling
+├── ContentView.swift    # Root router (login / main tabs)
+├── FruitcakeAiApp.swift # App entry point, service initialization
+└── FruitcakeAi.entitlements
+```
 
 ## Backend Setup
 
-Set up and run the backend from the `FruitcakeAI` repo.
+See the `FruitcakeAI` backend repository for full setup instructions. The client expects:
 
-Expected local backend default:
+- `GET /admin/health` — health check endpoint
+- `POST /auth/token` — JWT authentication
+- `GET/POST /chat/*` — chat sessions and messaging
+- `GET/POST /tasks/*` — task management
+- `GET /memories/*` — memory system
+- `GET /documents/*` — document library
+- `WebSocket /chat/sessions/{id}/ws` — streaming chat
 
-- `http://localhost:30417`
+Default backend port: `30417`
 
-For a second machine or phone on LAN, point the client to the reachable backend host/IP instead.
+## Contributing
 
-## Current Scope
+1. Fork and clone the repo
+2. Create `Local.xcconfig` from the example template
+3. Create a feature branch from `main`
+4. Make your changes and verify the build succeeds
+5. Open a pull request
 
-- Shared SwiftUI app for iOS and macOS
-- Task inbox and approval UX
-- Chat with REST + WebSocket paths
-- Library browsing and uploads
-- Persona/settings management
-- APNs integration for Apple devices
+## License
 
-## Documentation
-
-- Backend repo docs live in `FruitcakeAI/Docs/`
-- Architecture notes in this repo remain implementation-oriented and client-specific
-
-## Rollback / Rename Notes
-
-This repo was prepared for the Phase 5.6 repository realignment. If a rename causes remote issues, restore the previous remote URL temporarily and use the pre-realignment checkpoint tag until docs and tooling are consistent.
+See [LICENSE](LICENSE) for details.
