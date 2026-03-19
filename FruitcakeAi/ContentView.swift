@@ -64,7 +64,7 @@ struct LoginView: View {
 
     @State private var username = ""
     @State private var password = ""
-    @State private var serverURL = "http://localhost:30417"
+    @State private var serverURL = ""
     @State private var loginError: String?
     @State private var loading = false
 
@@ -85,7 +85,7 @@ struct LoginView: View {
             Spacer().frame(height: 8)
 
             VStack(spacing: 12) {
-                TextField("Server URL", text: $serverURL)
+                TextField("http://your-server:30417", text: $serverURL)
                     .textContentType(.URL)
                     .autocorrectionDisabled()
                     #if os(iOS)
