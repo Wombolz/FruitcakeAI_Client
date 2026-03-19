@@ -80,9 +80,7 @@ struct LoginView: View {
             Text("FruitcakeAI")
                 .font(.largeTitle.bold())
 
-            Text("Family AI Assistant")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+
 
             Spacer().frame(height: 8)
 
