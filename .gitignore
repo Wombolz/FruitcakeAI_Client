@@ -117,6 +117,12 @@ fastlane/readme.md
 
 
 ########################################
+# Local Xcode Configuration (per-developer)
+########################################
+Local.xcconfig
+
+
+########################################
 # App-Specific Secret Locations (reserved)
 ########################################
 # If you later introduce local-only secret config files, keep them ignored here.

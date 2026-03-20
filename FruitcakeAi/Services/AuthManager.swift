@@ -55,6 +55,12 @@ final class AuthManager {
 
         self.serverURL = serverURL
         self.currentUser = try await fetchCurrentUser(serverURL: serverURL, token: tokens.accessToken)
+
+        // If APNs registered before auth was available, retry registration/upload now.
+        await APNsManager.shared.requestAndRegister()
+        if let token = APNsManager.shared.deviceToken {
+            await APNsManager.shared.uploadToken(token)
+        }
     }
 
     // MARK: - Token access
