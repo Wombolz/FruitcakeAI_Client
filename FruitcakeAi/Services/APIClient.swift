@@ -201,6 +201,37 @@ final class APIClient {
                                    body: ImportanceBody(importance: importance))
     }
 
+    // MARK: - Graph Memory (Phase 7.3)
+
+    func fetchGraphMemoryEntities() async throws -> [GraphMemoryEntity] {
+        try await request("/memories/graph/entities")
+    }
+
+    func searchGraphMemoryEntities(query: String) async throws -> [GraphMemoryEntity] {
+        let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
+        return try await request("/memories/graph/search?q=\(encoded)")
+    }
+
+    func fetchGraphMemoryNode(_ entityID: Int) async throws -> GraphMemoryNode {
+        try await request("/memories/graph/entities/\(entityID)")
+    }
+
+    func updateGraphMemoryEntity(_ entityID: Int, patch: GraphMemoryEntityPatch) async throws -> GraphMemoryEntityDetail {
+        try await request("/memories/graph/entities/\(entityID)", method: "PATCH", body: patch)
+    }
+
+    func deactivateGraphMemoryEntity(_ entityID: Int) async throws {
+        try await requestVoid("/memories/graph/entities/\(entityID)", method: "DELETE")
+    }
+
+    func updateGraphMemoryObservation(_ observationID: Int, patch: GraphMemoryObservationPatch) async throws -> GraphMemoryObservation {
+        try await request("/memories/graph/observations/\(observationID)", method: "PATCH", body: patch)
+    }
+
+    func deactivateGraphMemoryObservation(_ observationID: Int) async throws {
+        try await requestVoid("/memories/graph/observations/\(observationID)", method: "DELETE")
+    }
+
     // MARK: - Task audit + Chat session helpers (Phase 4.5)
 
     func fetchTaskAudit(_ id: Int) async throws -> TaskAuditOut {

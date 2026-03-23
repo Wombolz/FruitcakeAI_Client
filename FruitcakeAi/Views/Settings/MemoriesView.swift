@@ -47,6 +47,10 @@ struct MemoriesView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            graphMemoryLink
+                .padding(.horizontal)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
             filterChips
                 .padding(.horizontal)
                 .padding(.vertical, 8)
@@ -94,6 +98,34 @@ struct MemoriesView: View {
     }
 
     // MARK: - Filter chips
+
+    private var graphMemoryLink: some View {
+        NavigationLink {
+            GraphMemoryView()
+                .environment(authManager)
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "point.3.connected.trianglepath.dotted")
+                    .font(.title3)
+                    .foregroundStyle(Color.accentColor)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Graph Memory")
+                        .font(.headline)
+                    Text("Browse how Fruitcake connects people, places, projects, and facts.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.leading)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .foregroundStyle(.secondary)
+                    .imageScale(.small)
+            }
+            .padding(12)
+            .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
+        }
+        .buttonStyle(.plain)
+    }
 
     private var filterChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
