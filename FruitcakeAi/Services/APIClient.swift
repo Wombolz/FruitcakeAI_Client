@@ -201,6 +201,22 @@ final class APIClient {
                                    body: ImportanceBody(importance: importance))
     }
 
+    func fetchMemoryReviewProposals() async throws -> [MemoryReviewProposal] {
+        try await request("/memories/review")
+    }
+
+    func fetchMemoryReviewProposal(_ id: Int) async throws -> MemoryReviewProposal {
+        try await request("/memories/review/\(id)")
+    }
+
+    func approveMemoryReviewProposal(_ id: Int) async throws -> MemoryReviewApprovalResponse {
+        try await request("/memories/review/\(id)/approve", method: "POST")
+    }
+
+    func rejectMemoryReviewProposal(_ id: Int) async throws -> MemoryReviewProposal {
+        try await request("/memories/review/\(id)/reject", method: "POST")
+    }
+
     // MARK: - Graph Memory (Phase 7.3)
 
     func fetchGraphMemoryEntities() async throws -> [GraphMemoryEntity] {

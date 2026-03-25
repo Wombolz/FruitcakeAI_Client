@@ -352,6 +352,7 @@ private struct SemanticSearchSheet: View {
                 }
             }
         }
+        .frame(minWidth: 400, idealWidth: 560, minHeight: 400, idealHeight: 520)
     }
 
     private func runSearch() async {
