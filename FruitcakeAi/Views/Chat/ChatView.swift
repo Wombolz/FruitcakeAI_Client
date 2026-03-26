@@ -83,6 +83,22 @@ private struct ChatModelListResponse: Decodable {
     let models: [ChatModelOption]
 }
 
+private enum ChatReasoningOption: String, CaseIterable, Identifiable {
+    case auto
+    case fast
+    case deep
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .auto: return "Automatic"
+        case .fast: return "Fast"
+        case .deep: return "Deep"
+        }
+    }
+}
+
 private struct SessionToolOverrides {
     var allowedTools: [String] = []
     var blockedTools: [String] = []
@@ -126,8 +142,7 @@ struct ChatView: View {
     @State private var availableModels: [ChatModelOption] = []
     @State private var sessionToolOverrides: [Int: SessionToolOverrides] = [:]
     @State private var profilePersona: String = "family_assistant"
-    @State private var profileModel: String = ""
-    @State private var profileAllowedCSV: String = ""
+        @State private var profileAllowedCSV: String = ""
     @State private var profileBlockedCSV: String = ""
     @State private var profileError: String?
 
@@ -230,16 +245,6 @@ struct ChatView: View {
                             }
                         }
                         .pickerStyle(.menu)
-                    }
-                    if !availableModels.isEmpty {
-                        Section("Model") {
-                            Picker("Model", selection: $profileModel) {
-                                ForEach(availableModels) { model in
-                                    Text("\(model.displayLabel) · \(model.providerLabel)").tag(model.id)
-                                }
-                            }
-                            .pickerStyle(.menu)
-                        }
                     }
                     Section("Allowed Tools (comma separated)") {
                         TextField("search_library, web_search", text: $profileAllowedCSV)
@@ -417,25 +422,109 @@ struct ChatView: View {
 
     @ViewBuilder
     private func inputBar(sessionId: Int) -> some View {
-        HStack(alignment: .bottom, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             TextField("Message…", text: $inputText, axis: .vertical)
                 .lineLimit(1...6)
                 .textFieldStyle(.roundedBorder)
                 .disabled(isSending)
                 .onSubmit { sendIfReady(sessionId: sessionId) }
 
-            Button {
-                sendIfReady(sessionId: sessionId)
-            } label: {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.title2)
-                    .foregroundStyle(canSend ? Color.accentColor : Color.secondary)
+            HStack(alignment: .center, spacing: 10) {
+                HStack(spacing: 8) {
+                    modelMenu(sessionId: sessionId)
+                    reasoningMenu()
+                }
+
+                Spacer(minLength: 0)
+
+                Button {
+                    sendIfReady(sessionId: sessionId)
+                } label: {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(canSend ? Color.accentColor : Color.secondary)
+                }
+                .disabled(!canSend)
             }
-            .disabled(!canSend)
         }
         .padding(.horizontal)
         .padding(.vertical, 10)
         .background(.bar)
+    }
+
+    @ViewBuilder
+    private func modelMenu(sessionId: Int) -> some View {
+        Menu {
+            ForEach(availableModels) { model in
+                Button {
+                    Task { await updateSessionModel(sessionId: sessionId, modelID: model.id) }
+                } label: {
+                    if currentSessionModelID == model.id {
+                        Label("\(model.displayLabel) · \(model.providerLabel)", systemImage: "checkmark")
+                    } else {
+                        Text("\(model.displayLabel) · \(model.providerLabel)")
+                    }
+                }
+            }
+        } label: {
+            composerMenuLabel(title: "Model", value: currentSessionModelLabel)
+        }
+        .disabled(isSending || availableModels.isEmpty)
+    }
+
+    @ViewBuilder
+    private func reasoningMenu() -> some View {
+        Menu {
+            ForEach(ChatReasoningOption.allCases) { option in
+                Button {
+                    Task { await updateReasoningPreference(option.rawValue) }
+                } label: {
+                    if currentReasoningPreference == option.rawValue {
+                        Label(option.title, systemImage: "checkmark")
+                    } else {
+                        Text(option.title)
+                    }
+                }
+            }
+        } label: {
+            composerMenuLabel(title: "Reasoning", value: currentReasoningLabel)
+        }
+        .disabled(isSending)
+    }
+
+    private func composerMenuLabel(title: String, value: String) -> some View {
+        HStack(spacing: 6) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.caption.weight(.medium))
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Color.secondary.opacity(0.12))
+        .clipShape(Capsule())
+    }
+
+    private var currentSessionModelID: String {
+        selectedSession?.llmModel
+        ?? availableModels.first(where: { $0.isDefaultChat })?.id
+        ?? availableModels.first?.id
+        ?? ""
+    }
+
+    private var currentSessionModelLabel: String {
+        availableModels.first(where: { $0.id == currentSessionModelID })?.displayLabel
+        ?? (currentSessionModelID.isEmpty ? "Model" : currentSessionModelID)
+    }
+
+    private var currentReasoningPreference: String {
+        authManager.currentUser?.chatRoutingPreference ?? "auto"
+    }
+
+    private var currentReasoningLabel: String {
+        ChatReasoningOption(rawValue: currentReasoningPreference)?.title ?? "Automatic"
     }
 
     private var canSend: Bool {
@@ -482,7 +571,6 @@ struct ChatView: View {
     private func prepareProfileEditor() {
         guard let selected = selectedSession else { return }
         profilePersona = selected.persona
-        profileModel = selected.llmModel ?? availableModels.first(where: { $0.isDefaultChat })?.id ?? availableModels.first?.id ?? ""
         let overrides = sessionToolOverrides[selected.id] ?? SessionToolOverrides()
         profileAllowedCSV = overrides.allowedTools.joined(separator: ", ")
         profileBlockedCSV = overrides.blockedTools.joined(separator: ", ")
@@ -504,18 +592,12 @@ struct ChatView: View {
         )
 
         struct PersonaBody: Encodable { let persona: String }
-        struct ModelBody: Encodable { let llmModel: String }
         let api = APIClient(authManager: authManager)
         do {
-            _ = try await api.request(
+            let updated: SessionSummary = try await api.request(
                 "/chat/sessions/\(selected.id)/persona",
                 method: "PATCH",
                 body: PersonaBody(persona: profilePersona)
-            ) as SessionSummary
-            let updated: SessionSummary = try await api.request(
-                "/chat/sessions/\(selected.id)/model",
-                method: "PATCH",
-                body: ModelBody(llmModel: profileModel)
             )
             if let idx = sessions.firstIndex(where: { $0.id == selected.id }) {
                 sessions[idx] = updated
@@ -531,6 +613,46 @@ struct ChatView: View {
             showProfileSheet = false
         } catch {
             profileError = "Could not save chat profile."
+        }
+    }
+
+    private func updateSessionModel(sessionId: Int, modelID: String) async {
+        guard connectivity.isBackendReachable else {
+            loadingError = "Backend is not reachable."
+            return
+        }
+
+        struct ModelBody: Encodable { let llmModel: String }
+        let api = APIClient(authManager: authManager)
+        do {
+            let updated: SessionSummary = try await api.request(
+                "/chat/sessions/\(sessionId)/model",
+                method: "PATCH",
+                body: ModelBody(llmModel: modelID)
+            )
+            if let idx = sessions.firstIndex(where: { $0.id == sessionId }) {
+                sessions[idx] = updated
+            }
+            if selectedSession?.id == sessionId {
+                selectedSession = updated
+            }
+        } catch {
+            loadingError = "Could not save model selection."
+        }
+    }
+
+    private func updateReasoningPreference(_ preference: String) async {
+        guard connectivity.isBackendReachable else {
+            loadingError = "Backend is not reachable."
+            return
+        }
+
+        let api = APIClient(authManager: authManager)
+        do {
+            try await api.updateChatRoutingPreference(preference)
+            try await authManager.refreshCurrentUser()
+        } catch {
+            loadingError = "Could not save reasoning preference."
         }
     }
 
