@@ -51,10 +51,10 @@ final class APIClient {
         mimeType: String,
         fields: [String: String] = [:]
     ) async throws -> Data {
-        guard let baseURL else { throw APIError.noServerConfigured }
+        let url = try resolvedURL(for: path)
 
         let boundary = UUID().uuidString
-        var req = URLRequest(url: baseURL.appendingPathComponent(path))
+        var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("multipart/form-data; boundary=\(boundary)",
                      forHTTPHeaderField: "Content-Type")
@@ -85,9 +85,7 @@ final class APIClient {
         body: (any Encodable)? = nil,
         timeout: TimeInterval = 15
     ) async throws -> URLRequest {
-        guard let baseURL else { throw APIError.noServerConfigured }
-
-        var req = URLRequest(url: baseURL.appendingPathComponent(path))
+        var req = URLRequest(url: try resolvedURL(for: path))
         req.httpMethod = method
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("Bearer \(try authManager.token())",
@@ -100,6 +98,29 @@ final class APIClient {
             req.httpBody = try encoder.encode(body)
         }
         return req
+    }
+
+    private func resolvedURL(for path: String) throws -> URL {
+        guard let baseURL else { throw APIError.noServerConfigured }
+
+        let rawPath = path.hasPrefix("/") ? String(path.dropFirst()) : path
+        guard let components = URLComponents(string: rawPath) else {
+            throw APIError.invalidResponse
+        }
+
+        var url = baseURL
+        let cleanPath = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if !cleanPath.isEmpty {
+            url.appendPathComponent(cleanPath)
+        }
+        if let query = components.percentEncodedQuery, !query.isEmpty {
+            var resolved = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            resolved?.percentEncodedQuery = query
+            if let finalURL = resolved?.url {
+                return finalURL
+            }
+        }
+        return url
     }
 
     private func validate(_ response: URLResponse) throws {
@@ -217,6 +238,18 @@ final class APIClient {
         try await request("/memories/review/\(id)/reject", method: "POST")
     }
 
+    func fetchLLMUsageEvents(limit: Int = 20) async throws -> [LLMUsageEventSummary] {
+        try await request("/memories/usage?limit=\(limit)")
+    }
+
+    func updateChatRoutingPreference(_ preference: String) async throws {
+        try await buildAndSendVoid(
+            "/auth/me/preferences",
+            method: "PATCH",
+            body: ChatRoutingPreferenceBody(chatRoutingPreference: preference)
+        )
+    }
+
     // MARK: - Graph Memory (Phase 7.3)
 
     func fetchGraphMemoryEntities() async throws -> [GraphMemoryEntity] {
@@ -298,6 +331,7 @@ final class APIClient {
 
 private struct ApproveBody: Encodable { let approved: Bool }
 private struct ImportanceBody: Encodable { let importance: Double }
+private struct ChatRoutingPreferenceBody: Encodable { let chatRoutingPreference: String }
 
 // MARK: - Data multipart helpers
 

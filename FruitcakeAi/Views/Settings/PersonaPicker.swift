@@ -2,17 +2,10 @@
 //  PersonaPicker.swift
 //  FruitcakeAi
 //
-//  Fetches GET /chat/personas and displays each persona with its name,
-//  description, and tone. Users can browse available personas and see
-//  what each one does. To switch mid-session, type "/persona <name>" in chat.
-//
-//  The selected default persona is stored in UserDefaults and used when
-//  creating new chat sessions.
+//  Persona browser used standalone or embedded inside Settings.
 //
 
 import SwiftUI
-
-// MARK: - API type
 
 struct PersonaInfo: Codable {
     let description: String?
@@ -21,36 +14,48 @@ struct PersonaInfo: Codable {
     let contentFilter: String?
 }
 
-// MARK: - PersonaPicker
-
 struct PersonaPicker: View {
 
     @Environment(AuthManager.self) private var authManager
     @Environment(\.dismiss) private var dismiss
+
+    let embedded: Bool
 
     @State private var personas: [String: PersonaInfo] = [:]
     @State private var isLoading = false
     @State private var loadError: String?
     @State private var selectedPersona: String = UserDefaults.standard.string(forKey: "preferred_persona") ?? "family_assistant"
 
-    var body: some View {
-        NavigationStack {
-            content
-                .navigationTitle("Personas")
-                #if os(iOS)
-                .navigationBarTitleDisplayMode(.large)
-                #endif
-                .toolbar {
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Done") { dismiss() }
-                    }
-                }
-                .task { await loadPersonas() }
-        }
-    .frame(minWidth: 400, idealWidth: 500, minHeight: 400, idealHeight: 550)
+    init(embedded: Bool = false) {
+        self.embedded = embedded
     }
 
-    // MARK: - Content
+    var body: some View {
+        Group {
+            if embedded {
+                content
+                    .navigationTitle("Personas")
+                    #if os(iOS)
+                    .navigationBarTitleDisplayMode(.large)
+                    #endif
+            } else {
+                NavigationStack {
+                    content
+                        .navigationTitle("Personas")
+                        #if os(iOS)
+                        .navigationBarTitleDisplayMode(.large)
+                        #endif
+                        .toolbar {
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button("Done") { dismiss() }
+                            }
+                        }
+                }
+                .frame(minWidth: 400, idealWidth: 500, minHeight: 400, idealHeight: 550)
+            }
+        }
+        .task { await loadPersonas() }
+    }
 
     @ViewBuilder
     private var content: some View {
@@ -87,8 +92,6 @@ struct PersonaPicker: View {
         #endif
     }
 
-    // MARK: - Actions
-
     private func selectPersona(_ name: String) {
         selectedPersona = name
         UserDefaults.standard.set(name, forKey: "preferred_persona")
@@ -107,8 +110,6 @@ struct PersonaPicker: View {
     }
 }
 
-// MARK: - Persona row
-
 private struct PersonaRow: View {
 
     let name: String
@@ -123,7 +124,6 @@ private struct PersonaRow: View {
     var body: some View {
         Button(action: onSelect) {
             VStack(alignment: .leading, spacing: 8) {
-
                 HStack {
                     Text(displayName)
                         .font(.headline)
@@ -165,8 +165,6 @@ private struct PersonaRow: View {
         .buttonStyle(.plain)
     }
 }
-
-// MARK: - Badge chip
 
 private struct Badge: View {
     let text: String

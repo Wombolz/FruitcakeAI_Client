@@ -2,8 +2,7 @@
 //  MemoriesView.swift
 //  FruitcakeAi
 //
-//  Shared memory surface for saved memories, review proposals,
-//  and graph-memory navigation.
+//  Shared memory surface for saved memories, review proposals, and graph memory.
 //
 
 import SwiftUI
@@ -66,27 +65,32 @@ struct MemoriesView: View {
                 .padding(.top, 12)
                 .padding(.bottom, 8)
 
-            if selectedSurface == .saved {
-                graphMemoryLink
+            if selectedSurface != .graph {
+                searchField
                     .padding(.horizontal)
                     .padding(.bottom, 8)
+            }
+
+            switch selectedSurface {
+            case .saved:
                 filterChips
                     .padding(.horizontal)
                     .padding(.bottom, 8)
-            } else {
+            case .review:
                 reviewStatusChips
                     .padding(.horizontal)
                     .padding(.bottom, 8)
+            case .graph:
+                EmptyView()
             }
 
             Divider()
             content
         }
-        .navigationTitle("Memory")
+        .navigationTitle("Memories")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.large)
         #endif
-        .searchable(text: $searchText, prompt: selectedSurface == .saved ? "Search memories" : "Search memory review")
         .task { await loadAll() }
         .refreshable { await loadAll() }
         .toolbar { toolbarContent }
@@ -126,6 +130,7 @@ struct MemoriesView: View {
         HStack(spacing: 8) {
             surfaceButton(label: "Saved", surface: .saved, badgeCount: nil)
             surfaceButton(label: "Review", surface: .review, badgeCount: pendingProposalCount)
+            surfaceButton(label: "Graph", surface: .graph, badgeCount: nil)
         }
     }
 
@@ -153,32 +158,26 @@ struct MemoriesView: View {
         .buttonStyle(.plain)
     }
 
-    private var graphMemoryLink: some View {
-        NavigationLink {
-            GraphMemoryView()
-                .environment(authManager)
-        } label: {
-            HStack(spacing: 12) {
-                Image(systemName: "point.3.connected.trianglepath.dotted")
-                    .font(.title3)
-                    .foregroundStyle(Color.accentColor)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Graph Memory")
-                        .font(.headline)
-                    Text("Browse how Fruitcake connects people, places, projects, and facts.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.leading)
+    private var searchField: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField(selectedSurface == .saved ? "Search saved memories" : "Search memory review", text: $searchText)
+                #if os(iOS)
+                .textInputAutocapitalization(.never)
+                #endif
+                .autocorrectionDisabled()
+            if !searchText.isEmpty {
+                Button { searchText = "" } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.tertiary)
                 }
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .foregroundStyle(.secondary)
-                    .imageScale(.small)
+                .buttonStyle(.plain)
             }
-            .padding(12)
-            .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
     }
 
     private var filterChips: some View {
@@ -248,10 +247,14 @@ struct MemoriesView: View {
 
     @ViewBuilder
     private var content: some View {
-        if selectedSurface == .saved {
+        switch selectedSurface {
+        case .saved:
             savedContent
-        } else {
+        case .review:
             reviewContent
+        case .graph:
+            GraphMemoryView(embedded: true)
+                .environment(authManager)
         }
     }
 
@@ -525,6 +528,7 @@ struct MemoriesView: View {
 private enum MemorySurface {
     case saved
     case review
+    case graph
 }
 
 private enum ReviewStatusFilter: CaseIterable {
@@ -740,50 +744,5 @@ private struct MemoryExportDocument: FileDocument {
     NavigationStack {
         MemoriesView()
             .environment(AuthManager())
-    }
-}
-
-#Preview("Memory row") {
-    List {
-        MemoryRow(memory: MemorySummary(
-            id: 1,
-            content: "Prefers concise answers without bullet points unless data-heavy.",
-            memoryType: "procedural",
-            importance: 0.8,
-            accessCount: 12,
-            tags: ["communication", "style"],
-            createdAt: Date(timeIntervalSinceNow: -86400 * 3),
-            expiresAt: nil
-        ))
-        MemoryReviewRow(
-            proposal: MemoryReviewProposal(
-                id: 8,
-                proposalType: "flat_memory_create",
-                sourceType: "topic_watcher",
-                status: "pending",
-                taskId: 53,
-                taskRunId: 902,
-                content: "On 2026-03-25, reports about Iran indicated renewed diplomatic talks and sanctions pressure.",
-                confidence: 0.82,
-                reason: "Strong watcher hit.",
-                createdAt: Date(timeIntervalSinceNow: -1800),
-                resolvedAt: nil,
-                resolvedByUserId: nil,
-                approvedMemoryId: nil,
-                proposal: MemoryReviewProposalPayload(
-                    proposalKey: "demo",
-                    memoryType: "episodic",
-                    content: "On 2026-03-25, reports about Iran indicated renewed diplomatic talks and sanctions pressure.",
-                    topic: "Iran",
-                    supportingUrls: ["https://example.com/iran"],
-                    sourceNames: ["Reuters", "BBC"],
-                    reason: "Strong watcher hit.",
-                    confidence: 0.82
-                )
-            ),
-            isWorking: false,
-            onApprove: {},
-            onReject: {}
-        )
     }
 }

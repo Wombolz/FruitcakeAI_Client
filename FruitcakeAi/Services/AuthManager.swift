@@ -94,6 +94,16 @@ final class AuthManager {
         }
     }
 
+    func refreshCurrentUser() async throws {
+        guard let serverURL else { throw AuthError.notAuthenticated }
+        let token = try token()
+        currentUser = try await fetchCurrentUser(serverURL: serverURL, token: token)
+    }
+
+    func updateCurrentUser(_ profile: UserProfile) {
+        currentUser = profile
+    }
+
     // MARK: - Private
 
     private func fetchCurrentUser(serverURL: URL, token: String) async throws -> UserProfile {

@@ -2,8 +2,7 @@
 //  SettingsView.swift
 //  FruitcakeAi
 //
-//  Server URL configuration, current user info, backend status,
-//  persona picker link, and sign-out.
+//  Category-driven settings navigation with adaptive sidebar/detail behavior.
 //
 
 import SwiftUI
@@ -19,146 +18,182 @@ struct SettingsView: View {
 
     @State private var serverURLInput: String = ""
     @State private var urlSaveState: URLSaveState = .idle
-    @State private var showPersonaPicker = false
+    @State private var selection: SettingsDestination? = .account
     @State private var isSendingPushTest = false
     @State private var pushTestMessage: String?
 
     enum URLSaveState { case idle, saved, error }
 
-    // MARK: - Body
-
     var body: some View {
-        NavigationStack {
-            Form {
-                accountSection
-                serverSection
-                personaSection
-                pushTestSection
-                memoriesSection
-                signOutSection
+        NavigationSplitView {
+            settingsSidebar
+        } detail: {
+            NavigationStack {
+                settingsDetail
             }
-            .formStyle(.grouped)
-            .navigationTitle("Settings")
-            .frame(maxWidth: 600)
-            .frame(maxWidth: .infinity)  // centers the constrained form
-            .sheet(isPresented: $showPersonaPicker) {
-                PersonaPicker()
-            }
-            .onAppear {
-                serverURLInput = authManager.serverURL?.absoluteString ?? ""
-            }
+        }
+        .onAppear {
+            serverURLInput = authManager.serverURL?.absoluteString ?? ""
+            normalizeSelection()
+        }
+        .onChange(of: authManager.currentUser?.isAdmin == true) { _, _ in
+            normalizeSelection()
         }
     }
 
-    // MARK: - Sections
-
-    private var accountSection: some View {
-        Section("Account") {
-            if let user = authManager.currentUser {
-                LabeledContent("Username", value: user.username)
-                LabeledContent("Email", value: user.email)
-                LabeledContent("Role", value: user.role.capitalized)
-                LabeledContent(
-                    "Persona",
-                    value: user.persona
-                        .replacingOccurrences(of: "_", with: " ")
-                        .capitalized
-                )
-            } else {
-                Text("Not signed in")
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private var serverSection: some View {
-        Section {
-            TextField("http://192.168.1.x:30417", text: $serverURLInput)
-                .textContentType(.URL)
-                .autocorrectionDisabled()
-                #if os(iOS)
-                .keyboardType(.URL)
-                .textInputAutocapitalization(.never)
-                #endif
-
-            Button {
-                saveServerURL()
-            } label: {
-                switch urlSaveState {
-                case .idle:
-                    Label("Save", systemImage: "checkmark")
-                case .saved:
-                    Label("Saved", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                case .error:
-                    Label("Invalid URL", systemImage: "xmark.circle")
-                        .foregroundStyle(.red)
+    private var settingsSidebar: some View {
+        List(selection: $selection) {
+            Section("General") {
+                settingsLink("Account", systemImage: "person.crop.circle", destination: .account)
+                settingsLink("Server", systemImage: "externaldrive.connected.to.line.below", destination: .server)
+                if authManager.currentUser?.isAdmin == true {
+                    settingsLink("Push Testing", systemImage: "bell.badge", destination: .pushTesting)
                 }
             }
-            .disabled(serverURLInput.isEmpty || urlSaveState == .saved)
 
-            // Backend status row
-            HStack {
-                Image(systemName: connectivity.isBackendReachable
-                      ? "checkmark.circle.fill"
-                      : "xmark.circle.fill")
-                    .foregroundStyle(connectivity.isBackendReachable ? .green : .red)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(connectivity.isBackendReachable ? "Connected" : "Offline")
-                        .font(.body)
-                    if let last = connectivity.lastChecked {
-                        Text("Last checked \(last.formatted(.relative(presentation: .named)))")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-
-                Spacer()
-
-                Button("Check") { connectivity.checkNow() }
-                    .font(.caption)
-                    .buttonStyle(.bordered)
-                    .controlSize(.mini)
+            Section("Personas") {
+                settingsLink("Personas", systemImage: "person.3", destination: .personas)
             }
-        } header: {
-            Text("Server")
-        } footer: {
-            Text("Enter the IP address and port of your FruitcakeAI backend (e.g. http://192.168.1.100:30417).")
+
+            Section("Assistant") {
+                settingsLink("Routing", systemImage: "point.3.connected.trianglepath.dotted", destination: .routing)
+                settingsLink("Memories", systemImage: "brain", destination: .memories)
+                settingsLink("Token Usage", systemImage: "number.circle", destination: .tokenUsage)
+            }
         }
+        .navigationTitle("Settings")
     }
 
-    private var personaSection: some View {
-        Section("Persona") {
-            Button {
-                showPersonaPicker = true
-            } label: {
-                HStack {
-                    Text("Browse personas")
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .foregroundStyle(.secondary)
-                        .imageScale(.small)
-                }
-            }
-            .foregroundStyle(.primary)
-        }
-    }
-
-    private var memoriesSection: some View {
-        Section("Assistant") {
-            NavigationLink {
-                MemoriesView()
-                    .environment(authManager)
-            } label: {
-                Label("Memories", systemImage: "brain")
-            }
+    private func settingsLink(_ title: String, systemImage: String, destination: SettingsDestination) -> some View {
+        NavigationLink(value: destination) {
+            Label(title, systemImage: systemImage)
         }
     }
 
     @ViewBuilder
-    private var pushTestSection: some View {
-        if authManager.currentUser?.isAdmin == true {
+    private var settingsDetail: some View {
+        switch selection ?? .account {
+        case .account:
+            accountDetail
+        case .server:
+            serverDetail
+        case .pushTesting:
+            if authManager.currentUser?.isAdmin == true {
+                pushTestingDetail
+            } else {
+                accountDetail
+            }
+        case .personas:
+            PersonaPicker(embedded: true)
+                .environment(authManager)
+        case .routing:
+            ChatRoutingView()
+                .environment(authManager)
+        case .memories:
+            MemoriesView()
+                .environment(authManager)
+        case .tokenUsage:
+            TokenUsageView()
+                .environment(authManager)
+        }
+    }
+
+    private var accountDetail: some View {
+        Form {
+            Section("Account") {
+                if let user = authManager.currentUser {
+                    LabeledContent("Username", value: user.username)
+                    LabeledContent("Email", value: user.email)
+                    LabeledContent("Role", value: user.role.capitalized)
+                    LabeledContent(
+                        "Persona",
+                        value: user.persona
+                            .replacingOccurrences(of: "_", with: " ")
+                            .capitalized
+                    )
+                } else {
+                    Text("Not signed in")
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section {
+                Button("Sign out", role: .destructive) {
+                    authManager.logout()
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("Account")
+        .frame(maxWidth: 700)
+        .frame(maxWidth: .infinity)
+    }
+
+    private var serverDetail: some View {
+        Form {
+            Section {
+                TextField("http://192.168.1.x:30417", text: $serverURLInput)
+                    .textContentType(.URL)
+                    .autocorrectionDisabled()
+                    #if os(iOS)
+                    .keyboardType(.URL)
+                    .textInputAutocapitalization(.never)
+                    #endif
+
+                Button {
+                    saveServerURL()
+                } label: {
+                    switch urlSaveState {
+                    case .idle:
+                        Label("Save", systemImage: "checkmark")
+                    case .saved:
+                        Label("Saved", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                    case .error:
+                        Label("Invalid URL", systemImage: "xmark.circle")
+                            .foregroundStyle(.red)
+                    }
+                }
+                .disabled(serverURLInput.isEmpty || urlSaveState == .saved)
+
+                HStack {
+                    Image(systemName: connectivity.isBackendReachable
+                          ? "checkmark.circle.fill"
+                          : "xmark.circle.fill")
+                        .foregroundStyle(connectivity.isBackendReachable ? .green : .red)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(connectivity.isBackendReachable ? "Connected" : "Offline")
+                            .font(.body)
+                        if let last = connectivity.lastChecked {
+                            Text("Last checked \(last.formatted(.relative(presentation: .named)))")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+
+                    Spacer()
+
+                    Button("Check") { connectivity.checkNow() }
+                        .font(.caption)
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                }
+            } header: {
+                Text("Server")
+            } footer: {
+                Text("Enter the IP address and port of your FruitcakeAI backend (e.g. http://192.168.1.100:30417).")
+            }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("Server")
+        .frame(maxWidth: 700)
+        .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private var pushTestingDetail: some View {
+        Form {
             Section("Push Testing") {
                 Button {
                     Task { await sendPushTest() }
@@ -178,17 +213,20 @@ struct SettingsView: View {
                 }
             }
         }
+        .formStyle(.grouped)
+        .navigationTitle("Push Testing")
+        .frame(maxWidth: 700)
+        .frame(maxWidth: .infinity)
     }
 
-    private var signOutSection: some View {
-        Section {
-            Button("Sign out", role: .destructive) {
-                authManager.logout()
-            }
+    private func normalizeSelection() {
+        if selection == .pushTesting, authManager.currentUser?.isAdmin != true {
+            selection = .account
+        }
+        if selection == nil {
+            selection = .account
         }
     }
-
-    // MARK: - Actions
 
     private func saveServerURL() {
         let trimmed = serverURLInput.trimmingCharacters(in: .whitespaces)
@@ -201,10 +239,8 @@ struct SettingsView: View {
             return
         }
 
-        // Persist to Keychain
         KeychainHelper.save(trimmed, forKey: KeychainHelper.Keys.serverURL)
 
-        // Persist to SwiftData (upsert default ServerConfig)
         if let existing = savedServers.first(where: { $0.isDefault }) {
             existing.serverURL = trimmed
         } else {
@@ -212,7 +248,6 @@ struct SettingsView: View {
             modelContext.insert(config)
         }
 
-        // Notify connectivity monitor to re-check
         connectivity.checkNow()
 
         urlSaveState = .saved
@@ -237,6 +272,16 @@ struct SettingsView: View {
             pushTestMessage = "Push test failed: \(error.localizedDescription)"
         }
     }
+}
+
+private enum SettingsDestination: String, Hashable, CaseIterable {
+    case account
+    case server
+    case pushTesting
+    case personas
+    case routing
+    case memories
+    case tokenUsage
 }
 
 #Preview {

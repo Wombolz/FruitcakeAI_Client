@@ -2,7 +2,6 @@
 //  GraphMemoryView.swift
 //  FruitcakeAi
 //
-//  Settings > Memories > Graph Memory.
 //  Browse graph entities, inspect one node, and edit/deactivate entities
 //  and observations without exposing admin diagnostics.
 //
@@ -13,11 +12,17 @@ struct GraphMemoryView: View {
 
     @Environment(AuthManager.self) private var authManager
 
+    let embedded: Bool
+
     @State private var entities: [GraphMemoryEntity] = []
     @State private var searchText = ""
     @State private var isLoading = false
     @State private var loadError: String?
     @State private var hasLoaded = false
+
+    init(embedded: Bool = false) {
+        self.embedded = embedded
+    }
 
     private var displayedEntities: [GraphMemoryEntity] {
         guard !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -31,6 +36,43 @@ struct GraphMemoryView: View {
     }
 
     var body: some View {
+        if embedded {
+            graphList
+                .searchable(text: $searchText, prompt: "Search graph memory")
+                .task { await loadEntities() }
+                .refreshable { await loadEntities() }
+                .onSubmit(of: .search) {
+                    Task { await loadEntities() }
+                }
+                .alert("Graph Memory Error", isPresented: Binding(
+                    get: { loadError != nil && !isLoading },
+                    set: { if !$0 { loadError = nil } }
+                )) {
+                    Button("OK", role: .cancel) {}
+                } message: {
+                    Text(loadError ?? "Unknown error")
+                }
+        } else {
+            graphList
+                .navigationTitle("Graph Memory")
+                .searchable(text: $searchText, prompt: "Search entities")
+                .task { await loadEntities() }
+                .refreshable { await loadEntities() }
+                .onSubmit(of: .search) {
+                    Task { await loadEntities() }
+                }
+                .alert("Graph Memory Error", isPresented: Binding(
+                    get: { loadError != nil && !isLoading },
+                    set: { if !$0 { loadError = nil } }
+                )) {
+                    Button("OK", role: .cancel) {}
+                } message: {
+                    Text(loadError ?? "Unknown error")
+                }
+        }
+    }
+
+    private var graphList: some View {
         List {
             if isLoading && !hasLoaded {
                 ProgressView("Loading graph memory…")
@@ -66,21 +108,6 @@ struct GraphMemoryView: View {
                     }
                 }
             }
-        }
-        .navigationTitle("Graph Memory")
-        .searchable(text: $searchText, prompt: "Search entities")
-        .task { await loadEntities() }
-        .refreshable { await loadEntities() }
-        .onSubmit(of: .search) {
-            Task { await loadEntities() }
-        }
-        .alert("Graph Memory Error", isPresented: Binding(
-            get: { loadError != nil && !isLoading },
-            set: { if !$0 { loadError = nil } }
-        )) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(loadError ?? "Unknown error")
         }
     }
 

@@ -129,3 +129,30 @@ struct MemoryReviewApprovalResponse: Codable {
     let proposal: MemoryReviewProposal
     let memory: MemorySummary
 }
+
+struct LLMUsageEventSummary: Identifiable, Codable, Hashable {
+    let scopeLabel: String
+    let taskId: Int?
+    let sessionId: Int?
+    let taskRunId: Int?
+    let source: String
+    let stage: String?
+    let model: String
+    let totalTokens: Int
+    let estimatedCostUsd: Double?
+    let createdAt: Date?
+
+    var id: String {
+        "\(scopeLabel)-\(createdAt?.timeIntervalSince1970 ?? 0)-\(model)"
+    }
+
+    var stageDisplay: String {
+        let candidate = (stage ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return candidate.isEmpty ? source.replacingOccurrences(of: "_", with: " ").capitalized : candidate.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+
+    var costDisplay: String {
+        guard let estimatedCostUsd else { return "n/a" }
+        return String(format: "$%.4f", estimatedCostUsd)
+    }
+}

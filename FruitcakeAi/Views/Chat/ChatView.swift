@@ -28,12 +28,14 @@ private struct CreateSessionResponse: Codable {
     let id: Int
     let title: String?
     let persona: String
+    let llmModel: String?
 }
 
 private struct SessionHistoryResponse: Codable {
     let id: Int
     let title: String?
     let persona: String
+    let llmModel: String?
     let messages: [HistoryMessage]
 }
 
@@ -55,6 +57,30 @@ private struct ChatPersonaInfo: Decodable {
     let tone: String?
     let blockedTools: [String]?
     let contentFilter: String?
+}
+
+private struct ChatModelOption: Decodable, Identifiable, Hashable {
+    let id: String
+    let provider: String
+    let label: String
+    let isDefaultChat: Bool
+    let isDefaultTaskSmall: Bool
+    let isDefaultTaskLarge: Bool
+
+    var displayLabel: String {
+        if isDefaultChat {
+            return "\(label) (Default)"
+        }
+        return label
+    }
+
+    var providerLabel: String {
+        provider.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+}
+
+private struct ChatModelListResponse: Decodable {
+    let models: [ChatModelOption]
 }
 
 private struct SessionToolOverrides {
@@ -97,8 +123,10 @@ struct ChatView: View {
     @State private var showProfileSheet: Bool = false
     @State private var availablePersonas: [String] = []
     @State private var availableTools: [String] = []
+    @State private var availableModels: [ChatModelOption] = []
     @State private var sessionToolOverrides: [Int: SessionToolOverrides] = [:]
     @State private var profilePersona: String = "family_assistant"
+    @State private var profileModel: String = ""
     @State private var profileAllowedCSV: String = ""
     @State private var profileBlockedCSV: String = ""
     @State private var profileError: String?
@@ -202,6 +230,16 @@ struct ChatView: View {
                             }
                         }
                         .pickerStyle(.menu)
+                    }
+                    if !availableModels.isEmpty {
+                        Section("Model") {
+                            Picker("Model", selection: $profileModel) {
+                                ForEach(availableModels) { model in
+                                    Text("\(model.displayLabel) · \(model.providerLabel)").tag(model.id)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                        }
                     }
                     Section("Allowed Tools (comma separated)") {
                         TextField("search_library, web_search", text: $profileAllowedCSV)
@@ -434,6 +472,8 @@ struct ChatView: View {
             availablePersonas = personas.keys.sorted()
             let toolsResp: ChatToolsResponse = try await api.request("/chat/tools")
             availableTools = toolsResp.tools.sorted()
+            let modelsResp: ChatModelListResponse = try await api.request("/llm/models")
+            availableModels = modelsResp.models
         } catch {
             loadingError = error.localizedDescription
         }
@@ -442,6 +482,7 @@ struct ChatView: View {
     private func prepareProfileEditor() {
         guard let selected = selectedSession else { return }
         profilePersona = selected.persona
+        profileModel = selected.llmModel ?? availableModels.first(where: { $0.isDefaultChat })?.id ?? availableModels.first?.id ?? ""
         let overrides = sessionToolOverrides[selected.id] ?? SessionToolOverrides()
         profileAllowedCSV = overrides.allowedTools.joined(separator: ", ")
         profileBlockedCSV = overrides.blockedTools.joined(separator: ", ")
@@ -463,12 +504,18 @@ struct ChatView: View {
         )
 
         struct PersonaBody: Encodable { let persona: String }
+        struct ModelBody: Encodable { let llmModel: String }
         let api = APIClient(authManager: authManager)
         do {
-            let updated: SessionSummary = try await api.request(
+            _ = try await api.request(
                 "/chat/sessions/\(selected.id)/persona",
                 method: "PATCH",
                 body: PersonaBody(persona: profilePersona)
+            ) as SessionSummary
+            let updated: SessionSummary = try await api.request(
+                "/chat/sessions/\(selected.id)/model",
+                method: "PATCH",
+                body: ModelBody(llmModel: profileModel)
             )
             if let idx = sessions.firstIndex(where: { $0.id == selected.id }) {
                 sessions[idx] = updated
@@ -510,7 +557,7 @@ struct ChatView: View {
                 id: created.id,
                 title: created.title,
                 persona: created.persona,
-                llmModel: nil
+                llmModel: created.llmModel
             )
             sessions.insert(summary, at: 0)
             selectedSession = summary
@@ -632,6 +679,14 @@ struct ChatView: View {
         let api = APIClient(authManager: authManager)
         do {
             let history: SessionHistoryResponse = try await api.request("/chat/sessions/\(sessionId)")
+            if let idx = sessions.firstIndex(where: { $0.id == sessionId }) {
+                let existing = sessions[idx]
+                let updated = SessionSummary(id: existing.id, title: history.title ?? existing.title, persona: history.persona, llmModel: history.llmModel)
+                sessions[idx] = updated
+                if selectedSession?.id == sessionId {
+                    selectedSession = updated
+                }
+            }
             messages = history.messages.map {
                 CachedMessage(
                     serverMessageId: $0.id,

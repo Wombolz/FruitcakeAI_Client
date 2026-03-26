@@ -15,6 +15,7 @@ struct UserProfile: Codable, Equatable {
     let fullName: String?
     let role: String
     let persona: String
+    let chatRoutingPreference: String
     let libraryScopes: [String]
     let isActive: Bool
 
@@ -22,6 +23,7 @@ struct UserProfile: Codable, Equatable {
     // so snake_case CodingKeys are required here.
     enum CodingKeys: String, CodingKey {
         case id, username, email, role, persona
+        case chatRoutingPreference = "chat_routing_preference"
         case fullName      = "full_name"
         case libraryScopes = "library_scopes"
         case isActive      = "is_active"
