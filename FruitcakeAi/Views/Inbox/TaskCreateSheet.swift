@@ -7,6 +7,30 @@
 
 import SwiftUI
 
+private struct TaskModelOption: Decodable, Identifiable, Hashable {
+    let id: String
+    let provider: String
+    let label: String
+    let isDefaultChat: Bool
+    let isDefaultTaskSmall: Bool
+    let isDefaultTaskLarge: Bool
+
+    var displayLabel: String {
+        if isDefaultTaskSmall || isDefaultTaskLarge {
+            return "\(label) (Default task)"
+        }
+        return label
+    }
+
+    var providerLabel: String {
+        provider.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+}
+
+private struct TaskModelListResponse: Decodable {
+    let models: [TaskModelOption]
+}
+
 struct TaskCreateSheet: View {
 
     @Environment(AuthManager.self) private var authManager
@@ -26,6 +50,8 @@ struct TaskCreateSheet: View {
     @State private var activeHoursEnabled = false
     @State private var activeHoursStart = "07:00"
     @State private var activeHoursEnd = "22:00"
+    @State private var availableModels: [TaskModelOption] = []
+    @State private var selectedModelOverride = ""
 
     // MARK: - Submission state
 
@@ -84,6 +110,7 @@ struct TaskCreateSheet: View {
                 titleSection
                 instructionSection
                 scheduleSection
+                modelSection
                 optionsSection
                 activeHoursSection
                 if let error = submitError {
@@ -96,6 +123,7 @@ struct TaskCreateSheet: View {
             }
             .formStyle(.grouped)
         }
+        .task { await loadModels() }
         #if os(macOS)
         .frame(width: 480, height: 520)
         #else
@@ -157,6 +185,22 @@ struct TaskCreateSheet: View {
             if scheduleKey == "one_shot" {
                 Toggle("Run immediately after create", isOn: $runNow)
             }
+        }
+    }
+
+    private var modelSection: some View {
+        Section {
+            Picker("Model", selection: $selectedModelOverride) {
+                Text("Automatic").tag("")
+                ForEach(availableModels) { model in
+                    Text("\(model.providerLabel) · \(model.displayLabel)").tag(model.id)
+                }
+            }
+            .pickerStyle(.menu)
+        } header: {
+            Text("Model")
+        } footer: {
+            Text("Automatic uses the default task routing. Pick a model here to force one model for all LLM stages of this task.")
         }
     }
 
@@ -222,6 +266,7 @@ struct TaskCreateSheet: View {
         let req = CreateTaskRequest(
             title: title.trimmingCharacters(in: .whitespaces),
             instruction: instruction.trimmingCharacters(in: .whitespaces),
+            llmModelOverride: selectedModelOverride.isEmpty ? nil : selectedModelOverride,
             taskType: taskType,
             schedule: schedule,
             deliver: deliver,
@@ -239,6 +284,16 @@ struct TaskCreateSheet: View {
             }
             onCreated()
             dismiss()
+        } catch {
+            submitError = error.localizedDescription
+        }
+    }
+
+    private func loadModels() async {
+        do {
+            let api = APIClient(authManager: authManager)
+            let response: TaskModelListResponse = try await api.request("/llm/models")
+            availableModels = response.models
         } catch {
             submitError = error.localizedDescription
         }

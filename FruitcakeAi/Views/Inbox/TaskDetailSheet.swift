@@ -8,6 +8,30 @@
 
 import SwiftUI
 
+private struct TaskDetailModelOption: Decodable, Identifiable, Hashable {
+    let id: String
+    let provider: String
+    let label: String
+    let isDefaultChat: Bool
+    let isDefaultTaskSmall: Bool
+    let isDefaultTaskLarge: Bool
+
+    var displayLabel: String {
+        if isDefaultTaskSmall || isDefaultTaskLarge {
+            return "\(label) (Default task)"
+        }
+        return label
+    }
+
+    var providerLabel: String {
+        provider.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+}
+
+private struct TaskDetailModelListResponse: Decodable {
+    let models: [TaskDetailModelOption]
+}
+
 struct TaskDetailSheet: View {
 
     @Environment(AuthManager.self) private var authManager
@@ -19,11 +43,15 @@ struct TaskDetailSheet: View {
     var onStop: (() -> Void)? = nil
     var onRun: (() -> Void)? = nil
     var onReset: (() -> Void)? = nil
+    var onUpdated: (() -> Void)? = nil
 
     @State private var audit: TaskAuditOut? = nil
     @State private var steps: [TaskStepSummary] = []
     @State private var isLoading = false
     @State private var loadError: String?
+    @State private var availableModels: [TaskDetailModelOption] = []
+    @State private var selectedModelOverride = ""
+    @State private var isSavingModel = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -126,6 +154,25 @@ struct TaskDetailSheet: View {
                         }
                     }
 
+                    Section("Model") {
+                        Picker("LLM", selection: $selectedModelOverride) {
+                            Text("Automatic").tag("")
+                            ForEach(availableModels) { model in
+                                Text("\(model.providerLabel) · \(model.displayLabel)").tag(model.id)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .disabled(isSavingModel)
+                        .onChange(of: selectedModelOverride) { oldValue, newValue in
+                            guard oldValue != newValue else { return }
+                            Task { await saveModelOverride(newValue) }
+                        }
+
+                        if isSavingModel {
+                            ProgressView("Saving model…")
+                        }
+                    }
+
                     // ── Result ────────────────────────────────────────────
                     if let result = audit.result {
                         Section("Result") {
@@ -161,7 +208,11 @@ struct TaskDetailSheet: View {
                 }
             }
         }
-        .task { await load() }
+        .task {
+            selectedModelOverride = task.llmModelOverride ?? ""
+            await load()
+            await loadModels()
+        }
         .frame(minWidth: 400, idealWidth: 500, minHeight: 400, idealHeight: 550)
     }
 
@@ -235,6 +286,31 @@ struct TaskDetailSheet: View {
         }
     }
 
+    private func loadModels() async {
+        do {
+            let api = APIClient(authManager: authManager)
+            let response: TaskDetailModelListResponse = try await api.request("/llm/models")
+            availableModels = response.models
+        } catch {
+            if loadError == nil {
+                loadError = error.localizedDescription
+            }
+        }
+    }
+
+    private func saveModelOverride(_ value: String) async {
+        isSavingModel = true
+        defer { isSavingModel = false }
+        do {
+            let api = APIClient(authManager: authManager)
+            _ = try await api.updateTaskModelOverride(task.id, llmModelOverride: value.isEmpty ? nil : value)
+            onUpdated?()
+        } catch {
+            loadError = error.localizedDescription
+            selectedModelOverride = task.llmModelOverride ?? ""
+        }
+    }
+
     private func linkifiedAttributedString(_ text: String) -> AttributedString {
         MarkdownText.attributedString(from: text)
     }
@@ -247,6 +323,7 @@ struct TaskDetailSheet: View {
         id: 1,
         title: "Morning Briefing",
         instruction: "Check my calendar and summarize anything urgent.",
+        llmModelOverride: nil,
         status: "completed",
         taskType: "recurring",
         schedule: "every:1d",

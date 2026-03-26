@@ -119,7 +119,8 @@ struct InboxView: View {
                             onStop:    { Task { await stop(task) } },
                             onRun:     { Task { await run(task) } },
                             onReset:   { Task { await reset(task) } },
-                            onDelete:  { Task { await delete(task) } }
+                            onDelete:  { Task { await delete(task) } },
+                            onUpdated: { Task { await loadTasks() } }
                         )
                     }
                 } header: {
@@ -136,7 +137,8 @@ struct InboxView: View {
                         onRun:         { Task { await run(task) } },
                         onReset:       { Task { await reset(task) } },
                         onDelete:      { Task { await delete(task) } },
-                        onReplyInChat: { Task { await replyInChat(task) } }
+                        onReplyInChat: { Task { await replyInChat(task) } },
+                        onUpdated:     { Task { await loadTasks() } }
                     )
                 }
             }

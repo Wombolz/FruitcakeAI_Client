@@ -14,6 +14,7 @@ struct TaskSummary: Identifiable, Codable {
     let id: Int
     let title: String
     let instruction: String
+    let llmModelOverride: String?
     let status: String
     let taskType: String            // "one_shot" | "recurring"
     let schedule: String?
@@ -85,6 +86,7 @@ struct TaskStepSummary: Identifiable, Codable {
 struct CreateTaskRequest: Encodable {
     let title: String
     let instruction: String
+    let llmModelOverride: String?
     let taskType: String            // "one_shot" | "recurring"
     let schedule: String?           // nil for one_shot; "every:1h" etc. for recurring
     let deliver: Bool

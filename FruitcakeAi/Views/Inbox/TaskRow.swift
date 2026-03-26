@@ -20,6 +20,7 @@ struct TaskRow: View {
     var onReset:       (() -> Void)? = nil
     var onDelete:      (() -> Void)? = nil
     var onReplyInChat: (() -> Void)? = nil
+    var onUpdated:     (() -> Void)? = nil
 
     @State private var showResult = false
     @State private var showDetail = false
@@ -61,7 +62,7 @@ struct TaskRow: View {
             }
         }
         .sheet(isPresented: $showDetail) {
-            TaskDetailSheet(task: task, onApprove: onApprove, onReject: onReject, onStop: onStop, onRun: onRun, onReset: onReset)
+            TaskDetailSheet(task: task, onApprove: onApprove, onReject: onReject, onStop: onStop, onRun: onRun, onReset: onReset, onUpdated: onUpdated)
                 .environment(authManager)
         }
     }
@@ -253,6 +254,7 @@ struct TaskRow: View {
             id: 1,
             title: "Morning Briefing",
             instruction: "Check my calendar and summarize anything urgent for today.",
+            llmModelOverride: nil,
             status: "completed",
             taskType: "recurring",
             schedule: "every:1d",
@@ -276,6 +278,7 @@ struct TaskRow: View {
                 id: 2,
                 title: "Schedule Appointment",
                 instruction: "Create a calendar event for the team lunch next Friday at noon.",
+                llmModelOverride: nil,
                 status: "waiting_approval",
                 taskType: "one_shot",
                 schedule: nil,
@@ -300,6 +303,7 @@ struct TaskRow: View {
             id: 3,
             title: "Weather Check",
             instruction: "Fetch the weather forecast for this week.",
+            llmModelOverride: nil,
             status: "failed",
             taskType: "recurring",
             schedule: "every:12h",

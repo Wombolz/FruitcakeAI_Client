@@ -174,6 +174,14 @@ final class APIClient {
         try await request("/tasks", method: "POST", body: req)
     }
 
+    func updateTaskModelOverride(_ id: Int, llmModelOverride: String?) async throws -> TaskSummary {
+        try await request(
+            "/tasks/\(id)",
+            method: "PATCH",
+            body: TaskModelOverridePatch(llmModelOverride: llmModelOverride)
+        )
+    }
+
     func approveTask(_ id: Int, approved: Bool) async throws {
         try await buildAndSendVoid("/tasks/\(id)", method: "PATCH",
                                    body: ApproveBody(approved: approved))
@@ -363,6 +371,7 @@ private struct ChatRoutingPreferenceBody: Encodable { let chatRoutingPreference:
 private struct SecretCreateBody: Encodable { let name: String; let value: String; let provider: String }
 private struct SecretUpdateBody: Encodable { let name: String; let provider: String; let isActive: Bool }
 private struct SecretRotateBody: Encodable { let value: String }
+private struct TaskModelOverridePatch: Encodable { let llmModelOverride: String? }
 
 // MARK: - Data multipart helpers
 
