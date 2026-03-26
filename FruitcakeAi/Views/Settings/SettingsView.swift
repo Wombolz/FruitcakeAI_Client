@@ -57,6 +57,7 @@ struct SettingsView: View {
 
             Section("Assistant") {
                 settingsLink("Routing", systemImage: "point.3.connected.trianglepath.dotted", destination: .routing)
+                settingsLink("Secrets", systemImage: "key", destination: .secrets)
                 settingsLink("Memories", systemImage: "brain", destination: .memories)
                 settingsLink("Token Usage", systemImage: "number.circle", destination: .tokenUsage)
             }
@@ -88,6 +89,9 @@ struct SettingsView: View {
                 .environment(authManager)
         case .routing:
             ChatRoutingView()
+                .environment(authManager)
+        case .secrets:
+            SecretsView()
                 .environment(authManager)
         case .memories:
             MemoriesView()
@@ -280,6 +284,7 @@ private enum SettingsDestination: String, Hashable, CaseIterable {
     case pushTesting
     case personas
     case routing
+    case secrets
     case memories
     case tokenUsage
 }

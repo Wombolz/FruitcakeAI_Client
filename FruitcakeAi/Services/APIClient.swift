@@ -242,6 +242,34 @@ final class APIClient {
         try await request("/memories/usage?limit=\(limit)")
     }
 
+    func fetchSecrets() async throws -> [SecretSummary] {
+        try await request("/secrets")
+    }
+
+    func createSecret(name: String, provider: String, value: String) async throws -> SecretSummary {
+        try await request(
+            "/secrets",
+            method: "POST",
+            body: SecretCreateBody(name: name, value: value, provider: provider)
+        )
+    }
+
+    func updateSecret(_ id: Int, name: String, provider: String, isActive: Bool) async throws -> SecretSummary {
+        try await request(
+            "/secrets/\(id)",
+            method: "PATCH",
+            body: SecretUpdateBody(name: name, provider: provider, isActive: isActive)
+        )
+    }
+
+    func rotateSecret(_ id: Int, value: String) async throws -> SecretSummary {
+        try await request(
+            "/secrets/\(id)/rotate",
+            method: "POST",
+            body: SecretRotateBody(value: value)
+        )
+    }
+
     func updateChatRoutingPreference(_ preference: String) async throws {
         try await buildAndSendVoid(
             "/auth/me/preferences",
@@ -332,6 +360,9 @@ final class APIClient {
 private struct ApproveBody: Encodable { let approved: Bool }
 private struct ImportanceBody: Encodable { let importance: Double }
 private struct ChatRoutingPreferenceBody: Encodable { let chatRoutingPreference: String }
+private struct SecretCreateBody: Encodable { let name: String; let value: String; let provider: String }
+private struct SecretUpdateBody: Encodable { let name: String; let provider: String; let isActive: Bool }
+private struct SecretRotateBody: Encodable { let value: String }
 
 // MARK: - Data multipart helpers
 

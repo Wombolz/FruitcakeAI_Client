@@ -156,3 +156,19 @@ struct LLMUsageEventSummary: Identifiable, Codable, Hashable {
         return String(format: "$%.4f", estimatedCostUsd)
     }
 }
+
+struct SecretSummary: Identifiable, Codable, Hashable {
+    let id: Int
+    let name: String
+    let provider: String
+    let maskedPreview: String
+    let isActive: Bool
+    let createdAt: Date
+    let updatedAt: Date?
+    let lastUsedAt: Date?
+
+    var providerDisplay: String {
+        let candidate = provider.trimmingCharacters(in: .whitespacesAndNewlines)
+        return candidate.isEmpty ? "General" : candidate.capitalized
+    }
+}
