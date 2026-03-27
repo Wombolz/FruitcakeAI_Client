@@ -182,6 +182,42 @@ final class APIClient {
         )
     }
 
+    func fetchLinkedSources() async throws -> [LinkedSourceSummary] {
+        try await request("/library/sources")
+    }
+
+    func linkFileSource(path: String, scope: String) async throws -> LinkedSourceResponse {
+        try await request(
+            "/library/link-file",
+            method: "POST",
+            body: LinkSourceBody(path: path, scope: scope, excludedPaths: [])
+        )
+    }
+
+    func linkFolderSource(path: String, scope: String, excludedPaths: [String]) async throws -> LinkedSourceResponse {
+        try await request(
+            "/library/link-folder",
+            method: "POST",
+            body: LinkSourceBody(path: path, scope: scope, excludedPaths: excludedPaths)
+        )
+    }
+
+    func rescanLinkedSource(_ id: Int) async throws -> LinkedSourceResponse {
+        try await request("/library/sources/\(id)/rescan", method: "POST")
+    }
+
+    func fetchLinkedSource(_ id: Int) async throws -> LinkedSourceDetailResponse {
+        try await request("/library/sources/\(id)")
+    }
+
+    func updateLinkedSourceExclusions(_ id: Int, excludedPaths: [String]) async throws -> LinkedSourceDetailResponse {
+        try await request(
+            "/library/sources/\(id)",
+            method: "PATCH",
+            body: LinkedSourceExclusionBody(excludedPaths: excludedPaths)
+        )
+    }
+
     func approveTask(_ id: Int, approved: Bool) async throws {
         try await buildAndSendVoid("/tasks/\(id)", method: "PATCH",
                                    body: ApproveBody(approved: approved))
@@ -371,6 +407,12 @@ private struct ChatRoutingPreferenceBody: Encodable { let chatRoutingPreference:
 private struct SecretCreateBody: Encodable { let name: String; let value: String; let provider: String }
 private struct SecretUpdateBody: Encodable { let name: String; let provider: String; let isActive: Bool }
 private struct SecretRotateBody: Encodable { let value: String }
+private struct LinkSourceBody: Encodable {
+    let path: String
+    let scope: String
+    let excludedPaths: [String]
+}
+private struct LinkedSourceExclusionBody: Encodable { let excludedPaths: [String] }
 private struct TaskModelOverridePatch: Encodable {
     let llmModelOverride: String?
 
