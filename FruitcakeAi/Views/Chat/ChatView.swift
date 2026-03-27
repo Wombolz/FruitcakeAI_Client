@@ -53,6 +53,7 @@ private struct ChatToolsResponse: Decodable {
 }
 
 private struct ChatPersonaInfo: Decodable {
+    let displayName: String?
     let description: String?
     let tone: String?
     let blockedTools: [String]?
@@ -138,15 +139,23 @@ struct ChatView: View {
     @State private var renameInput: String = ""
     @State private var showProfileSheet: Bool = false
     @State private var availablePersonas: [String] = []
+    @State private var availablePersonaInfo: [String: ChatPersonaInfo] = [:]
     @State private var availableTools: [String] = []
     @State private var availableModels: [ChatModelOption] = []
     @State private var sessionToolOverrides: [Int: SessionToolOverrides] = [:]
     @State private var profilePersona: String = "family_assistant"
-        @State private var profileAllowedCSV: String = ""
+    @State private var profileAllowedCSV: String = ""
     @State private var profileBlockedCSV: String = ""
     @State private var profileError: String?
 
     @State private var wsManager = WebSocketManager()
+
+    private func personaDisplayName(_ key: String) -> String {
+        if let info = availablePersonaInfo[key], let displayName = info.displayName, !displayName.isEmpty {
+            return displayName
+        }
+        return key.replacingOccurrences(of: "_", with: " ").capitalized
+    }
 
     // MARK: - Body
 
@@ -241,7 +250,7 @@ struct ChatView: View {
                     Section("Persona") {
                         Picker("Persona", selection: $profilePersona) {
                             ForEach(availablePersonas, id: \.self) { persona in
-                                Text(persona.replacingOccurrences(of: "_", with: " ").capitalized).tag(persona)
+                                Text(personaDisplayName(persona)).tag(persona)
                             }
                         }
                         .pickerStyle(.menu)
@@ -294,7 +303,7 @@ struct ChatView: View {
                     Text(session.displayTitle)
                         .font(.body)
                         .lineLimit(1)
-                    Text(session.persona.replacingOccurrences(of: "_", with: " ").capitalized)
+                    Text(personaDisplayName(session.persona))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -363,7 +372,7 @@ struct ChatView: View {
                 ScrollView {
                     LazyVStack(spacing: 2) {
                         ForEach(messages) { msg in
-                            MessageBubble(message: msg, persona: session.persona)
+                            MessageBubble(message: msg, persona: personaDisplayName(session.persona))
                                 .id(msg.id)
                         }
 
@@ -396,7 +405,7 @@ struct ChatView: View {
         }
         .navigationTitle(session.displayTitle)
         #if os(macOS)
-        .navigationSubtitle(session.persona.replacingOccurrences(of: "_", with: " ").capitalized)
+        .navigationSubtitle(personaDisplayName(session.persona))
         #endif
     }
 
@@ -558,6 +567,7 @@ struct ChatView: View {
         let api = APIClient(authManager: authManager)
         do {
             let personas: [String: ChatPersonaInfo] = try await api.request("/chat/personas")
+            availablePersonaInfo = personas
             availablePersonas = personas.keys.sorted()
             let toolsResp: ChatToolsResponse = try await api.request("/chat/tools")
             availableTools = toolsResp.tools.sorted()

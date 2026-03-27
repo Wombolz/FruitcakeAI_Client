@@ -371,7 +371,22 @@ private struct ChatRoutingPreferenceBody: Encodable { let chatRoutingPreference:
 private struct SecretCreateBody: Encodable { let name: String; let value: String; let provider: String }
 private struct SecretUpdateBody: Encodable { let name: String; let provider: String; let isActive: Bool }
 private struct SecretRotateBody: Encodable { let value: String }
-private struct TaskModelOverridePatch: Encodable { let llmModelOverride: String? }
+private struct TaskModelOverridePatch: Encodable {
+    let llmModelOverride: String?
+
+    enum CodingKeys: String, CodingKey {
+        case llmModelOverride = "llm_model_override"
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        if let llmModelOverride {
+            try container.encode(llmModelOverride, forKey: .llmModelOverride)
+        } else {
+            try container.encodeNil(forKey: .llmModelOverride)
+        }
+    }
+}
 
 // MARK: - Data multipart helpers
 

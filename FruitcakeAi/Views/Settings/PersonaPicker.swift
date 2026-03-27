@@ -8,6 +8,7 @@
 import SwiftUI
 
 struct PersonaInfo: Codable {
+    let displayName: String?
     let description: String?
     let tone: String?
     let blockedTools: [String]?
@@ -118,7 +119,10 @@ private struct PersonaRow: View {
     let onSelect: () -> Void
 
     var displayName: String {
-        name.replacingOccurrences(of: "_", with: " ").capitalized
+        if let displayName = info.displayName, !displayName.isEmpty {
+            return displayName
+        }
+        return name.replacingOccurrences(of: "_", with: " ").capitalized
     }
 
     var body: some View {
