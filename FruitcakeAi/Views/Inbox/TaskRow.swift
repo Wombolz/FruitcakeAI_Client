@@ -45,9 +45,7 @@ struct TaskRow: View {
                 approvalButtons
             }
 
-            if task.canStop {
-                stopButton
-            }
+            actionButtons
 
             if task.result != nil {
                 replyButton
@@ -85,7 +83,7 @@ struct TaskRow: View {
                     .foregroundStyle(.secondary)
             }
 
-            if task.result != nil || task.isPendingApproval {
+            if task.result != nil || task.isPendingApproval || task.canRun || task.canStop || task.canReset {
                 Button { showDetail = true } label: {
                     Image(systemName: "list.bullet.rectangle")
                         .imageScale(.small)
@@ -206,15 +204,43 @@ struct TaskRow: View {
         .padding(.top, 2)
     }
 
-    private var stopButton: some View {
-        Button(role: .destructive) {
-            onStop?()
-        } label: {
-            Label("Stop Task", systemImage: "stop.circle")
+    @ViewBuilder
+    private var actionButtons: some View {
+        if task.canRun || task.canReset || task.canStop {
+            HStack(spacing: 12) {
+                if task.canRun {
+                    Button {
+                        onRun?()
+                    } label: {
+                        Label("Run", systemImage: "play.circle")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.blue)
+                    .controlSize(.small)
+                }
+
+                if task.canReset {
+                    Button {
+                        onReset?()
+                    } label: {
+                        Label("Reset", systemImage: "arrow.counterclockwise.circle")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+
+                if task.canStop {
+                    Button(role: .destructive) {
+                        onStop?()
+                    } label: {
+                        Label(task.isRunning ? "Stop Task" : "Stop", systemImage: "stop.circle")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+            .padding(.top, 2)
         }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .padding(.top, 2)
     }
 
     private var approvalButtons: some View {

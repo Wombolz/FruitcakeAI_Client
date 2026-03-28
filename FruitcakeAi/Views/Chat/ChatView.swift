@@ -135,6 +135,8 @@ struct ChatView: View {
     @State private var deleteError: String?
     @State private var renameError: String?
     @State private var isSending: Bool = false
+    @State private var isStopping: Bool = false
+    @State private var activeSendTask: Task<Void, Never>?
     @State private var renameTarget: SessionSummary?
     @State private var renameInput: String = ""
     @State private var showProfileSheet: Bool = false
@@ -376,11 +378,6 @@ struct ChatView: View {
                                 .id(msg.id)
                         }
 
-                        // Streaming in-progress
-                        if showToolIndicator && streamingContent.isEmpty {
-                            ToolCallIndicator()
-                                .id("indicator")
-                        }
                         if !streamingContent.isEmpty {
                             streamingBubble
                                 .id("streaming")
@@ -393,9 +390,6 @@ struct ChatView: View {
                 }
                 .onChange(of: messages.count) { _, _ in
                     withAnimation { proxy.scrollTo(messages.last?.id, anchor: .bottom) }
-                }
-                .onChange(of: showToolIndicator) { _, _ in
-                    withAnimation { proxy.scrollTo("indicator", anchor: .bottom) }
                 }
             }
 
@@ -438,6 +432,18 @@ struct ChatView: View {
                 .disabled(isSending)
                 .onSubmit { sendIfReady(sessionId: sessionId) }
 
+            if isSending {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .controlSize(.small)
+                    Text(isStopping ? "Stopping…" : "Working… Tap stop to cancel.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 2)
+            }
+
             HStack(alignment: .center, spacing: 10) {
                 HStack(spacing: 8) {
                     modelMenu(sessionId: sessionId)
@@ -447,13 +453,17 @@ struct ChatView: View {
                 Spacer(minLength: 0)
 
                 Button {
-                    sendIfReady(sessionId: sessionId)
+                    if isSending {
+                        Task { await stopActiveResponse(sessionId: sessionId) }
+                    } else {
+                        sendIfReady(sessionId: sessionId)
+                    }
                 } label: {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.title2)
-                        .foregroundStyle(canSend ? Color.accentColor : Color.secondary)
+                    Image(systemName: isSending ? "stop.circle.fill" : "arrow.up.circle.fill")
+                        .font(.title)
+                        .foregroundStyle(isSending ? Color.red : (canSend ? Color.accentColor : Color.secondary))
                 }
-                .disabled(!canSend)
+                .disabled(!isSending && !canSend)
             }
         }
         .padding(.horizontal)
@@ -543,8 +553,14 @@ struct ChatView: View {
     private func sendIfReady(sessionId: Int) {
         let text = inputText.trimmingCharacters(in: .whitespaces)
         guard !text.isEmpty, !isSending else { return }
+        isSending = true
+        isStopping = false
+        showToolIndicator = true
+        streamingContent = ""
+        loadingError = nil
         inputText = ""
-        Task { await sendMessage(text, sessionId: sessionId) }
+        let task = Task { await sendMessage(text, sessionId: sessionId) }
+        activeSendTask = task
     }
 
     // MARK: - Networking
@@ -839,10 +855,6 @@ struct ChatView: View {
     }
 
     private func sendMessage(_ text: String, sessionId: Int) async {
-        isSending = true
-        showToolIndicator = true
-        streamingContent = ""
-        loadingError = nil
         let overrides = sessionToolOverrides[sessionId] ?? SessionToolOverrides()
 
         // Optimistic user message
@@ -855,7 +867,9 @@ struct ChatView: View {
         guard connectivity.isBackendReachable else {
             await sendViaOnDevice(text)
             isSending = false
+            isStopping = false
             showToolIndicator = false
+            activeSendTask = nil
             return
         }
 
@@ -863,7 +877,9 @@ struct ChatView: View {
             // Backend reachable but WebSocket not yet connected → REST POST
             await sendViaREST(text, sessionId: sessionId, overrides: overrides)
             isSending = false
+            isStopping = false
             showToolIndicator = false
+            activeSendTask = nil
             return
         }
 
@@ -877,7 +893,9 @@ struct ChatView: View {
         } catch {
             loadingError = error.localizedDescription
             isSending = false
+            isStopping = false
             showToolIndicator = false
+            activeSendTask = nil
             return
         }
 
@@ -903,6 +921,8 @@ struct ChatView: View {
                 selectedConversation?.lastActivity = .now
 
                 isSending = false
+                isStopping = false
+                activeSendTask = nil
                 break eventLoop
 
             case .personaSwitched(let name, let message):
@@ -921,6 +941,8 @@ struct ChatView: View {
                 streamingContent = ""
                 showToolIndicator = false
                 isSending = false
+                isStopping = false
+                activeSendTask = nil
                 break eventLoop
 
             case .error(let msg):
@@ -928,9 +950,53 @@ struct ChatView: View {
                 streamingContent = ""
                 showToolIndicator = false
                 isSending = false
+                isStopping = false
+                activeSendTask = nil
+                break eventLoop
+
+            case .stopRequested(_):
+                showToolIndicator = false
+
+            case .stopped(_):
+                streamingContent = ""
+                showToolIndicator = false
+                isSending = false
+                isStopping = false
+                activeSendTask = nil
                 break eventLoop
             }
         }
+    }
+
+    private func stopActiveResponse(sessionId: Int) async {
+        guard isSending, !isStopping else { return }
+        isStopping = true
+        showToolIndicator = false
+        let api = APIClient(authManager: authManager)
+
+        if connectivity.isBackendReachable {
+            if wsManager.isConnected {
+                do {
+                    try await wsManager.sendStop()
+                    return
+                } catch {
+                    // Fall back to REST stop if the socket control message fails.
+                }
+            }
+
+            do {
+                try await api.stopChatSession(sessionId)
+                return
+            } catch {
+                loadingError = error.localizedDescription
+            }
+        }
+
+        isStopping = false
+        isSending = false
+        streamingContent = ""
+        showToolIndicator = false
+        activeSendTask = nil
     }
 
     private func sendViaOnDevice(_ text: String) async {
@@ -975,6 +1041,9 @@ struct ChatView: View {
             selectedConversation?.messages.append(msg)
             selectedConversation?.lastActivity = .now
         } catch {
+            if isStopping {
+                return
+            }
             loadingError = error.localizedDescription
         }
     }

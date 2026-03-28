@@ -389,6 +389,10 @@ final class APIClient {
                                    method: "POST", body: Body(content: content))
     }
 
+    func stopChatSession(_ sessionId: Int) async throws {
+        try await requestVoid("/chat/sessions/\(sessionId)/stop", method: "POST")
+    }
+
     // MARK: - Private body-carrying void helper
 
     private func buildAndSendVoid(_ path: String, method: String,

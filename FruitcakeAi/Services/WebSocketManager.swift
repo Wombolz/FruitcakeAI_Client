@@ -21,6 +21,8 @@ enum WSEvent {
     case token(String)                          // partial chunk — append to streaming buffer
     case done(String)                           // full response — store in SwiftData
     case personaSwitched(name: String, message: String)
+    case stopRequested(String)
+    case stopped(String)
     case error(String)
 }
 
@@ -91,6 +93,13 @@ final class WebSocketManager: NSObject {
         return stream
     }
 
+    func sendStop() async throws {
+        guard let task = webSocketTask, isConnected else { return }
+        let data = try JSONSerialization.data(withJSONObject: ["type": "stop"], options: [])
+        let text = String(data: data, encoding: .utf8) ?? "{}"
+        try await task.send(.string(text))
+    }
+
     // MARK: - Disconnect
 
     func disconnect() {
@@ -141,6 +150,14 @@ final class WebSocketManager: NSObject {
         case "persona":
             let name = payload.persona ?? ""
             responseContinuation?.yield(.personaSwitched(name: name, message: payload.content))
+            responseContinuation?.finish()
+            responseContinuation = nil
+
+        case "stop_requested":
+            responseContinuation?.yield(.stopRequested(payload.content))
+
+        case "stopped":
+            responseContinuation?.yield(.stopped(payload.content))
             responseContinuation?.finish()
             responseContinuation = nil
 
