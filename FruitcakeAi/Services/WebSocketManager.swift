@@ -21,8 +21,6 @@ enum WSEvent {
     case token(String)                          // partial chunk — append to streaming buffer
     case done(String)                           // full response — store in SwiftData
     case personaSwitched(name: String, message: String)
-    case stopRequested(String)
-    case stopped(String)
     case error(String)
 }
 
@@ -32,6 +30,7 @@ enum WSEvent {
 final class WebSocketManager: NSObject {
 
     private(set) var isConnected: Bool = false
+    private(set) var connectionID: String = ""
 
     private var webSocketTask: URLSessionWebSocketTask?
     private var urlSession: URLSession?
@@ -45,6 +44,7 @@ final class WebSocketManager: NSObject {
         disconnect()
 
         guard let wsURL = makeWSURL(from: serverURL, sessionId: sessionId) else { return }
+        connectionID = UUID().uuidString
 
         var request = URLRequest(url: wsURL)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -53,6 +53,7 @@ final class WebSocketManager: NSObject {
         webSocketTask = urlSession?.webSocketTask(with: request)
         webSocketTask?.resume()
         isConnected = true
+        print("[ChatTrace] ws_connect session=\(sessionId) connection_id=\(connectionID) url=\(wsURL.absoluteString)")
 
         Task { await receiveLoop() }
     }
@@ -63,6 +64,7 @@ final class WebSocketManager: NSObject {
     /// The stream finishes when a terminal event (.done, .error, .personaSwitched) arrives.
     func sendAndReceive(
         _ content: String,
+        clientSendID: String,
         allowedTools: [String]? = nil,
         blockedTools: [String]? = nil
     ) throws -> AsyncStream<WSEvent> {
@@ -76,7 +78,7 @@ final class WebSocketManager: NSObject {
         let (stream, continuation) = AsyncStream<WSEvent>.makeStream()
         responseContinuation = continuation
 
-        var payload: [String: Any] = ["content": content]
+        var payload: [String: Any] = ["content": content, "client_send_id": clientSendID]
         if let allowedTools, !allowedTools.isEmpty {
             payload["allowed_tools"] = allowedTools
         }
@@ -85,6 +87,7 @@ final class WebSocketManager: NSObject {
         }
         let data = try JSONSerialization.data(withJSONObject: payload, options: [])
         let text = String(data: data, encoding: .utf8) ?? "{}"
+        print("[ChatTrace] ws_send connection_id=\(connectionID) client_send_id=\(clientSendID) chars=\(content.count)")
 
         Task {
             try await task.send(.string(text))
@@ -93,22 +96,19 @@ final class WebSocketManager: NSObject {
         return stream
     }
 
-    func sendStop() async throws {
-        guard let task = webSocketTask, isConnected else { return }
-        let data = try JSONSerialization.data(withJSONObject: ["type": "stop"], options: [])
-        let text = String(data: data, encoding: .utf8) ?? "{}"
-        try await task.send(.string(text))
-    }
-
     // MARK: - Disconnect
 
     func disconnect() {
+        if isConnected {
+            print("[ChatTrace] ws_disconnect connection_id=\(connectionID)")
+        }
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
         webSocketTask = nil
         urlSession = nil
         responseContinuation?.finish()
         responseContinuation = nil
         isConnected = false
+        connectionID = ""
     }
 
     // MARK: - Receive loop
@@ -150,14 +150,6 @@ final class WebSocketManager: NSObject {
         case "persona":
             let name = payload.persona ?? ""
             responseContinuation?.yield(.personaSwitched(name: name, message: payload.content))
-            responseContinuation?.finish()
-            responseContinuation = nil
-
-        case "stop_requested":
-            responseContinuation?.yield(.stopRequested(payload.content))
-
-        case "stopped":
-            responseContinuation?.yield(.stopped(payload.content))
             responseContinuation?.finish()
             responseContinuation = nil
 

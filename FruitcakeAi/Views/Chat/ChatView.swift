@@ -135,8 +135,8 @@ struct ChatView: View {
     @State private var deleteError: String?
     @State private var renameError: String?
     @State private var isSending: Bool = false
-    @State private var isStopping: Bool = false
-    @State private var activeSendTask: Task<Void, Never>?
+    @State private var sendClaimed: Bool = false
+    @State private var activeClientSendID: String?
     @State private var renameTarget: SessionSummary?
     @State private var renameInput: String = ""
     @State private var showProfileSheet: Bool = false
@@ -378,6 +378,11 @@ struct ChatView: View {
                                 .id(msg.id)
                         }
 
+                        // Streaming in-progress
+                        if showToolIndicator && streamingContent.isEmpty {
+                            ToolCallIndicator()
+                                .id("indicator")
+                        }
                         if !streamingContent.isEmpty {
                             streamingBubble
                                 .id("streaming")
@@ -390,6 +395,9 @@ struct ChatView: View {
                 }
                 .onChange(of: messages.count) { _, _ in
                     withAnimation { proxy.scrollTo(messages.last?.id, anchor: .bottom) }
+                }
+                .onChange(of: showToolIndicator) { _, _ in
+                    withAnimation { proxy.scrollTo("indicator", anchor: .bottom) }
                 }
             }
 
@@ -432,18 +440,6 @@ struct ChatView: View {
                 .disabled(isSending)
                 .onSubmit { sendIfReady(sessionId: sessionId) }
 
-            if isSending {
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .progressViewStyle(.circular)
-                        .controlSize(.small)
-                    Text(isStopping ? "Stopping…" : "Working… Tap stop to cancel.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 2)
-            }
-
             HStack(alignment: .center, spacing: 10) {
                 HStack(spacing: 8) {
                     modelMenu(sessionId: sessionId)
@@ -453,17 +449,13 @@ struct ChatView: View {
                 Spacer(minLength: 0)
 
                 Button {
-                    if isSending {
-                        Task { await stopActiveResponse(sessionId: sessionId) }
-                    } else {
-                        sendIfReady(sessionId: sessionId)
-                    }
+                    sendIfReady(sessionId: sessionId)
                 } label: {
-                    Image(systemName: isSending ? "stop.circle.fill" : "arrow.up.circle.fill")
-                        .font(.title)
-                        .foregroundStyle(isSending ? Color.red : (canSend ? Color.accentColor : Color.secondary))
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(canSend ? Color.accentColor : Color.secondary)
                 }
-                .disabled(!isSending && !canSend)
+                .disabled(!canSend)
             }
         }
         .padding(.horizontal)
@@ -547,20 +539,20 @@ struct ChatView: View {
     }
 
     private var canSend: Bool {
-        !inputText.trimmingCharacters(in: .whitespaces).isEmpty && !isSending
+        !inputText.trimmingCharacters(in: .whitespaces).isEmpty && !isSending && !sendClaimed
     }
 
     private func sendIfReady(sessionId: Int) {
         let text = inputText.trimmingCharacters(in: .whitespaces)
-        guard !text.isEmpty, !isSending else { return }
-        isSending = true
-        isStopping = false
-        showToolIndicator = true
-        streamingContent = ""
-        loadingError = nil
+        guard !text.isEmpty, !isSending, !sendClaimed else { return }
+        sendClaimed = true
+        let clientSendID = UUID().uuidString
+        print(
+            "[ChatTrace] send_if_ready session=\(sessionId) client_send_id=\(clientSendID) chars=\(text.count) ws_connected=\(wsManager.isConnected)"
+        )
         inputText = ""
-        let task = Task { await sendMessage(text, sessionId: sessionId) }
-        activeSendTask = task
+        activeClientSendID = clientSendID
+        Task { await sendMessage(text, sessionId: sessionId, clientSendID: clientSendID) }
     }
 
     // MARK: - Networking
@@ -854,7 +846,14 @@ struct ChatView: View {
         wsManager.connect(serverURL: serverURL, sessionId: sessionId, token: token)
     }
 
-    private func sendMessage(_ text: String, sessionId: Int) async {
+    private func sendMessage(_ text: String, sessionId: Int, clientSendID: String) async {
+        isSending = true
+        showToolIndicator = true
+        streamingContent = ""
+        loadingError = nil
+        print(
+            "[ChatTrace] send_message_start session=\(sessionId) client_send_id=\(clientSendID) ws_connected=\(wsManager.isConnected) connection_id=\(wsManager.connectionID)"
+        )
         let overrides = sessionToolOverrides[sessionId] ?? SessionToolOverrides()
 
         // Optimistic user message
@@ -865,37 +864,48 @@ struct ChatView: View {
 
         // Offline → on-device FoundationModels fallback
         guard connectivity.isBackendReachable else {
+            print(
+                "[ChatTrace] send_path session=\(sessionId) client_send_id=\(clientSendID) path=on_device reason=backend_unreachable"
+            )
             await sendViaOnDevice(text)
             isSending = false
-            isStopping = false
+            sendClaimed = false
             showToolIndicator = false
-            activeSendTask = nil
+            activeClientSendID = nil
             return
         }
 
         guard wsManager.isConnected else {
             // Backend reachable but WebSocket not yet connected → REST POST
-            await sendViaREST(text, sessionId: sessionId, overrides: overrides)
+            print(
+                "[ChatTrace] send_path session=\(sessionId) client_send_id=\(clientSendID) path=rest reason=ws_not_connected connection_id=\(wsManager.connectionID)"
+            )
+            await sendViaREST(text, sessionId: sessionId, clientSendID: clientSendID, overrides: overrides)
             isSending = false
-            isStopping = false
+            sendClaimed = false
             showToolIndicator = false
-            activeSendTask = nil
+            activeClientSendID = nil
             return
         }
+
+        print(
+            "[ChatTrace] send_path session=\(sessionId) client_send_id=\(clientSendID) path=websocket connection_id=\(wsManager.connectionID)"
+        )
 
         let responseStream: AsyncStream<WSEvent>
         do {
             responseStream = try wsManager.sendAndReceive(
                 text,
+                clientSendID: clientSendID,
                 allowedTools: overrides.allowedTools,
                 blockedTools: overrides.blockedTools
             )
         } catch {
             loadingError = error.localizedDescription
             isSending = false
-            isStopping = false
+            sendClaimed = false
             showToolIndicator = false
-            activeSendTask = nil
+            activeClientSendID = nil
             return
         }
 
@@ -921,8 +931,8 @@ struct ChatView: View {
                 selectedConversation?.lastActivity = .now
 
                 isSending = false
-                isStopping = false
-                activeSendTask = nil
+                sendClaimed = false
+                activeClientSendID = nil
                 break eventLoop
 
             case .personaSwitched(let name, let message):
@@ -941,8 +951,8 @@ struct ChatView: View {
                 streamingContent = ""
                 showToolIndicator = false
                 isSending = false
-                isStopping = false
-                activeSendTask = nil
+                sendClaimed = false
+                activeClientSendID = nil
                 break eventLoop
 
             case .error(let msg):
@@ -950,53 +960,11 @@ struct ChatView: View {
                 streamingContent = ""
                 showToolIndicator = false
                 isSending = false
-                isStopping = false
-                activeSendTask = nil
-                break eventLoop
-
-            case .stopRequested(_):
-                showToolIndicator = false
-
-            case .stopped(_):
-                streamingContent = ""
-                showToolIndicator = false
-                isSending = false
-                isStopping = false
-                activeSendTask = nil
+                sendClaimed = false
+                activeClientSendID = nil
                 break eventLoop
             }
         }
-    }
-
-    private func stopActiveResponse(sessionId: Int) async {
-        guard isSending, !isStopping else { return }
-        isStopping = true
-        showToolIndicator = false
-        let api = APIClient(authManager: authManager)
-
-        if connectivity.isBackendReachable {
-            if wsManager.isConnected {
-                do {
-                    try await wsManager.sendStop()
-                    return
-                } catch {
-                    // Fall back to REST stop if the socket control message fails.
-                }
-            }
-
-            do {
-                try await api.stopChatSession(sessionId)
-                return
-            } catch {
-                loadingError = error.localizedDescription
-            }
-        }
-
-        isStopping = false
-        isSending = false
-        streamingContent = ""
-        showToolIndicator = false
-        activeSendTask = nil
     }
 
     private func sendViaOnDevice(_ text: String) async {
@@ -1017,7 +985,7 @@ struct ChatView: View {
         selectedConversation?.lastActivity = .now
     }
 
-    private func sendViaREST(_ text: String, sessionId: Int, overrides: SessionToolOverrides) async {
+    private func sendViaREST(_ text: String, sessionId: Int, clientSendID: String, overrides: SessionToolOverrides) async {
         struct SendBody: Encodable {
             let content: String
             let allowedTools: [String]?
@@ -1025,6 +993,9 @@ struct ChatView: View {
         }
         struct SendResponse: Decodable { let role: String; let content: String }
         let api = APIClient(authManager: authManager)
+        print(
+            "[ChatTrace] rest_send_start session=\(sessionId) client_send_id=\(clientSendID) chars=\(text.count)"
+        )
         do {
             let resp: SendResponse = try await api.request(
                 "/chat/sessions/\(sessionId)/messages",
@@ -1036,14 +1007,17 @@ struct ChatView: View {
                 ),
                 timeout: 120
             )
+            print(
+                "[ChatTrace] rest_send_done session=\(sessionId) client_send_id=\(clientSendID) response_chars=\(resp.content.count)"
+            )
             let msg = CachedMessage(role: resp.role, content: resp.content)
             messages.append(msg)
             selectedConversation?.messages.append(msg)
             selectedConversation?.lastActivity = .now
         } catch {
-            if isStopping {
-                return
-            }
+            print(
+                "[ChatTrace] rest_send_error session=\(sessionId) client_send_id=\(clientSendID) error=\(error.localizedDescription)"
+            )
             loadingError = error.localizedDescription
         }
     }
