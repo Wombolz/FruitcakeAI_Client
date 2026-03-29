@@ -40,6 +40,14 @@ final class CachedConversation {
     }
 
     var sortedMessages: [CachedMessage] {
-        messages.sorted { $0.timestamp < $1.timestamp }
+        messages.sorted {
+            if $0.timestamp != $1.timestamp {
+                return $0.timestamp < $1.timestamp
+            }
+            if $0.serverMessageId != $1.serverMessageId {
+                return ($0.serverMessageId ?? .max) < ($1.serverMessageId ?? .max)
+            }
+            return $0.id.uuidString < $1.id.uuidString
+        }
     }
 }

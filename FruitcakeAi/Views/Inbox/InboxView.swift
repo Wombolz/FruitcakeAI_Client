@@ -56,7 +56,7 @@ struct InboxView: View {
                     taskList
                 }
             }
-            .navigationTitle("Inbox")
+            .navigationTitle("Tasks")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button {

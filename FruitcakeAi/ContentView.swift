@@ -36,7 +36,7 @@ struct MainTabView: View {
             Tab("Chat", systemImage: "bubble.left.and.bubble.right.fill", value: "chat") {
                 ChatView(openSessionId: $openSessionId)
             }
-            Tab("Inbox", systemImage: "envelope.badge.fill", value: "inbox") {
+            Tab("Tasks", systemImage: "envelope.badge.fill", value: "inbox") {
                 InboxView(
                     onCountChanged: { pendingApprovalCount = $0 },
                     onReplyInChat: { sessionId in

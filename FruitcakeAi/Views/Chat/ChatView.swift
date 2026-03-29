@@ -39,6 +39,11 @@ private struct SessionHistoryResponse: Codable {
     let messages: [HistoryMessage]
 }
 
+private struct ChatSessionStatusResponse: Codable {
+    let sessionId: Int
+    let active: Bool
+}
+
 private struct HistoryMessage: Codable {
     let id: Int
     let role: String
@@ -105,6 +110,13 @@ private struct SessionToolOverrides {
     var blockedTools: [String] = []
 }
 
+private struct RecentSendRecord {
+    let fingerprint: String
+    let sentAt: Date
+}
+
+private let recentSendGuardWindowSeconds: TimeInterval = 300
+
 // MARK: - ChatView
 
 struct ChatView: View {
@@ -137,6 +149,9 @@ struct ChatView: View {
     @State private var isSending: Bool = false
     @State private var sendClaimed: Bool = false
     @State private var activeClientSendID: String?
+    @State private var activeSendTask: Task<Void, Never>?
+    @State private var sessionStatusTask: Task<Void, Never>?
+    @State private var recentSendBySession: [Int: RecentSendRecord] = [:]
     @State private var renameTarget: SessionSummary?
     @State private var renameInput: String = ""
     @State private var showProfileSheet: Bool = false
@@ -542,17 +557,42 @@ struct ChatView: View {
         !inputText.trimmingCharacters(in: .whitespaces).isEmpty && !isSending && !sendClaimed
     }
 
+    private func normalizedPromptFingerprint(_ text: String) -> String {
+        text
+            .lowercased()
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
     private func sendIfReady(sessionId: Int) {
+        guard canSend else { return }
         let text = inputText.trimmingCharacters(in: .whitespaces)
-        guard !text.isEmpty, !isSending, !sendClaimed else { return }
+        let fingerprint = normalizedPromptFingerprint(text)
+        if let recent = recentSendBySession[sessionId],
+           recent.fingerprint == fingerprint,
+           Date().timeIntervalSince(recent.sentAt) < recentSendGuardWindowSeconds {
+            print(
+                "[ChatTrace] send_blocked_duplicate session=\(sessionId) chars=\(text.count) seconds_since_last=\(Int(Date().timeIntervalSince(recent.sentAt)))"
+            )
+            loadingError = "Message already sent. Wait before resending."
+            Task {
+                try? await Task.sleep(for: .seconds(3))
+                if loadingError == "Message already sent. Wait before resending." {
+                    loadingError = nil
+                }
+            }
+            return
+        }
         sendClaimed = true
+        recentSendBySession[sessionId] = RecentSendRecord(fingerprint: fingerprint, sentAt: Date())
         let clientSendID = UUID().uuidString
         print(
             "[ChatTrace] send_if_ready session=\(sessionId) client_send_id=\(clientSendID) chars=\(text.count) ws_connected=\(wsManager.isConnected)"
         )
         inputText = ""
         activeClientSendID = clientSendID
-        Task { await sendMessage(text, sessionId: sessionId, clientSendID: clientSendID) }
+        activeSendTask = Task { await sendMessage(text, sessionId: sessionId, clientSendID: clientSendID) }
     }
 
     // MARK: - Networking
@@ -798,11 +838,15 @@ struct ChatView: View {
         }
     }
 
+    @MainActor
     private func switchSession(sessionId: Int) async {
+        sessionStatusTask?.cancel()
+        sessionStatusTask = nil
         wsManager.disconnect()
         messages = []
         streamingContent = ""
         showToolIndicator = false
+        isSending = false
         loadingError = nil
 
         // Find or create SwiftData conversation
@@ -815,25 +859,14 @@ struct ChatView: View {
             selectedConversation = conv
         }
 
-        // Load history from backend
-        let api = APIClient(authManager: authManager)
         do {
-            let history: SessionHistoryResponse = try await api.request("/chat/sessions/\(sessionId)")
-            if let idx = sessions.firstIndex(where: { $0.id == sessionId }) {
-                let existing = sessions[idx]
-                let updated = SessionSummary(id: existing.id, title: history.title ?? existing.title, persona: history.persona, llmModel: history.llmModel)
-                sessions[idx] = updated
-                if selectedSession?.id == sessionId {
-                    selectedSession = updated
-                }
-            }
-            messages = history.messages.map {
-                CachedMessage(
-                    serverMessageId: $0.id,
-                    role: $0.role,
-                    content: $0.content,
-                    timestamp: $0.createdAt
-                )
+            let history = try await loadSessionHistory(sessionId: sessionId)
+            let status = try await loadSessionStatus(sessionId: sessionId)
+            let hasDetachedRun = status.active && activeSendTask == nil
+            isSending = hasDetachedRun
+            showToolIndicator = hasDetachedRun && history.messages.last?.role != "assistant"
+            if hasDetachedRun {
+                startDetachedRunPolling(sessionId: sessionId)
             }
         } catch {
             loadingError = error.localizedDescription
@@ -846,7 +879,83 @@ struct ChatView: View {
         wsManager.connect(serverURL: serverURL, sessionId: sessionId, token: token)
     }
 
+    @MainActor
+    private func loadSessionHistory(sessionId: Int) async throws -> SessionHistoryResponse {
+        let api = APIClient(authManager: authManager)
+        let history: SessionHistoryResponse = try await api.request("/chat/sessions/\(sessionId)")
+        if let idx = sessions.firstIndex(where: { $0.id == sessionId }) {
+            let existing = sessions[idx]
+            let updated = SessionSummary(id: existing.id, title: history.title ?? existing.title, persona: history.persona, llmModel: history.llmModel)
+            sessions[idx] = updated
+            if selectedSession?.id == sessionId {
+                selectedSession = updated
+            }
+        }
+        let mappedMessages = history.messages.map {
+            CachedMessage(
+                serverMessageId: $0.id,
+                role: $0.role,
+                content: $0.content,
+                timestamp: $0.createdAt
+            )
+        }
+        if selectedSession?.id == sessionId {
+            messages = mappedMessages
+        }
+        if selectedConversation?.serverSessionId == sessionId {
+            selectedConversation?.messages = mappedMessages
+            selectedConversation?.lastActivity = mappedMessages.last?.timestamp ?? selectedConversation?.lastActivity ?? .now
+            try? modelContext.save()
+        }
+        return history
+    }
+
+    @MainActor
+    private func loadSessionStatus(sessionId: Int) async throws -> ChatSessionStatusResponse {
+        let api = APIClient(authManager: authManager)
+        return try await api.request("/chat/sessions/\(sessionId)/status")
+    }
+
+    @MainActor
+    private func startDetachedRunPolling(sessionId: Int) {
+        sessionStatusTask?.cancel()
+        sessionStatusTask = Task {
+            while !Task.isCancelled, selectedSession?.id == sessionId {
+                do {
+                    let status = try await loadSessionStatus(sessionId: sessionId)
+                    _ = try await loadSessionHistory(sessionId: sessionId)
+                    if !status.active {
+                        isSending = false
+                        showToolIndicator = false
+                        sessionStatusTask = nil
+                        break
+                    }
+                    isSending = true
+                    if messages.last?.role != "assistant" {
+                        showToolIndicator = true
+                    }
+                } catch {
+                    loadingError = error.localizedDescription
+                    isSending = false
+                    showToolIndicator = false
+                    sessionStatusTask = nil
+                    break
+                }
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
+    }
+
+    @MainActor
     private func sendMessage(_ text: String, sessionId: Int, clientSendID: String) async {
+        defer {
+            isSending = false
+            sendClaimed = false
+            showToolIndicator = false
+            activeClientSendID = nil
+            activeSendTask = nil
+            streamingContent = ""
+        }
         isSending = true
         showToolIndicator = true
         streamingContent = ""
@@ -868,10 +977,6 @@ struct ChatView: View {
                 "[ChatTrace] send_path session=\(sessionId) client_send_id=\(clientSendID) path=on_device reason=backend_unreachable"
             )
             await sendViaOnDevice(text)
-            isSending = false
-            sendClaimed = false
-            showToolIndicator = false
-            activeClientSendID = nil
             return
         }
 
@@ -881,10 +986,6 @@ struct ChatView: View {
                 "[ChatTrace] send_path session=\(sessionId) client_send_id=\(clientSendID) path=rest reason=ws_not_connected connection_id=\(wsManager.connectionID)"
             )
             await sendViaREST(text, sessionId: sessionId, clientSendID: clientSendID, overrides: overrides)
-            isSending = false
-            sendClaimed = false
-            showToolIndicator = false
-            activeClientSendID = nil
             return
         }
 
@@ -892,27 +993,26 @@ struct ChatView: View {
             "[ChatTrace] send_path session=\(sessionId) client_send_id=\(clientSendID) path=websocket connection_id=\(wsManager.connectionID)"
         )
 
-        let responseStream: AsyncStream<WSEvent>
-        do {
-            responseStream = try wsManager.sendAndReceive(
-                text,
-                clientSendID: clientSendID,
-                allowedTools: overrides.allowedTools,
-                blockedTools: overrides.blockedTools
-            )
-        } catch {
-            loadingError = error.localizedDescription
-            isSending = false
-            sendClaimed = false
-            showToolIndicator = false
-            activeClientSendID = nil
-            return
-        }
+        // Capture connection identity before suspending. Events arriving for a
+        // stale connection (e.g. after switchSession disconnects mid-send) are
+        // discarded rather than written to the new session's messages.
+        let expectedConnectionID = wsManager.connectionID
+        let responseStream = await wsManager.sendAndReceive(
+            text,
+            clientSendID: clientSendID,
+            allowedTools: overrides.allowedTools,
+            blockedTools: overrides.blockedTools
+        )
 
         // Consume events for this response. The stream finishes after
         // a terminal event (.done, .error, .personaSwitched).
         var fullResponse = ""
         eventLoop: for await event in responseStream {
+            guard !Task.isCancelled else { break eventLoop }
+            guard wsManager.connectionID == expectedConnectionID else {
+                print("[ChatTrace] ws_stale_event_discarded connection_id=\(wsManager.connectionID) expected=\(expectedConnectionID)")
+                break eventLoop
+            }
             switch event {
             case .token(let chunk):
                 showToolIndicator = false
@@ -930,9 +1030,6 @@ struct ChatView: View {
                 selectedConversation?.messages.append(assistantMsg)
                 selectedConversation?.lastActivity = .now
 
-                isSending = false
-                sendClaimed = false
-                activeClientSendID = nil
                 break eventLoop
 
             case .personaSwitched(let name, let message):
@@ -948,25 +1045,16 @@ struct ChatView: View {
 
                 let sysMsg = CachedMessage(role: "assistant", content: message)
                 messages.append(sysMsg)
-                streamingContent = ""
-                showToolIndicator = false
-                isSending = false
-                sendClaimed = false
-                activeClientSendID = nil
                 break eventLoop
 
             case .error(let msg):
                 loadingError = msg
-                streamingContent = ""
-                showToolIndicator = false
-                isSending = false
-                sendClaimed = false
-                activeClientSendID = nil
                 break eventLoop
             }
         }
     }
 
+    @MainActor
     private func sendViaOnDevice(_ text: String) async {
         var fullResponse = ""
 
@@ -985,9 +1073,11 @@ struct ChatView: View {
         selectedConversation?.lastActivity = .now
     }
 
+    @MainActor
     private func sendViaREST(_ text: String, sessionId: Int, clientSendID: String, overrides: SessionToolOverrides) async {
         struct SendBody: Encodable {
             let content: String
+            let clientSendId: String
             let allowedTools: [String]?
             let blockedTools: [String]?
         }
@@ -1002,6 +1092,7 @@ struct ChatView: View {
                 method: "POST",
                 body: SendBody(
                     content: text,
+                    clientSendId: clientSendID,
                     allowedTools: overrides.allowedTools.isEmpty ? nil : overrides.allowedTools,
                     blockedTools: overrides.blockedTools.isEmpty ? nil : overrides.blockedTools
                 ),
