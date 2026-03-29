@@ -17,8 +17,7 @@ struct ToolCallIndicator: View {
         HStack(spacing: 8) {
             ProgressView()
                 .progressViewStyle(.circular)
-                .scaleEffect(0.7)
-                .frame(width: 16, height: 16)
+                .controlSize(.small)
             Text(label)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)

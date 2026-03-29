@@ -151,6 +151,7 @@ struct ChatView: View {
     @State private var activeClientSendID: String?
     @State private var activeSendTask: Task<Void, Never>?
     @State private var sessionStatusTask: Task<Void, Never>?
+    @State private var sendTraceSequence: Int = 0
     @State private var recentSendBySession: [Int: RecentSendRecord] = [:]
     @State private var renameTarget: SessionSummary?
     @State private var renameInput: String = ""
@@ -204,8 +205,18 @@ struct ChatView: View {
             }
         }
         .onChange(of: selectedSession?.id) { _, newId in
+            trace("selected_session_changed new_id=\(newId.map(String.init) ?? "nil") ws_state=\(wsManager.stateLabel)")
             guard let newId else { return }
             Task { await switchSession(sessionId: newId) }
+        }
+        .onChange(of: isSending) { _, newValue in
+            trace("is_sending_changed value=\(newValue)")
+        }
+        .onChange(of: sendClaimed) { _, newValue in
+            trace("send_claimed_changed value=\(newValue)")
+        }
+        .onChange(of: activeClientSendID) { _, newValue in
+            trace("active_client_send_id_changed value=\(newValue ?? "nil")")
         }
         .onChange(of: openSessionId) { _, id in
             guard let id else { return }
@@ -557,6 +568,10 @@ struct ChatView: View {
         !inputText.trimmingCharacters(in: .whitespaces).isEmpty && !isSending && !sendClaimed
     }
 
+    private func trace(_ message: String) {
+        print("[ChatTrace] \(message)")
+    }
+
     private func normalizedPromptFingerprint(_ text: String) -> String {
         text
             .lowercased()
@@ -567,14 +582,15 @@ struct ChatView: View {
 
     private func sendIfReady(sessionId: Int) {
         guard canSend else { return }
+        sendTraceSequence += 1
+        let sendSeq = sendTraceSequence
         let text = inputText.trimmingCharacters(in: .whitespaces)
         let fingerprint = normalizedPromptFingerprint(text)
+        trace("send_if_ready_enter seq=\(sendSeq) session=\(sessionId) chars=\(text.count) fingerprint=\(fingerprint.prefix(24)) isSending=\(isSending) sendClaimed=\(sendClaimed) ws_state=\(wsManager.stateLabel)")
         if let recent = recentSendBySession[sessionId],
            recent.fingerprint == fingerprint,
            Date().timeIntervalSince(recent.sentAt) < recentSendGuardWindowSeconds {
-            print(
-                "[ChatTrace] send_blocked_duplicate session=\(sessionId) chars=\(text.count) seconds_since_last=\(Int(Date().timeIntervalSince(recent.sentAt)))"
-            )
+            trace("send_blocked_duplicate seq=\(sendSeq) session=\(sessionId) chars=\(text.count) seconds_since_last=\(Int(Date().timeIntervalSince(recent.sentAt)))")
             loadingError = "Message already sent. Wait before resending."
             Task {
                 try? await Task.sleep(for: .seconds(3))
@@ -587,12 +603,13 @@ struct ChatView: View {
         sendClaimed = true
         recentSendBySession[sessionId] = RecentSendRecord(fingerprint: fingerprint, sentAt: Date())
         let clientSendID = UUID().uuidString
-        print(
-            "[ChatTrace] send_if_ready session=\(sessionId) client_send_id=\(clientSendID) chars=\(text.count) ws_connected=\(wsManager.isConnected)"
-        )
+        trace("send_if_ready_claimed seq=\(sendSeq) session=\(sessionId) client_send_id=\(clientSendID) chars=\(text.count) ws_state=\(wsManager.stateLabel)")
         inputText = ""
         activeClientSendID = clientSendID
-        activeSendTask = Task { await sendMessage(text, sessionId: sessionId, clientSendID: clientSendID) }
+        activeSendTask = Task {
+            await sendMessage(text, sessionId: sessionId, clientSendID: clientSendID, sendSequence: sendSeq)
+        }
+        trace("active_send_task_assigned seq=\(sendSeq) session=\(sessionId) client_send_id=\(clientSendID)")
     }
 
     // MARK: - Networking
@@ -840,6 +857,7 @@ struct ChatView: View {
 
     @MainActor
     private func switchSession(sessionId: Int) async {
+        trace("switch_session_start session=\(sessionId) active_send=\(activeSendTask != nil) isSending=\(isSending) ws_state=\(wsManager.stateLabel)")
         sessionStatusTask?.cancel()
         sessionStatusTask = nil
         wsManager.disconnect()
@@ -877,6 +895,7 @@ struct ChatView: View {
               let serverURL = authManager.serverURL else { return }
 
         wsManager.connect(serverURL: serverURL, sessionId: sessionId, token: token)
+        trace("switch_session_end session=\(sessionId) active_send=\(activeSendTask != nil) isSending=\(isSending) ws_state=\(wsManager.stateLabel)")
     }
 
     @MainActor
@@ -947,8 +966,9 @@ struct ChatView: View {
     }
 
     @MainActor
-    private func sendMessage(_ text: String, sessionId: Int, clientSendID: String) async {
+    private func sendMessage(_ text: String, sessionId: Int, clientSendID: String, sendSequence: Int) async {
         defer {
+            trace("send_message_exit seq=\(sendSequence) session=\(sessionId) client_send_id=\(clientSendID) isSending=\(isSending) sendClaimed=\(sendClaimed) ws_state=\(wsManager.stateLabel)")
             isSending = false
             sendClaimed = false
             showToolIndicator = false
@@ -960,9 +980,7 @@ struct ChatView: View {
         showToolIndicator = true
         streamingContent = ""
         loadingError = nil
-        print(
-            "[ChatTrace] send_message_start session=\(sessionId) client_send_id=\(clientSendID) ws_connected=\(wsManager.isConnected) connection_id=\(wsManager.connectionID)"
-        )
+        trace("send_message_enter seq=\(sendSequence) session=\(sessionId) client_send_id=\(clientSendID) ws_state=\(wsManager.stateLabel)")
         let overrides = sessionToolOverrides[sessionId] ?? SessionToolOverrides()
 
         // Optimistic user message
@@ -973,25 +991,31 @@ struct ChatView: View {
 
         // Offline → on-device FoundationModels fallback
         guard connectivity.isBackendReachable else {
-            print(
-                "[ChatTrace] send_path session=\(sessionId) client_send_id=\(clientSendID) path=on_device reason=backend_unreachable"
-            )
+            trace("send_path seq=\(sendSequence) session=\(sessionId) client_send_id=\(clientSendID) path=on_device reason=backend_unreachable")
             await sendViaOnDevice(text)
             return
         }
 
-        guard wsManager.isConnected else {
-            // Backend reachable but WebSocket not yet connected → REST POST
-            print(
-                "[ChatTrace] send_path session=\(sessionId) client_send_id=\(clientSendID) path=rest reason=ws_not_connected connection_id=\(wsManager.connectionID)"
-            )
+        guard let token = try? authManager.token(),
+              let serverURL = authManager.serverURL else {
+            trace("send_path seq=\(sendSequence) session=\(sessionId) client_send_id=\(clientSendID) path=rest reason=missing_auth_or_server_url connection_id=\(wsManager.connectionID)")
             await sendViaREST(text, sessionId: sessionId, clientSendID: clientSendID, overrides: overrides)
             return
         }
 
-        print(
-            "[ChatTrace] send_path session=\(sessionId) client_send_id=\(clientSendID) path=websocket connection_id=\(wsManager.connectionID)"
+        let websocketReady = await wsManager.ensureConnected(
+            serverURL: serverURL,
+            sessionId: sessionId,
+            token: token,
+            timeoutSeconds: 1.0
         )
+        guard websocketReady else {
+            trace("send_path seq=\(sendSequence) session=\(sessionId) client_send_id=\(clientSendID) path=rest reason=ws_not_ready connection_id=\(wsManager.connectionID)")
+            await sendViaREST(text, sessionId: sessionId, clientSendID: clientSendID, overrides: overrides)
+            return
+        }
+
+        trace("send_path seq=\(sendSequence) session=\(sessionId) client_send_id=\(clientSendID) path=websocket connection_id=\(wsManager.connectionID)")
 
         // Capture connection identity before suspending. Events arriving for a
         // stale connection (e.g. after switchSession disconnects mid-send) are
@@ -1010,16 +1034,18 @@ struct ChatView: View {
         eventLoop: for await event in responseStream {
             guard !Task.isCancelled else { break eventLoop }
             guard wsManager.connectionID == expectedConnectionID else {
-                print("[ChatTrace] ws_stale_event_discarded connection_id=\(wsManager.connectionID) expected=\(expectedConnectionID)")
+                trace("ws_stale_event_discarded seq=\(sendSequence) session=\(sessionId) client_send_id=\(clientSendID) connection_id=\(wsManager.connectionID) expected=\(expectedConnectionID)")
                 break eventLoop
             }
             switch event {
             case .token(let chunk):
+                trace("send_message_event seq=\(sendSequence) session=\(sessionId) client_send_id=\(clientSendID) type=token chars=\(chunk.count)")
                 showToolIndicator = false
                 streamingContent += chunk
                 fullResponse += chunk
 
             case .done(let complete):
+                trace("send_message_event seq=\(sendSequence) session=\(sessionId) client_send_id=\(clientSendID) type=done chars=\(complete.count)")
                 let finalResponse = complete.isEmpty ? fullResponse : complete
                 fullResponse = finalResponse
                 streamingContent = ""
@@ -1033,6 +1059,7 @@ struct ChatView: View {
                 break eventLoop
 
             case .personaSwitched(let name, let message):
+                trace("send_message_event seq=\(sendSequence) session=\(sessionId) client_send_id=\(clientSendID) type=persona persona=\(name)")
                 // Update session label in sidebar
                 if let idx = sessions.firstIndex(where: { $0.id == sessionId }) {
                     let old = sessions[idx]
@@ -1048,6 +1075,7 @@ struct ChatView: View {
                 break eventLoop
 
             case .error(let msg):
+                trace("send_message_event seq=\(sendSequence) session=\(sessionId) client_send_id=\(clientSendID) type=error message=\(msg)")
                 loadingError = msg
                 break eventLoop
             }
@@ -1083,9 +1111,7 @@ struct ChatView: View {
         }
         struct SendResponse: Decodable { let role: String; let content: String }
         let api = APIClient(authManager: authManager)
-        print(
-            "[ChatTrace] rest_send_start session=\(sessionId) client_send_id=\(clientSendID) chars=\(text.count)"
-        )
+        trace("rest_send_start session=\(sessionId) client_send_id=\(clientSendID) chars=\(text.count)")
         do {
             let resp: SendResponse = try await api.request(
                 "/chat/sessions/\(sessionId)/messages",
@@ -1098,17 +1124,13 @@ struct ChatView: View {
                 ),
                 timeout: 120
             )
-            print(
-                "[ChatTrace] rest_send_done session=\(sessionId) client_send_id=\(clientSendID) response_chars=\(resp.content.count)"
-            )
+            trace("rest_send_done session=\(sessionId) client_send_id=\(clientSendID) response_chars=\(resp.content.count)")
             let msg = CachedMessage(role: resp.role, content: resp.content)
             messages.append(msg)
             selectedConversation?.messages.append(msg)
             selectedConversation?.lastActivity = .now
         } catch {
-            print(
-                "[ChatTrace] rest_send_error session=\(sessionId) client_send_id=\(clientSendID) error=\(error.localizedDescription)"
-            )
+            trace("rest_send_error session=\(sessionId) client_send_id=\(clientSendID) error=\(error.localizedDescription)")
             loadingError = error.localizedDescription
         }
     }

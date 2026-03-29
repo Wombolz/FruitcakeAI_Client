@@ -24,20 +24,81 @@ enum WSEvent {
     case error(String)
 }
 
+enum WebSocketConnectionState: Equatable {
+    case disconnected
+    case connecting(sessionId: Int, connectionId: String)
+    case connected(sessionId: Int, connectionId: String)
+}
+
 // MARK: - Manager
 
 @MainActor
 @Observable
-final class WebSocketManager: NSObject {
+final class WebSocketManager: NSObject, URLSessionWebSocketDelegate {
 
-    private(set) var isConnected: Bool = false
-    private(set) var connectionID: String = ""
+    private(set) var connectionState: WebSocketConnectionState = .disconnected
 
     private var webSocketTask: URLSessionWebSocketTask?
     private var urlSession: URLSession?
+    private var taskConnectionIDs: [ObjectIdentifier: String] = [:]
 
     // The current response continuation — replaced per sendAndReceive call
     private var responseContinuation: AsyncStream<WSEvent>.Continuation?
+
+    var isConnected: Bool {
+        if case .connected = connectionState { return true }
+        return false
+    }
+
+    var connectionID: String {
+        switch connectionState {
+        case .disconnected:
+            return ""
+        case .connecting(_, let connectionId), .connected(_, let connectionId):
+            return connectionId
+        }
+    }
+
+    var connectedSessionID: Int? {
+        switch connectionState {
+        case .disconnected:
+            return nil
+        case .connecting(let sessionId, _), .connected(let sessionId, _):
+            return sessionId
+        }
+    }
+
+    var stateLabel: String {
+        switch connectionState {
+        case .disconnected:
+            return "disconnected"
+        case .connecting(let sessionId, let connectionId):
+            return "connecting(session=\(sessionId),connection=\(connectionId))"
+        case .connected(let sessionId, let connectionId):
+            return "connected(session=\(sessionId),connection=\(connectionId))"
+        }
+    }
+
+    private func transition(to newState: WebSocketConnectionState, reason: String) {
+        let oldLabel = stateLabel
+        if connectionState == newState {
+            print("[ChatTrace] ws_state_transition_skipped state=\(oldLabel) reason=\(reason)")
+            return
+        }
+        connectionState = newState
+        let newLabel = stateLabel
+        print("[ChatTrace] ws_state_transition from=\(oldLabel) to=\(newLabel) reason=\(reason)")
+    }
+
+    private func isCurrent(task: URLSessionWebSocketTask, connectionID: String) -> Bool {
+        guard webSocketTask === task else { return false }
+        switch connectionState {
+        case .connecting(_, let currentConnectionID), .connected(_, let currentConnectionID):
+            return currentConnectionID == connectionID
+        case .disconnected:
+            return false
+        }
+    }
 
     // MARK: - Connect
 
@@ -45,20 +106,22 @@ final class WebSocketManager: NSObject {
         disconnect()
 
         guard let wsURL = makeWSURL(from: serverURL, sessionId: sessionId) else { return }
-        connectionID = UUID().uuidString
+        let connectionID = UUID().uuidString
 
         var request = URLRequest(url: wsURL)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
-        urlSession = URLSession(configuration: .default, delegate: nil, delegateQueue: nil)
+        transition(to: .connecting(sessionId: sessionId, connectionId: connectionID), reason: "connect")
+        urlSession = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
         webSocketTask = urlSession?.webSocketTask(with: request)
+        if let task = webSocketTask {
+            taskConnectionIDs[ObjectIdentifier(task)] = connectionID
+        }
         webSocketTask?.resume()
-        isConnected = true
         print("[ChatTrace] ws_connect session=\(sessionId) connection_id=\(connectionID) url=\(wsURL.absoluteString)")
 
         guard let task = webSocketTask else { return }
-        let currentConnectionID = connectionID
-        Task { await receiveLoop(task: task, connectionID: currentConnectionID) }
+        Task { await receiveLoop(task: task, connectionID: connectionID) }
     }
 
     // MARK: - Send and receive
@@ -72,11 +135,15 @@ final class WebSocketManager: NSObject {
         allowedTools: [String]? = nil,
         blockedTools: [String]? = nil
     ) async -> AsyncStream<WSEvent> {
-        guard let task = webSocketTask, isConnected else {
+        guard let task = webSocketTask else {
+            return AsyncStream { $0.finish() }
+        }
+        guard case .connected = connectionState else {
             return AsyncStream { $0.finish() }
         }
 
         // Finish any previous response stream before starting a new one
+        print("[ChatTrace] ws_response_stream_replace connection_id=\(connectionID) client_send_id=\(clientSendID) had_existing=\(responseContinuation != nil)")
         responseContinuation?.finish()
 
         let (stream, continuation) = AsyncStream<WSEvent>.makeStream()
@@ -104,6 +171,7 @@ final class WebSocketManager: NSObject {
             try await task.send(.string(text))
         } catch {
             print("[ChatTrace] ws_send_error connection_id=\(connectionID) client_send_id=\(clientSendID) error=\(error.localizedDescription)")
+            transition(to: .disconnected, reason: "send_error")
             continuation.yield(.error("WebSocket send failed: \(error.localizedDescription)"))
             continuation.finish()
             responseContinuation = nil
@@ -115,7 +183,9 @@ final class WebSocketManager: NSObject {
     // MARK: - Disconnect
 
     func disconnect() {
-        if isConnected {
+        if case .disconnected = connectionState {
+            // no-op
+        } else {
             print("[ChatTrace] ws_disconnect connection_id=\(connectionID)")
         }
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
@@ -123,29 +193,68 @@ final class WebSocketManager: NSObject {
         urlSession = nil
         responseContinuation?.finish()
         responseContinuation = nil
-        isConnected = false
-        connectionID = ""
+        transition(to: .disconnected, reason: "disconnect")
+    }
+
+    func ensureConnected(serverURL: URL, sessionId: Int, token: String, timeoutSeconds: Double = 1.0) async -> Bool {
+        switch connectionState {
+        case .connected(let currentSessionId, _ ) where currentSessionId == sessionId:
+            print("[ChatTrace] ws_ensure_connect_reuse_connected session=\(sessionId) connection_id=\(connectionID)")
+            return true
+        case .connecting(let currentSessionId, _ ) where currentSessionId == sessionId:
+            print("[ChatTrace] ws_ensure_connect_wait_connecting session=\(sessionId) connection_id=\(connectionID)")
+        default:
+            print("[ChatTrace] ws_ensure_connect_initiate_reconnect target_session=\(sessionId) current_state=\(stateLabel)")
+            connect(serverURL: serverURL, sessionId: sessionId, token: token)
+        }
+
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            switch connectionState {
+            case .connected(let currentSessionId, let currentConnectionId) where currentSessionId == sessionId:
+                print("[ChatTrace] ws_ensure_connect_ready session=\(sessionId) connection_id=\(currentConnectionId)")
+                return true
+            case .connecting(let currentSessionId, _ ) where currentSessionId == sessionId:
+                break
+            default:
+                print("[ChatTrace] ws_ensure_connect_aborted session=\(sessionId) state=\(stateLabel)")
+                return false
+            }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+
+        print("[ChatTrace] ws_ensure_connect_timeout session=\(sessionId) state=\(stateLabel)")
+        return false
     }
 
     // MARK: - Receive loop
 
     private func receiveLoop(task: URLSessionWebSocketTask, connectionID: String) async {
-        while isConnected {
+        print("[ChatTrace] ws_receive_loop_start connection_id=\(connectionID)")
+        while true {
             do {
                 let message = try await task.receive()
-                guard webSocketTask === task, self.connectionID == connectionID else { return }
+                guard isCurrent(task: task, connectionID: connectionID) else {
+                    print("[ChatTrace] ws_receive_loop_stale_exit connection_id=\(connectionID) current_connection_id=\(self.connectionID)")
+                    return
+                }
                 if case .string(let text) = message {
                     handleIncoming(text)
                 }
             } catch {
-                guard webSocketTask === task, self.connectionID == connectionID else { return }
+                guard isCurrent(task: task, connectionID: connectionID) else {
+                    print("[ChatTrace] ws_receive_loop_stale_error_exit connection_id=\(connectionID) current_connection_id=\(self.connectionID)")
+                    return
+                }
+                print("[ChatTrace] ws_receive_loop_error connection_id=\(connectionID) error=\(error.localizedDescription)")
                 // Connection closed or error
                 responseContinuation?.finish()
                 responseContinuation = nil
-                isConnected = false
+                transition(to: .disconnected, reason: "receive_loop_error")
                 break
             }
         }
+        print("[ChatTrace] ws_receive_loop_end connection_id=\(connectionID) state=\(stateLabel)")
     }
 
     private func handleIncoming(_ text: String) {
@@ -153,6 +262,13 @@ final class WebSocketManager: NSObject {
               let payload = try? JSONDecoder().decode(WSPayload.self, from: data) else {
             return
         }
+
+        if responseContinuation == nil {
+            print("[ChatTrace] ws_post_terminal_frame_ignored connection_id=\(connectionID) type=\(payload.type) chars=\(payload.content.count)")
+            return
+        }
+
+        print("[ChatTrace] ws_incoming connection_id=\(connectionID) type=\(payload.type) chars=\(payload.content.count)")
 
         switch payload.type {
         case "token":
@@ -188,6 +304,37 @@ final class WebSocketManager: NSObject {
         components.scheme = components.scheme == "https" ? "wss" : "ws"
         components.path = "/chat/sessions/\(sessionId)/ws"
         return components.url
+    }
+
+    nonisolated func urlSession(
+        _ session: URLSession,
+        webSocketTask: URLSessionWebSocketTask,
+        didOpenWithProtocol protocol: String?
+    ) {
+        Task { @MainActor in
+            guard self.webSocketTask === webSocketTask else { return }
+            guard case .connecting(let sessionId, let connectionID) = self.connectionState else { return }
+            self.transition(to: .connected(sessionId: sessionId, connectionId: connectionID), reason: "delegate_open")
+            print("[ChatTrace] ws_open connection_id=\(connectionID)")
+        }
+    }
+
+    nonisolated func urlSession(
+        _ session: URLSession,
+        webSocketTask: URLSessionWebSocketTask,
+        didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
+        reason: Data?
+    ) {
+        Task { @MainActor in
+            let taskID = ObjectIdentifier(webSocketTask)
+            let closingConnectionID = self.taskConnectionIDs[taskID] ?? self.connectionID
+            if self.webSocketTask === webSocketTask {
+                self.taskConnectionIDs.removeValue(forKey: taskID)
+            }
+            guard self.webSocketTask === webSocketTask || !closingConnectionID.isEmpty else { return }
+            self.transition(to: .disconnected, reason: "delegate_close")
+            print("[ChatTrace] ws_closed connection_id=\(closingConnectionID) close_code=\(closeCode.rawValue)")
+        }
     }
 }
 
