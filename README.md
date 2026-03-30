@@ -1,5 +1,8 @@
 # FruitcakeAI Client
 
+**A self-hosted AI agent platform for households and small teams.**
+**Local-first. Private by default.**
+
 FruitcakeAI Client is the native Apple client for **FruitcakeAI**.
 
 It targets **iPhone and Mac** from one SwiftUI codebase and depends on a running FruitcakeAI backend for synchronized chat, tasks, memory, document access, and server-backed tools.
