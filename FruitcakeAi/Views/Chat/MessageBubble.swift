@@ -15,6 +15,8 @@ struct MessageBubble: View {
     var persona: String = ""           // shown as label above assistant messages
 
     private var isUser: Bool { message.isUser }
+    private static let timestampFormat: Date.FormatStyle =
+        .dateTime.month(.abbreviated).day().hour().minute()
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
@@ -53,7 +55,7 @@ struct MessageBubble: View {
                             .imageScale(.small)
                             .foregroundStyle(.tertiary)
                     }
-                    Text(message.timestamp.formatted(date: .omitted, time: .shortened))
+                    Text(message.timestamp.formatted(Self.timestampFormat))
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }

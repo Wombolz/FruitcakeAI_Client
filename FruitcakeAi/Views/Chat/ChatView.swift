@@ -20,6 +20,7 @@ private struct SessionSummary: Codable, Identifiable {
     let title: String?
     let persona: String
     let llmModel: String?
+    let sortOrder: Int?
 
     var displayTitle: String { title ?? "Conversation \(id)" }
 }
@@ -29,6 +30,7 @@ private struct CreateSessionResponse: Codable {
     let title: String?
     let persona: String
     let llmModel: String?
+    let sortOrder: Int?
 }
 
 private struct SessionHistoryResponse: Codable {
@@ -42,6 +44,10 @@ private struct SessionHistoryResponse: Codable {
 private struct ChatSessionStatusResponse: Codable {
     let sessionId: Int
     let active: Bool
+}
+
+private struct ReorderSessionsBody: Encodable {
+    let sessionIds: [Int]
 }
 
 private struct HistoryMessage: Codable {
@@ -129,7 +135,7 @@ struct ChatView: View {
     /// Set from InboxView's "Reply in Chat" to auto-navigate to a session.
     @Binding var openSessionId: Int?
 
-    @Query(sort: \CachedConversation.lastActivity, order: .reverse)
+    @Query
     private var localConversations: [CachedConversation]
 
     // MARK: State
@@ -173,6 +179,10 @@ struct ChatView: View {
             return displayName
         }
         return key.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+
+    private func sessionIndex(for session: SessionSummary) -> Int? {
+        sessions.firstIndex(where: { $0.id == session.id })
     }
 
     // MARK: - Body
@@ -327,31 +337,10 @@ struct ChatView: View {
     private var sidebar: some View {
         List(selection: $selectedSession) {
             ForEach(sessions) { session in
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(session.displayTitle)
-                        .font(.body)
-                        .lineLimit(1)
-                    Text(personaDisplayName(session.persona))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .tag(session)
-                .contextMenu {
-                    Button("Rename") {
-                        renameInput = session.displayTitle
-                        renameError = nil
-                        renameTarget = session
-                    }
-                    Button("Delete", role: .destructive) {
-                        Task { await deleteSession(session) }
-                    }
-                }
+                sessionRow(session)
             }
             .onDelete { offsets in
-                Task { await deleteSessions(at: offsets) }
-            }
-            .onMove { source, destination in
-                sessions.move(fromOffsets: source, toOffset: destination)
+                Task { await deleteSessions(sessions, at: offsets) }
             }
         }
         .overlay {
@@ -361,6 +350,54 @@ struct ChatView: View {
                     systemImage: "bubble.left",
                     description: Text("Tap + to start a new conversation.")
                 )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func sessionRow(_ session: SessionSummary) -> some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(session.displayTitle)
+                    .font(.body)
+                    .lineLimit(1)
+                Text(personaDisplayName(session.persona))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 8)
+
+            if let index = sessionIndex(for: session) {
+                HStack(spacing: 2) {
+                    Button {
+                        moveSession(session, by: -1)
+                    } label: {
+                        Image(systemName: "chevron.up")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(index == 0)
+
+                    Button {
+                        moveSession(session, by: 1)
+                    } label: {
+                        Image(systemName: "chevron.down")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(index == sessions.count - 1)
+                }
+                .foregroundStyle(.secondary)
+            }
+        }
+        .tag(session)
+        .contextMenu {
+            Button("Rename") {
+                renameInput = session.displayTitle
+                renameError = nil
+                renameTarget = session
+            }
+            Button("Delete", role: .destructive) {
+                Task { await deleteSession(session) }
             }
         }
     }
@@ -614,6 +651,7 @@ struct ChatView: View {
 
     // MARK: - Networking
 
+    @MainActor
     private func loadSessions() async {
         guard connectivity.isBackendReachable,
               let _ = try? authManager.token(),
@@ -621,12 +659,14 @@ struct ChatView: View {
 
         let api = APIClient(authManager: authManager)
         do {
-            sessions = try await api.request("/chat/sessions")
+            let loaded: [SessionSummary] = try await api.request("/chat/sessions")
+            applySessionList(loaded)
         } catch {
             loadingError = error.localizedDescription
         }
     }
 
+    @MainActor
     private func loadChatCapabilities() async {
         guard connectivity.isBackendReachable else { return }
         let api = APIClient(authManager: authManager)
@@ -643,6 +683,54 @@ struct ChatView: View {
         }
     }
 
+    private func applySessionList(_ newSessions: [SessionSummary]) {
+        sessions = newSessions
+        if let selectedId = selectedSession?.id,
+           let updated = newSessions.first(where: { $0.id == selectedId }) {
+            selectedSession = updated
+        }
+    }
+
+    private func moveSession(_ session: SessionSummary, by offset: Int) {
+        guard let currentIndex = sessionIndex(for: session) else { return }
+        let targetIndex = currentIndex + offset
+        guard targetIndex >= 0, targetIndex < sessions.count else { return }
+
+        var reordered = sessions
+        let moved = reordered.remove(at: currentIndex)
+        reordered.insert(moved, at: targetIndex)
+        applySessionList(reordered)
+        Task { await saveSessionOrder(reordered) }
+    }
+
+    private func deleteSessions(_ sourceSessions: [SessionSummary], at offsets: IndexSet) async {
+        let toDelete = offsets.map { sourceSessions[$0] }
+        for session in toDelete {
+            await deleteSession(session)
+        }
+    }
+
+    @MainActor
+    private func saveSessionOrder(_ reorderedSessions: [SessionSummary]) async {
+        guard connectivity.isBackendReachable else {
+            loadingError = "Backend is not reachable."
+            return
+        }
+
+        let api = APIClient(authManager: authManager)
+        do {
+            let updated: [SessionSummary] = try await api.request(
+                "/chat/sessions/order",
+                method: "PATCH",
+                body: ReorderSessionsBody(sessionIds: reorderedSessions.map(\.id))
+            )
+            applySessionList(updated)
+        } catch {
+            loadingError = "Could not save conversation order."
+            await loadSessions()
+        }
+    }
+
     private func prepareProfileEditor() {
         guard let selected = selectedSession else { return }
         profilePersona = selected.persona
@@ -652,6 +740,7 @@ struct ChatView: View {
         profileError = nil
     }
 
+    @MainActor
     private func saveProfileSettings() async {
         guard let selected = selectedSession else { return }
         guard connectivity.isBackendReachable else {
@@ -674,12 +763,8 @@ struct ChatView: View {
                 method: "PATCH",
                 body: PersonaBody(persona: profilePersona)
             )
-            if let idx = sessions.firstIndex(where: { $0.id == selected.id }) {
-                sessions[idx] = updated
-            }
-            if selectedSession?.id == selected.id {
-                selectedSession = updated
-            }
+            if let idx = sessions.firstIndex(where: { $0.id == selected.id }) { sessions[idx] = updated }
+            if selectedSession?.id == selected.id { selectedSession = updated }
             if selectedConversation?.serverSessionId == selected.id {
                 selectedConversation?.persona = updated.persona
                 try? modelContext.save()
@@ -691,6 +776,7 @@ struct ChatView: View {
         }
     }
 
+    @MainActor
     private func updateSessionModel(sessionId: Int, modelID: String) async {
         guard connectivity.isBackendReachable else {
             loadingError = "Backend is not reachable."
@@ -705,17 +791,14 @@ struct ChatView: View {
                 method: "PATCH",
                 body: ModelBody(llmModel: modelID)
             )
-            if let idx = sessions.firstIndex(where: { $0.id == sessionId }) {
-                sessions[idx] = updated
-            }
-            if selectedSession?.id == sessionId {
-                selectedSession = updated
-            }
+            if let idx = sessions.firstIndex(where: { $0.id == sessionId }) { sessions[idx] = updated }
+            if selectedSession?.id == sessionId { selectedSession = updated }
         } catch {
             loadingError = "Could not save model selection."
         }
     }
 
+    @MainActor
     private func updateReasoningPreference(_ preference: String) async {
         guard connectivity.isBackendReachable else {
             loadingError = "Backend is not reachable."
@@ -742,6 +825,7 @@ struct ChatView: View {
         ).sorted()
     }
 
+    @MainActor
     private func createSession() async {
         let api = APIClient(authManager: authManager)
         do {
@@ -754,10 +838,11 @@ struct ChatView: View {
                 id: created.id,
                 title: created.title,
                 persona: created.persona,
-                llmModel: created.llmModel
+                llmModel: created.llmModel,
+                sortOrder: created.sortOrder
             )
-            sessions.insert(summary, at: 0)
-            selectedSession = summary
+            applySessionList([summary] + sessions.filter { $0.id != summary.id })
+            selectedSession = sessions.first(where: { $0.id == summary.id }) ?? summary
 
             // Mirror in SwiftData
             let conv = CachedConversation(
@@ -772,6 +857,7 @@ struct ChatView: View {
         }
     }
 
+    @MainActor
     private func deleteSession(_ session: SessionSummary) async {
         // Attempt server delete first — if it fails, leave the session in the sidebar
         if connectivity.isBackendReachable {
@@ -779,10 +865,13 @@ struct ChatView: View {
             do {
                 try await api.requestVoid("/chat/sessions/\(session.id)", method: "DELETE")
             } catch {
-                deleteError = "Could not delete conversation"
+                let errorText = "Could not delete conversation"
+                deleteError = errorText
                 Task {
                     try? await Task.sleep(for: .seconds(3))
-                    deleteError = nil
+                    if deleteError == errorText {
+                        deleteError = nil
+                    }
                 }
                 return
             }
@@ -806,6 +895,7 @@ struct ChatView: View {
         }
     }
 
+    @MainActor
     private func renameSession(_ session: SessionSummary) async {
         let newTitle = renameInput.trimmingCharacters(in: .whitespaces)
         guard !newTitle.isEmpty else {
@@ -826,12 +916,8 @@ struct ChatView: View {
                 body: RenameBody(title: newTitle)
             )
 
-            if let idx = sessions.firstIndex(where: { $0.id == session.id }) {
-                sessions[idx] = updated
-            }
-            if selectedSession?.id == session.id {
-                selectedSession = updated
-            }
+            if let idx = sessions.firstIndex(where: { $0.id == session.id }) { sessions[idx] = updated }
+            if selectedSession?.id == session.id { selectedSession = updated }
             if let cached = localConversations.first(where: { $0.serverSessionId == session.id }) {
                 cached.title = updated.displayTitle
                 try? modelContext.save()
@@ -844,14 +930,6 @@ struct ChatView: View {
             renameTarget = nil
         } catch {
             renameError = "Could not rename conversation."
-        }
-    }
-
-    private func deleteSessions(at offsets: IndexSet) async {
-        // Snapshot the sessions to delete before indices shift
-        let toDelete = offsets.map { sessions[$0] }
-        for session in toDelete {
-            await deleteSession(session)
         }
     }
 
@@ -904,7 +982,13 @@ struct ChatView: View {
         let history: SessionHistoryResponse = try await api.request("/chat/sessions/\(sessionId)")
         if let idx = sessions.firstIndex(where: { $0.id == sessionId }) {
             let existing = sessions[idx]
-            let updated = SessionSummary(id: existing.id, title: history.title ?? existing.title, persona: history.persona, llmModel: history.llmModel)
+            let updated = SessionSummary(
+                id: existing.id,
+                title: history.title ?? existing.title,
+                persona: history.persona,
+                llmModel: history.llmModel,
+                sortOrder: existing.sortOrder
+            )
             sessions[idx] = updated
             if selectedSession?.id == sessionId {
                 selectedSession = updated
@@ -1063,7 +1147,13 @@ struct ChatView: View {
                 // Update session label in sidebar
                 if let idx = sessions.firstIndex(where: { $0.id == sessionId }) {
                     let old = sessions[idx]
-                    sessions[idx] = SessionSummary(id: old.id, title: old.title, persona: name, llmModel: old.llmModel)
+                    sessions[idx] = SessionSummary(
+                        id: old.id,
+                        title: old.title,
+                        persona: name,
+                        llmModel: old.llmModel,
+                        sortOrder: old.sortOrder
+                    )
                     if selectedSession?.id == sessionId {
                         selectedSession = sessions[idx]
                     }
@@ -1087,6 +1177,7 @@ struct ChatView: View {
         var fullResponse = ""
 
         for await chunk in onDeviceAgent.stream(text) {
+            guard !Task.isCancelled else { break }
             showToolIndicator = false
             streamingContent += chunk
             fullResponse += chunk
