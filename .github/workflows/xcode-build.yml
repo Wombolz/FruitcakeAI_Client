@@ -1,0 +1,30 @@
+name: xcode-build
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare local xcconfig
+        run: cp Local.xcconfig.example Local.xcconfig
+
+      - name: Build macOS target
+        run: |
+          xcodebuild \
+            -project FruitcakeAi.xcodeproj \
+            -scheme FruitcakeAi \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            DEVELOPMENT_TEAM= \
+            build
