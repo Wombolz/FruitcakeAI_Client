@@ -45,7 +45,7 @@ struct TaskCreateSheet: View {
     @State private var scheduleKey = "one_shot"
     @State private var customCron = ""
     @State private var deliver = true
-    @State private var requiresApproval = false
+    @State private var requiresApproval = true
     @State private var runNow = true
     @State private var activeHoursEnabled = false
     @State private var activeHoursStart = "07:00"

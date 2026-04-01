@@ -206,6 +206,7 @@ struct LibraryView: View {
                         )
                     }
                 }
+                .frame(minWidth: 400, idealWidth: 560, minHeight: 400, idealHeight: 520)
                 #endif
                 .task { await loadLibraryData() }
                 .onDisappear { stopPolling() }
@@ -922,36 +923,47 @@ private struct LinkedSourceExclusionsSheet: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Linked Folder") {
+            VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text(detail.source.name)
+                        .font(.headline)
                     Text(detail.source.rootPath)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                .padding()
 
-                Section {
-                    ForEach(folders) { folder in
-                        Toggle(isOn: Binding(
-                            get: { !excludedPaths.contains(folder.path) },
-                            set: { isIncluded in
-                                if isIncluded {
-                                    excludedPaths.remove(folder.path)
-                                } else {
-                                    excludedPaths.insert(folder.path)
-                                }
+                Divider()
+
+                Text("Included Folders")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal)
+                    .padding(.top, 10)
+                    .padding(.bottom, 4)
+
+                List(folders) { folder in
+                    Toggle(isOn: Binding(
+                        get: { !excludedPaths.contains(folder.path) },
+                        set: { isIncluded in
+                            if isIncluded {
+                                excludedPaths.remove(folder.path)
+                            } else {
+                                excludedPaths.insert(folder.path)
                             }
-                        )) {
-                            Text(folder.path)
-                                .padding(.leading, CGFloat(folder.depth) * 14)
                         }
-                        .toggleStyle(.checkbox)
+                    )) {
+                        Text(folder.path)
+                            .padding(.leading, CGFloat(folder.depth) * 14)
                     }
-                } header: {
-                    Text("Included Folders")
-                } footer: {
-                    Text("Turning a folder off removes its indexed files immediately and keeps it excluded on future rescans.")
+                    .toggleStyle(.checkbox)
                 }
+
+                Text("Turning a folder off removes its indexed files immediately and keeps it excluded on future rescans.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal)
+                    .padding(.bottom, 8)
             }
             .navigationTitle("Manage Folders")
             .toolbar {

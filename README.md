@@ -9,9 +9,9 @@ It targets **iPhone and Mac** from one SwiftUI codebase and depends on a running
 
 This repository contains the client only. The backend lives in the separate `FruitcakeAI` repository.
 
-## Alpha Status
+## Project Status
 
-This repo is being opened as an **alpha**.
+This repo is available as a quiet open alpha.
 
 That means:
 
@@ -21,7 +21,7 @@ That means:
 - bug reports are welcome
 - broad outside co-development is not the default workflow yet
 
-If you are evaluating the project, expect active iteration rather than long-term stability guarantees.
+The repository is public, but it is not being actively pushed as a broad launch. If you are evaluating the project, expect active iteration rather than long-term stability guarantees.
 
 ## What It Includes
 
