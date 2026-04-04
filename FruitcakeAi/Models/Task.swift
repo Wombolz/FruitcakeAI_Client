@@ -14,6 +14,8 @@ struct TaskSummary: Identifiable, Codable {
     let id: Int
     let title: String
     let instruction: String
+    let persona: String?
+    let profile: String?
     let llmModelOverride: String?
     let status: String
     let taskType: String            // "one_shot" | "recurring"
@@ -22,6 +24,11 @@ struct TaskSummary: Identifiable, Codable {
     let requiresApproval: Bool
     let result: String?
     let error: String?
+    let activeHoursStart: String?
+    let activeHoursEnd: String?
+    let activeHoursTz: String?
+    let effectiveTimezone: String?
+    let taskRecipe: TaskRecipeMetadata?
     let lastRunAt: Date?
     let nextRunAt: Date?
     let currentStepTitle: String?
@@ -133,6 +140,69 @@ struct CreateTaskRequest: Encodable {
     let activeHoursTz: String?      // e.g. "America/Chicago" or nil
     let recipeFamily: String?
     let recipeParams: [String: StringCodable]?
+}
+
+struct TaskUpdateRequest: Encodable {
+    private enum CodingKeys: String, CodingKey {
+        case title, instruction, taskType, llmModelOverride, schedule, deliver, requiresApproval, activeHoursStart, activeHoursEnd, activeHoursTz, recipeFamily, recipeParams
+    }
+
+    let title: String
+    let instruction: String
+    let taskType: String
+    let llmModelOverride: String?
+    let schedule: String?
+    let deliver: Bool
+    let requiresApproval: Bool
+    let activeHoursStart: String?
+    let activeHoursEnd: String?
+    let activeHoursTz: String?
+    let recipeFamily: String?
+    let recipeParams: [String: StringCodable]?
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(title, forKey: .title)
+        try container.encode(instruction, forKey: .instruction)
+        try container.encode(taskType, forKey: .taskType)
+        if let llmModelOverride {
+            try container.encode(llmModelOverride, forKey: .llmModelOverride)
+        } else {
+            try container.encodeNil(forKey: .llmModelOverride)
+        }
+        if let schedule {
+            try container.encode(schedule, forKey: .schedule)
+        } else {
+            try container.encodeNil(forKey: .schedule)
+        }
+        try container.encode(deliver, forKey: .deliver)
+        try container.encode(requiresApproval, forKey: .requiresApproval)
+        if let activeHoursStart {
+            try container.encode(activeHoursStart, forKey: .activeHoursStart)
+        } else {
+            try container.encodeNil(forKey: .activeHoursStart)
+        }
+        if let activeHoursEnd {
+            try container.encode(activeHoursEnd, forKey: .activeHoursEnd)
+        } else {
+            try container.encodeNil(forKey: .activeHoursEnd)
+        }
+        if let activeHoursTz {
+            try container.encode(activeHoursTz, forKey: .activeHoursTz)
+        } else {
+            try container.encodeNil(forKey: .activeHoursTz)
+        }
+        if let recipeFamily {
+            try container.encode(recipeFamily, forKey: .recipeFamily)
+        } else {
+            try container.encodeNil(forKey: .recipeFamily)
+        }
+        if let recipeParams {
+            try container.encode(recipeParams, forKey: .recipeParams)
+        } else {
+            try container.encodeNil(forKey: .recipeParams)
+        }
+    }
 }
 
 enum StringCodable: Codable, Hashable {

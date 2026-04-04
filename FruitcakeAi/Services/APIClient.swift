@@ -174,6 +174,10 @@ final class APIClient {
         try await request("/tasks", method: "POST", body: req)
     }
 
+    func updateTask(_ id: Int, _ req: TaskUpdateRequest) async throws -> TaskSummary {
+        try await request("/tasks/\(id)", method: "PATCH", body: req)
+    }
+
     func updateTaskModelOverride(_ id: Int, llmModelOverride: String?) async throws -> TaskSummary {
         try await request(
             "/tasks/\(id)",
@@ -312,6 +316,11 @@ final class APIClient {
             method: "POST",
             body: SecretRotateBody(value: value)
         )
+    }
+
+
+    func fetchSecretAccessEvents(_ id: Int, limit: Int = 10) async throws -> [SecretAccessEventSummary] {
+        try await request("/secrets/\(id)/access-events?limit=\(limit)")
     }
 
     func updateChatRoutingPreference(_ preference: String) async throws {

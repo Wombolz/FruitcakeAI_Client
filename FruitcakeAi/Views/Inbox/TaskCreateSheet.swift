@@ -2,7 +2,7 @@
 //  TaskCreateSheet.swift
 //  FruitcakeAi
 //
-//  Modal form for creating a new task. Presented as a sheet from InboxView.
+//  Modal form for creating a new task or editing an existing one.
 //
 
 import SwiftUI
@@ -37,9 +37,9 @@ struct TaskCreateSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     let initialDraft: TaskDraft?
+    let initialTask: TaskSummary?
     var onCreated: () -> Void = {}
-
-    // MARK: - Form state
+    var onSaved: ((TaskSummary) -> Void)? = nil
 
     @State private var title = ""
     @State private var instruction = ""
@@ -55,40 +55,10 @@ struct TaskCreateSheet: View {
     @State private var selectedModelOverride = ""
     @State private var selectedRecipeFamily = ""
 
-    // MARK: - Submission state
-
     @State private var isSubmitting = false
     @State private var submitError: String?
 
-    init(initialDraft: TaskDraft? = nil, onCreated: @escaping () -> Void = {}) {
-        self.initialDraft = initialDraft
-        self.onCreated = onCreated
-        _title = State(initialValue: initialDraft?.title ?? "")
-        _instruction = State(initialValue: initialDraft?.instruction ?? "")
-        _deliver = State(initialValue: initialDraft?.deliver ?? true)
-        _requiresApproval = State(initialValue: initialDraft?.requiresApproval ?? true)
-        _activeHoursStart = State(initialValue: initialDraft?.activeHoursStart ?? "07:00")
-        _activeHoursEnd = State(initialValue: initialDraft?.activeHoursEnd ?? "22:00")
-        _activeHoursEnabled = State(initialValue: initialDraft?.activeHoursStart != nil && initialDraft?.activeHoursEnd != nil)
-        _selectedModelOverride = State(initialValue: initialDraft?.llmModelOverride ?? "")
-        _selectedRecipeFamily = State(initialValue: initialDraft?.taskRecipe?.family ?? "")
-
-        let scheduleValue = initialDraft?.schedule
-        if initialDraft?.taskType == "one_shot" || scheduleValue == nil {
-            _scheduleKey = State(initialValue: "one_shot")
-            _customCron = State(initialValue: "")
-        } else if ["every:30m", "every:1h", "every:6h", "every:12h", "every:1d"].contains(scheduleValue) {
-            _scheduleKey = State(initialValue: scheduleValue ?? "one_shot")
-            _customCron = State(initialValue: "")
-        } else {
-            _scheduleKey = State(initialValue: "custom")
-            _customCron = State(initialValue: scheduleValue ?? "")
-        }
-    }
-
-    // MARK: - Schedule options
-
-    private let scheduleOptions: [(key: String, label: String)] = [
+    private let createScheduleOptions: [(key: String, label: String)] = [
         ("one_shot",   "One time"),
         ("every:30m",  "Every 30 min"),
         ("every:1h",   "Every hour"),
@@ -98,31 +68,107 @@ struct TaskCreateSheet: View {
         ("custom",     "Custom cron…"),
     ]
 
-    // MARK: - Validation
+    private let recurringScheduleOptions: [(key: String, label: String)] = [
+        ("every:30m",  "Every 30 min"),
+        ("every:1h",   "Every hour"),
+        ("every:6h",   "Every 6 hours"),
+        ("every:12h",  "Every 12 hours"),
+        ("every:1d",   "Daily"),
+        ("custom",     "Custom cron…"),
+    ]
 
-    private var canCreate: Bool {
+    private let taskFamilyOptions: [(key: String, label: String)] = [
+        ("", "Generic"),
+        ("topic_watcher", "Watcher"),
+        ("daily_research_briefing", "Daily Briefing"),
+        ("morning_briefing", "Morning Briefing"),
+        ("iss_pass_watcher", "ISS Watcher"),
+        ("weather_conditions", "Weather"),
+        ("maintenance", "Maintenance")
+    ]
+
+    init(initialDraft: TaskDraft? = nil, initialTask: TaskSummary? = nil, onCreated: @escaping () -> Void = {}, onSaved: ((TaskSummary) -> Void)? = nil) {
+        self.initialDraft = initialDraft
+        self.initialTask = initialTask
+        self.onCreated = onCreated
+        self.onSaved = onSaved
+
+        let draftOrTaskTitle = initialDraft?.title ?? initialTask?.title ?? ""
+        let draftOrTaskInstruction = initialDraft?.instruction ?? initialTask?.instruction ?? ""
+        let draftOrTaskDeliver = initialDraft?.deliver ?? initialTask?.deliver ?? true
+        let draftOrTaskApproval = initialDraft?.requiresApproval ?? initialTask?.requiresApproval ?? true
+        let draftOrTaskStart = initialDraft?.activeHoursStart ?? initialTask?.activeHoursStart ?? "07:00"
+        let draftOrTaskEnd = initialDraft?.activeHoursEnd ?? initialTask?.activeHoursEnd ?? "22:00"
+        let draftOrTaskTz = initialDraft?.activeHoursTz ?? initialTask?.activeHoursTz
+        let draftOrTaskModel = initialDraft?.llmModelOverride ?? initialTask?.llmModelOverride ?? ""
+        let draftOrTaskFamily = initialDraft?.taskRecipe?.family ?? initialTask?.taskRecipe?.family ?? ""
+        let draftOrTaskType = initialDraft?.taskType ?? initialTask?.taskType ?? "one_shot"
+        let draftOrTaskSchedule = initialDraft?.schedule ?? initialTask?.schedule
+
+        _title = State(initialValue: draftOrTaskTitle)
+        _instruction = State(initialValue: draftOrTaskInstruction)
+        _deliver = State(initialValue: draftOrTaskDeliver)
+        _requiresApproval = State(initialValue: draftOrTaskApproval)
+        _activeHoursStart = State(initialValue: draftOrTaskStart)
+        _activeHoursEnd = State(initialValue: draftOrTaskEnd)
+        _activeHoursEnabled = State(initialValue: draftOrTaskTz != nil && !draftOrTaskTz!.isEmpty)
+        _selectedModelOverride = State(initialValue: draftOrTaskModel)
+        _selectedRecipeFamily = State(initialValue: draftOrTaskFamily)
+
+        if draftOrTaskType == "one_shot" || draftOrTaskSchedule == nil {
+            _scheduleKey = State(initialValue: "one_shot")
+            _customCron = State(initialValue: "")
+        } else if ["every:30m", "every:1h", "every:6h", "every:12h", "every:1d"].contains(draftOrTaskSchedule) {
+            _scheduleKey = State(initialValue: draftOrTaskSchedule ?? "every:1d")
+            _customCron = State(initialValue: "")
+        } else {
+            _scheduleKey = State(initialValue: "custom")
+            _customCron = State(initialValue: draftOrTaskSchedule ?? "")
+        }
+    }
+
+    private var isEditing: Bool { initialTask != nil }
+
+    private var editorTitle: String {
+        isEditing ? "Edit Task" : "New Task"
+    }
+
+    private var submitLabel: String {
+        isEditing ? "Save" : "Create"
+    }
+
+    private var canSubmit: Bool {
         !title.trimmingCharacters(in: .whitespaces).isEmpty &&
-        !instruction.trimmingCharacters(in: .whitespaces).isEmpty &&
+        !instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
         !isSubmitting
     }
 
-    // MARK: - Body
+    private var availableScheduleOptions: [(key: String, label: String)] {
+        createScheduleOptions
+    }
+
+    private var sourceRecipeFamily: String? {
+        initialDraft?.taskRecipe?.family ?? initialTask?.taskRecipe?.family
+    }
+
+    private var sourceRecipeParams: [String: StringCodable]? {
+        initialDraft?.taskRecipe?.params ?? initialTask?.taskRecipe?.params
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
             HStack {
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Spacer()
-                Text("New Task")
+                Text(editorTitle)
                     .font(.headline)
                 Spacer()
-                Button("Create") {
+                Button(submitLabel) {
                     Task { await submit() }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(!canCreate)
+                .disabled(!canSubmit)
                 .overlay {
                     if isSubmitting {
                         ProgressView().controlSize(.mini)
@@ -133,7 +179,6 @@ struct TaskCreateSheet: View {
 
             Divider()
 
-            // Scrollable form content
             Form {
                 if let initialDraft {
                     draftReviewSection(initialDraft)
@@ -157,7 +202,7 @@ struct TaskCreateSheet: View {
         }
         .task { await loadModels() }
         #if os(macOS)
-        .frame(width: 480, height: 520)
+        .frame(width: 480, height: 560)
         #else
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         #endif
@@ -187,17 +232,6 @@ struct TaskCreateSheet: View {
         }
     }
 
-
-    private let taskFamilyOptions: [(key: String, label: String)] = [
-        ("", "Generic"),
-        ("topic_watcher", "Watcher"),
-        ("daily_research_briefing", "Daily Briefing"),
-        ("morning_briefing", "Morning Briefing"),
-        ("iss_pass_watcher", "ISS Watcher"),
-        ("weather_conditions", "Weather"),
-        ("maintenance", "Maintenance")
-    ]
-
     private var taskFamilySection: some View {
         Section("Task Type") {
             Picker("Type", selection: $selectedRecipeFamily) {
@@ -207,11 +241,9 @@ struct TaskCreateSheet: View {
             }
             .pickerStyle(.menu)
 
-            if !selectedRecipeFamily.isEmpty {
-                Text(taskFamilyHelperText(for: selectedRecipeFamily))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            Text(taskFamilyHelperText(for: selectedRecipeFamily))
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -230,11 +262,9 @@ struct TaskCreateSheet: View {
         case "maintenance":
             return "Use this for bounded upkeep tasks like refresh, cleanup, or health checks."
         default:
-            return "Use Generic when the task does not fit a known task family yet."
+            return "Use Generic when the task should stay freeform rather than following a built-in recipe."
         }
     }
-
-    // MARK: - Sections
 
     private var titleSection: some View {
         Section("Title") {
@@ -254,7 +284,7 @@ struct TaskCreateSheet: View {
                         .allowsHitTesting(false)
                 }
                 TextEditor(text: $instruction)
-                    .frame(minHeight: 80)
+                    .frame(minHeight: 90)
             }
         } header: {
             Text("Instruction")
@@ -264,7 +294,7 @@ struct TaskCreateSheet: View {
     private var scheduleSection: some View {
         Section("Frequency") {
             Picker("Schedule", selection: $scheduleKey) {
-                ForEach(scheduleOptions, id: \.key) { option in
+                ForEach(availableScheduleOptions, id: \.key) { option in
                     Text(option.label).tag(option.key)
                 }
             }
@@ -285,7 +315,7 @@ struct TaskCreateSheet: View {
         Section("Options") {
             Toggle("Push when done", isOn: $deliver)
             Toggle("Require approval before acting", isOn: $requiresApproval)
-            if scheduleKey == "one_shot" {
+            if !isEditing && scheduleKey == "one_shot" {
                 Toggle("Run immediately after create", isOn: $runNow)
             }
         }
@@ -343,51 +373,85 @@ struct TaskCreateSheet: View {
         }
     }
 
-    // MARK: - Submit
+    private func resolvedSchedule() -> String? {
+        switch scheduleKey {
+        case "one_shot":
+            return nil
+        case "custom":
+            let trimmed = customCron.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        default:
+            return scheduleKey
+        }
+    }
+
+    private func resolvedRecipeParams() -> [String: StringCodable]? {
+        selectedRecipeFamily == sourceRecipeFamily ? sourceRecipeParams : nil
+    }
 
     private func submit() async {
         isSubmitting = true
         submitError = nil
         defer { isSubmitting = false }
 
-        let taskType: String
-        let schedule: String?
-
-        switch scheduleKey {
-        case "one_shot":
-            taskType = "one_shot"
-            schedule = nil
-        case "custom":
-            taskType = "recurring"
-            schedule = customCron.trimmingCharacters(in: .whitespaces).isEmpty ? nil : customCron
-        default:
-            taskType = "recurring"
-            schedule = scheduleKey
-        }
-
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedInstruction = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
         let tz = TimeZone.current.identifier
-        let req = CreateTaskRequest(
-            title: title.trimmingCharacters(in: .whitespaces),
-            instruction: instruction.trimmingCharacters(in: .whitespaces),
-            llmModelOverride: selectedModelOverride.isEmpty ? nil : selectedModelOverride,
-            taskType: taskType,
-            schedule: schedule,
-            deliver: deliver,
-            requiresApproval: requiresApproval,
-            activeHoursStart: activeHoursEnabled ? activeHoursStart : nil,
-            activeHoursEnd:   activeHoursEnabled ? activeHoursEnd   : nil,
-            activeHoursTz:    activeHoursEnabled ? tz               : nil,
-            recipeFamily: selectedRecipeFamily.isEmpty ? nil : selectedRecipeFamily,
-            recipeParams: selectedRecipeFamily == initialDraft?.taskRecipe?.family ? initialDraft?.taskRecipe?.params : nil
-        )
+        let activeStart = activeHoursEnabled ? activeHoursStart : nil
+        let activeEnd = activeHoursEnabled ? activeHoursEnd : nil
+        let activeTz = activeHoursEnabled ? tz : nil
+        let recipeFamily = selectedRecipeFamily
+        let recipeParams = resolvedRecipeParams()
+        let resolvedTaskType = (scheduleKey == "one_shot") ? "one_shot" : "recurring"
 
         do {
             let api = APIClient(authManager: authManager)
-            let created = try await api.createTask(req)
-            if taskType == "one_shot" && runNow {
-                try await api.runTask(created.id)
+            if let initialTask {
+                let updated = try await api.updateTask(
+                    initialTask.id,
+                    TaskUpdateRequest(
+                        title: trimmedTitle,
+                        instruction: trimmedInstruction,
+                        taskType: resolvedTaskType,
+                        llmModelOverride: selectedModelOverride.isEmpty ? nil : selectedModelOverride,
+                        schedule: resolvedSchedule(),
+                        deliver: deliver,
+                        requiresApproval: requiresApproval,
+                        activeHoursStart: activeStart,
+                        activeHoursEnd: activeEnd,
+                        activeHoursTz: activeTz,
+                        recipeFamily: recipeFamily,
+                        recipeParams: recipeParams
+                    )
+                )
+                onSaved?(updated)
+            } else {
+                let taskType: String
+                switch scheduleKey {
+                case "one_shot": taskType = "one_shot"
+                default: taskType = "recurring"
+                }
+                let created = try await api.createTask(
+                    CreateTaskRequest(
+                        title: trimmedTitle,
+                        instruction: trimmedInstruction,
+                        llmModelOverride: selectedModelOverride.isEmpty ? nil : selectedModelOverride,
+                        taskType: taskType,
+                        schedule: resolvedSchedule(),
+                        deliver: deliver,
+                        requiresApproval: requiresApproval,
+                        activeHoursStart: activeStart,
+                        activeHoursEnd: activeEnd,
+                        activeHoursTz: activeTz,
+                        recipeFamily: recipeFamily,
+                        recipeParams: recipeParams
+                    )
+                )
+                if taskType == "one_shot" && runNow {
+                    try await api.runTask(created.id)
+                }
+                onCreated()
             }
-            onCreated()
             dismiss()
         } catch {
             submitError = error.localizedDescription
@@ -404,8 +468,6 @@ struct TaskCreateSheet: View {
         }
     }
 }
-
-// MARK: - Preview
 
 #Preview {
     TaskCreateSheet()

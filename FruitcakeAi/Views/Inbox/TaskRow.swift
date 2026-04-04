@@ -163,7 +163,7 @@ struct TaskRow: View {
                         Spacer()
                     }
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.borderless)
 
                 if !showResult {
                     Text(String(result.prefix(80)) + (result.count > 80 ? "…" : ""))
@@ -280,6 +280,8 @@ struct TaskRow: View {
             id: 1,
             title: "Morning Briefing",
             instruction: "Check my calendar and summarize anything urgent for today.",
+            persona: nil,
+            profile: nil,
             llmModelOverride: nil,
             status: "completed",
             taskType: "recurring",
@@ -288,6 +290,11 @@ struct TaskRow: View {
             requiresApproval: false,
             result: "You have 3 meetings today: standup at 9am, design review at 2pm, and a dentist appointment at 5pm. No urgent emails.",
             error: nil,
+            activeHoursStart: nil,
+            activeHoursEnd: nil,
+            activeHoursTz: nil,
+            effectiveTimezone: nil,
+            taskRecipe: nil,
             lastRunAt: Date(),
             nextRunAt: Calendar.current.date(byAdding: .day, value: 1, to: Date())
             ,
@@ -304,6 +311,8 @@ struct TaskRow: View {
                 id: 2,
                 title: "Schedule Appointment",
                 instruction: "Create a calendar event for the team lunch next Friday at noon.",
+                persona: nil,
+                profile: nil,
                 llmModelOverride: nil,
                 status: "waiting_approval",
                 taskType: "one_shot",
@@ -312,6 +321,11 @@ struct TaskRow: View {
                 requiresApproval: true,
                 result: nil,
                 error: nil,
+                activeHoursStart: nil,
+                activeHoursEnd: nil,
+                activeHoursTz: nil,
+                effectiveTimezone: nil,
+                taskRecipe: nil,
                 lastRunAt: nil,
                 nextRunAt: nil,
                 currentStepTitle: "Create calendar event",
@@ -329,6 +343,8 @@ struct TaskRow: View {
             id: 3,
             title: "Weather Check",
             instruction: "Fetch the weather forecast for this week.",
+            persona: nil,
+            profile: nil,
             llmModelOverride: nil,
             status: "failed",
             taskType: "recurring",
@@ -337,6 +353,11 @@ struct TaskRow: View {
             requiresApproval: false,
             result: nil,
             error: "LLM call failed: connection timeout after 30s",
+            activeHoursStart: nil,
+            activeHoursEnd: nil,
+            activeHoursTz: nil,
+            effectiveTimezone: nil,
+            taskRecipe: nil,
             lastRunAt: Date(timeIntervalSinceNow: -3600),
             nextRunAt: Date(timeIntervalSinceNow: 1800),
             currentStepTitle: nil,

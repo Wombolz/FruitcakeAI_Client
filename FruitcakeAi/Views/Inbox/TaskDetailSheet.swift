@@ -52,15 +52,23 @@ struct TaskDetailSheet: View {
     @State private var availableModels: [TaskDetailModelOption] = []
     @State private var selectedModelOverride = ""
     @State private var isSavingModel = false
+    @State private var showEditor = false
+    @State private var editedTask: TaskSummary? = nil
+
+    private var currentTask: TaskSummary {
+        editedTask ?? task
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             // Header
             HStack {
-                Text(task.title)
+                Text(currentTask.title)
                     .font(.headline)
                     .lineLimit(1)
                 Spacer()
+                Button("Edit") { showEditor = true }
+                    .buttonStyle(.bordered)
                 Button("Done") { dismiss() }
             }
             .padding()
@@ -78,9 +86,9 @@ struct TaskDetailSheet: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let audit {
                 List {
-                    if task.isPendingApproval {
+                    if currentTask.isPendingApproval {
                         Section("Approval Required") {
-                            Text(task.approvalContextLabel)
+                            Text(currentTask.approvalContextLabel)
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(.orange)
                             HStack(spacing: 10) {
@@ -106,10 +114,10 @@ struct TaskDetailSheet: View {
                         }
                     }
 
-                    if task.canStop || task.canRun || task.canReset {
+                    if currentTask.canStop || currentTask.canRun || currentTask.canReset {
                         Section("Actions") {
                             HStack(spacing: 10) {
-                                if task.canRun {
+                                if currentTask.canRun {
                                     Button {
                                         onRun?()
                                         dismiss()
@@ -121,7 +129,7 @@ struct TaskDetailSheet: View {
                                     .tint(.blue)
                                 }
 
-                                if task.canReset {
+                                if currentTask.canReset {
                                     Button {
                                         onReset?()
                                         dismiss()
@@ -132,7 +140,7 @@ struct TaskDetailSheet: View {
                                     .buttonStyle(.bordered)
                                 }
 
-                                if task.canStop {
+                                if currentTask.canStop {
                                     Button(role: .destructive) {
                                         onStop?()
                                         dismiss()
@@ -209,9 +217,22 @@ struct TaskDetailSheet: View {
             }
         }
         .task {
-            selectedModelOverride = task.llmModelOverride ?? ""
+            selectedModelOverride = currentTask.llmModelOverride ?? ""
             await load()
             await loadModels()
+        }
+        .sheet(isPresented: $showEditor) {
+            TaskCreateSheet(initialTask: currentTask, onSaved: { updated in
+                editedTask = updated
+                selectedModelOverride = updated.llmModelOverride ?? ""
+                onUpdated?()
+                Task { await load() }
+            })
+            .environment(authManager)
+            #if os(iOS)
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+            #endif
         }
         .frame(minWidth: 400, idealWidth: 500, minHeight: 400, idealHeight: 550)
     }
@@ -219,7 +240,7 @@ struct TaskDetailSheet: View {
     // MARK: - Tool call row
 
     private func stepRow(_ step: TaskStepSummary) -> some View {
-        let isCurrent = (task.currentStepTitle == step.title) || (step.status == "running" || step.status == "waiting_approval")
+        let isCurrent = (currentTask.currentStepTitle == step.title) || (step.status == "running" || step.status == "waiting_approval")
         return VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text("\(step.stepIndex). \(step.title)")
@@ -277,8 +298,8 @@ struct TaskDetailSheet: View {
         defer { isLoading = false }
         do {
             let api = APIClient(authManager: authManager)
-            async let auditData = api.fetchTaskAudit(task.id)
-            async let stepData = api.fetchTaskSteps(task.id)
+            async let auditData = api.fetchTaskAudit(currentTask.id)
+            async let stepData = api.fetchTaskSteps(currentTask.id)
             audit = try await auditData
             steps = (try? await stepData) ?? []
         } catch {
@@ -303,11 +324,12 @@ struct TaskDetailSheet: View {
         defer { isSavingModel = false }
         do {
             let api = APIClient(authManager: authManager)
-            _ = try await api.updateTaskModelOverride(task.id, llmModelOverride: value.isEmpty ? nil : value)
+            let updated = try await api.updateTaskModelOverride(currentTask.id, llmModelOverride: value.isEmpty ? nil : value)
+            editedTask = updated
             onUpdated?()
         } catch {
             loadError = error.localizedDescription
-            selectedModelOverride = task.llmModelOverride ?? ""
+            selectedModelOverride = currentTask.llmModelOverride ?? ""
         }
     }
 
@@ -323,6 +345,8 @@ struct TaskDetailSheet: View {
         id: 1,
         title: "Morning Briefing",
         instruction: "Check my calendar and summarize anything urgent.",
+        persona: nil,
+        profile: nil,
         llmModelOverride: nil,
         status: "completed",
         taskType: "recurring",
@@ -331,6 +355,11 @@ struct TaskDetailSheet: View {
         requiresApproval: false,
         result: "You have 3 meetings today: standup at 9am, design review at 2pm, and dentist at 5pm.",
         error: nil,
+        activeHoursStart: nil,
+        activeHoursEnd: nil,
+        activeHoursTz: nil,
+        effectiveTimezone: nil,
+        taskRecipe: nil,
         lastRunAt: Date(),
         nextRunAt: Calendar.current.date(byAdding: .day, value: 1, to: Date()),
         currentStepTitle: nil,
