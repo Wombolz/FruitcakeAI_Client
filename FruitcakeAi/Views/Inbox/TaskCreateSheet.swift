@@ -36,6 +36,7 @@ struct TaskCreateSheet: View {
     @Environment(AuthManager.self) private var authManager
     @Environment(\.dismiss) private var dismiss
 
+    let initialDraft: TaskDraft?
     var onCreated: () -> Void = {}
 
     // MARK: - Form state
@@ -52,11 +53,38 @@ struct TaskCreateSheet: View {
     @State private var activeHoursEnd = "22:00"
     @State private var availableModels: [TaskModelOption] = []
     @State private var selectedModelOverride = ""
+    @State private var selectedRecipeFamily = ""
 
     // MARK: - Submission state
 
     @State private var isSubmitting = false
     @State private var submitError: String?
+
+    init(initialDraft: TaskDraft? = nil, onCreated: @escaping () -> Void = {}) {
+        self.initialDraft = initialDraft
+        self.onCreated = onCreated
+        _title = State(initialValue: initialDraft?.title ?? "")
+        _instruction = State(initialValue: initialDraft?.instruction ?? "")
+        _deliver = State(initialValue: initialDraft?.deliver ?? true)
+        _requiresApproval = State(initialValue: initialDraft?.requiresApproval ?? true)
+        _activeHoursStart = State(initialValue: initialDraft?.activeHoursStart ?? "07:00")
+        _activeHoursEnd = State(initialValue: initialDraft?.activeHoursEnd ?? "22:00")
+        _activeHoursEnabled = State(initialValue: initialDraft?.activeHoursStart != nil && initialDraft?.activeHoursEnd != nil)
+        _selectedModelOverride = State(initialValue: initialDraft?.llmModelOverride ?? "")
+        _selectedRecipeFamily = State(initialValue: initialDraft?.taskRecipe?.family ?? "")
+
+        let scheduleValue = initialDraft?.schedule
+        if initialDraft?.taskType == "one_shot" || scheduleValue == nil {
+            _scheduleKey = State(initialValue: "one_shot")
+            _customCron = State(initialValue: "")
+        } else if ["every:30m", "every:1h", "every:6h", "every:12h", "every:1d"].contains(scheduleValue) {
+            _scheduleKey = State(initialValue: scheduleValue ?? "one_shot")
+            _customCron = State(initialValue: "")
+        } else {
+            _scheduleKey = State(initialValue: "custom")
+            _customCron = State(initialValue: scheduleValue ?? "")
+        }
+    }
 
     // MARK: - Schedule options
 
@@ -107,6 +135,10 @@ struct TaskCreateSheet: View {
 
             // Scrollable form content
             Form {
+                if let initialDraft {
+                    draftReviewSection(initialDraft)
+                }
+                taskFamilySection
                 titleSection
                 instructionSection
                 scheduleSection
@@ -129,6 +161,77 @@ struct TaskCreateSheet: View {
         #else
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         #endif
+    }
+
+    private func draftReviewSection(_ draft: TaskDraft) -> some View {
+        Section("Draft Review") {
+            if let family = draft.taskRecipe?.family, !family.isEmpty {
+                LabeledContent("Task Family", value: family.replacingOccurrences(of: "_", with: " ").capitalized)
+            }
+            if let confirmation = draft.taskConfirmation, !confirmation.isEmpty {
+                Text(confirmation)
+                    .font(.subheadline)
+            }
+            if let assumptions = draft.taskRecipe?.assumptions, !assumptions.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Assumptions")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    ForEach(assumptions, id: \.self) { assumption in
+                        Text("• \(assumption)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
+
+    private let taskFamilyOptions: [(key: String, label: String)] = [
+        ("", "Generic"),
+        ("topic_watcher", "Watcher"),
+        ("daily_research_briefing", "Daily Briefing"),
+        ("morning_briefing", "Morning Briefing"),
+        ("iss_pass_watcher", "ISS Watcher"),
+        ("weather_conditions", "Weather"),
+        ("maintenance", "Maintenance")
+    ]
+
+    private var taskFamilySection: some View {
+        Section("Task Type") {
+            Picker("Type", selection: $selectedRecipeFamily) {
+                ForEach(taskFamilyOptions, id: \.key) { option in
+                    Text(option.label).tag(option.key)
+                }
+            }
+            .pickerStyle(.menu)
+
+            if !selectedRecipeFamily.isEmpty {
+                Text(taskFamilyHelperText(for: selectedRecipeFamily))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func taskFamilyHelperText(for family: String) -> String {
+        switch family {
+        case "topic_watcher":
+            return "Use this for ongoing monitoring tasks that alert you when something meaningfully changes."
+        case "daily_research_briefing":
+            return "Use this for scheduled summaries or briefings that gather and write up recent developments."
+        case "morning_briefing":
+            return "Use this for a recurring start-of-day briefing with a stable agenda."
+        case "iss_pass_watcher":
+            return "Use this for recurring ISS visibility checks tied to a location."
+        case "weather_conditions":
+            return "Use this for recurring weather checks for a place or region."
+        case "maintenance":
+            return "Use this for bounded upkeep tasks like refresh, cleanup, or health checks."
+        default:
+            return "Use Generic when the task does not fit a known task family yet."
+        }
     }
 
     // MARK: - Sections
@@ -273,7 +376,9 @@ struct TaskCreateSheet: View {
             requiresApproval: requiresApproval,
             activeHoursStart: activeHoursEnabled ? activeHoursStart : nil,
             activeHoursEnd:   activeHoursEnabled ? activeHoursEnd   : nil,
-            activeHoursTz:    activeHoursEnabled ? tz               : nil
+            activeHoursTz:    activeHoursEnabled ? tz               : nil,
+            recipeFamily: selectedRecipeFamily.isEmpty ? nil : selectedRecipeFamily,
+            recipeParams: selectedRecipeFamily == initialDraft?.taskRecipe?.family ? initialDraft?.taskRecipe?.params : nil
         )
 
         do {

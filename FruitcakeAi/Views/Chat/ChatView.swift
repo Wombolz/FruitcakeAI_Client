@@ -116,6 +116,10 @@ private struct SessionToolOverrides {
     var blockedTools: [String] = []
 }
 
+private struct ChatTaskDraftMetadata: Decodable {
+    let taskDraft: TaskDraft?
+}
+
 private struct RecentSendRecord {
     let fingerprint: String
     let sentAt: Date
@@ -173,6 +177,7 @@ struct ChatView: View {
     @State private var profileError: String?
 
     @State private var wsManager = WebSocketManager()
+    @State private var pendingTaskDraft: TaskDraft?
 
     private func personaDisplayName(_ key: String) -> String {
         if let info = availablePersonaInfo[key], let displayName = info.displayName, !displayName.isEmpty {
@@ -281,6 +286,14 @@ struct ChatView: View {
                     }
                 }
             }
+        }
+        .sheet(item: $pendingTaskDraft) { draft in
+            TaskCreateSheet(initialDraft: draft)
+                .environment(authManager)
+                #if os(iOS)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                #endif
         }
         .sheet(isPresented: $showProfileSheet) {
             NavigationStack {
@@ -1128,7 +1141,7 @@ struct ChatView: View {
                 streamingContent += chunk
                 fullResponse += chunk
 
-            case .done(let complete):
+            case .done(let complete, let taskDraft):
                 trace("send_message_event seq=\(sendSequence) session=\(sessionId) client_send_id=\(clientSendID) type=done chars=\(complete.count)")
                 let finalResponse = complete.isEmpty ? fullResponse : complete
                 fullResponse = finalResponse
@@ -1139,6 +1152,9 @@ struct ChatView: View {
                 messages.append(assistantMsg)
                 selectedConversation?.messages.append(assistantMsg)
                 selectedConversation?.lastActivity = .now
+                if let taskDraft {
+                    pendingTaskDraft = taskDraft
+                }
 
                 break eventLoop
 
@@ -1200,7 +1216,11 @@ struct ChatView: View {
             let allowedTools: [String]?
             let blockedTools: [String]?
         }
-        struct SendResponse: Decodable { let role: String; let content: String }
+        struct SendResponse: Decodable {
+            let role: String
+            let content: String
+            let metadata: ChatTaskDraftMetadata?
+        }
         let api = APIClient(authManager: authManager)
         trace("rest_send_start session=\(sessionId) client_send_id=\(clientSendID) chars=\(text.count)")
         do {
@@ -1220,6 +1240,9 @@ struct ChatView: View {
             messages.append(msg)
             selectedConversation?.messages.append(msg)
             selectedConversation?.lastActivity = .now
+            if let draft = resp.metadata?.taskDraft {
+                pendingTaskDraft = draft
+            }
         } catch {
             trace("rest_send_error session=\(sessionId) client_send_id=\(clientSendID) error=\(error.localizedDescription)")
             loadingError = error.localizedDescription

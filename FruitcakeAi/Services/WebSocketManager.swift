@@ -19,7 +19,7 @@ import Observation
 
 enum WSEvent {
     case token(String)                          // partial chunk — append to streaming buffer
-    case done(String)                           // full response — store in SwiftData
+    case done(String, TaskDraft?)               // full response — store in SwiftData
     case personaSwitched(name: String, message: String)
     case error(String)
 }
@@ -258,8 +258,12 @@ final class WebSocketManager: NSObject, URLSessionWebSocketDelegate {
     }
 
     private func handleIncoming(_ text: String) {
-        guard let data = text.data(using: .utf8),
-              let payload = try? JSONDecoder().decode(WSPayload.self, from: data) else {
+        guard let data = text.data(using: .utf8) else {
+            return
+        }
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        guard let payload = try? decoder.decode(WSPayload.self, from: data) else {
             return
         }
 
@@ -275,7 +279,7 @@ final class WebSocketManager: NSObject, URLSessionWebSocketDelegate {
             responseContinuation?.yield(.token(payload.content))
 
         case "done":
-            responseContinuation?.yield(.done(payload.content))
+            responseContinuation?.yield(.done(payload.content, payload.metadata?.taskDraft))
             responseContinuation?.finish()
             responseContinuation = nil
 
@@ -344,4 +348,9 @@ private struct WSPayload: Decodable {
     let type: String
     let content: String
     let persona: String?
+    let metadata: WSPayloadMetadata?
+}
+
+private struct WSPayloadMetadata: Decodable {
+    let taskDraft: TaskDraft?
 }

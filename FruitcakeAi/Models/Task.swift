@@ -81,6 +81,43 @@ struct TaskStepSummary: Identifiable, Codable {
     let waitingApprovalTool: String?
 }
 
+struct TaskRecipeMetadata: Codable, Hashable {
+    let family: String?
+    let confidence: String?
+    let params: [String: StringCodable]?
+    let assumptions: [String]?
+    let selectedProfile: String?
+    let selectedExecutorKind: String?
+    let instructionStyle: String?
+}
+
+struct TaskDraft: Identifiable, Codable, Hashable {
+    var id: String {
+        [title, taskRecipe?.family ?? "", schedule ?? "", nextRunAt?.ISO8601Format() ?? ""]
+            .joined(separator: "|")
+    }
+
+    let proposed: Bool
+    let title: String
+    let instruction: String
+    let persona: String?
+    let profile: String?
+    let taskRecipe: TaskRecipeMetadata?
+    let taskSummary: String?
+    let taskConfirmation: String?
+    let executorKind: String?
+    let llmModelOverride: String?
+    let taskType: String
+    let schedule: String?
+    let deliver: Bool
+    let requiresApproval: Bool
+    let activeHoursStart: String?
+    let activeHoursEnd: String?
+    let activeHoursTz: String?
+    let effectiveTimezone: String?
+    let nextRunAt: Date?
+}
+
 // MARK: - CreateTaskRequest
 
 struct CreateTaskRequest: Encodable {
@@ -94,4 +131,57 @@ struct CreateTaskRequest: Encodable {
     let activeHoursStart: String?   // "HH:mm" or nil
     let activeHoursEnd: String?     // "HH:mm" or nil
     let activeHoursTz: String?      // e.g. "America/Chicago" or nil
+    let recipeFamily: String?
+    let recipeParams: [String: StringCodable]?
+}
+
+enum StringCodable: Codable, Hashable {
+    case string(String)
+    case int(Int)
+    case double(Double)
+    case bool(Bool)
+    case array([StringCodable])
+    case object([String: StringCodable])
+    case null
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else if let value = try? container.decode(Int.self) {
+            self = .int(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .double(value)
+        } else if let value = try? container.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? container.decode([StringCodable].self) {
+            self = .array(value)
+        } else if let value = try? container.decode([String: StringCodable].self) {
+            self = .object(value)
+        } else {
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unsupported JSON value")
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let value):
+            try container.encode(value)
+        case .int(let value):
+            try container.encode(value)
+        case .double(let value):
+            try container.encode(value)
+        case .bool(let value):
+            try container.encode(value)
+        case .array(let value):
+            try container.encode(value)
+        case .object(let value):
+            try container.encode(value)
+        case .null:
+            try container.encodeNil()
+        }
+    }
 }
