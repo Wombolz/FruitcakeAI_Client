@@ -162,6 +162,35 @@ struct TaskDetailSheet: View {
                         }
                     }
 
+                    Section("Task Settings") {
+                        if let family = currentTask.recipeFamilyLabel {
+                            LabeledContent("Family", value: family)
+                        }
+                        LabeledContent("Type", value: currentTask.taskType == "one_shot" ? "One time" : "Recurring")
+                        if let schedule = currentTask.scheduleLabel {
+                            LabeledContent("Schedule", value: schedule)
+                        }
+                        if let timezone = currentTask.effectiveTimezone, !timezone.isEmpty {
+                            LabeledContent("Timezone", value: timezone)
+                        }
+                        if let start = currentTask.activeHoursStart,
+                           let end = currentTask.activeHoursEnd,
+                           let tz = currentTask.activeHoursTz,
+                           !start.isEmpty, !end.isEmpty, !tz.isEmpty {
+                            LabeledContent("Active Hours", value: "\(start) – \(end) (\(tz))")
+                        }
+                    }
+
+                    if let assumptions = currentTask.taskRecipe?.assumptions, !assumptions.isEmpty {
+                        Section("Recipe Assumptions") {
+                            ForEach(assumptions, id: \.self) { assumption in
+                                Text("• \(assumption)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+
                     Section("Model") {
                         Picker("LLM", selection: $selectedModelOverride) {
                             Text("Automatic").tag("")

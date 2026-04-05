@@ -72,6 +72,25 @@ struct TaskSummary: Identifiable, Codable {
         }
         return "Approval required"
     }
+
+    var recipeFamilyLabel: String? {
+        guard let family = taskRecipe?.family, !family.isEmpty else { return nil }
+        return family.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+
+    var scheduleLabel: String? {
+        guard let schedule, !schedule.isEmpty else {
+            return taskType == "one_shot" ? "One time" : nil
+        }
+        switch schedule {
+        case "every:30m": return "Every 30 min"
+        case "every:1h": return "Every hour"
+        case "every:6h": return "Every 6 hours"
+        case "every:12h": return "Every 12 hours"
+        case "every:1d": return "Daily"
+        default: return schedule
+        }
+    }
 }
 
 struct TaskStepSummary: Identifiable, Codable {

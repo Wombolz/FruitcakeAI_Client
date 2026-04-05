@@ -114,10 +114,30 @@ struct TaskRow: View {
     }
 
     private var instructionPreview: some View {
-        Text(task.instruction)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .lineLimit(2)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                if let family = task.recipeFamilyLabel {
+                    metadataBadge(family, tint: .blue)
+                }
+                if let schedule = task.scheduleLabel {
+                    metadataBadge(schedule, tint: .secondary)
+                }
+            }
+
+            Text(task.instruction)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+        }
+    }
+
+    private func metadataBadge(_ text: String, tint: Color) -> some View {
+        Text(text)
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(tint.opacity(0.12), in: Capsule())
     }
 
     private var approvalCallout: some View {
