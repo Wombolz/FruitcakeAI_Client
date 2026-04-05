@@ -19,7 +19,7 @@ import Observation
 
 enum WSEvent {
     case token(String)                          // partial chunk — append to streaming buffer
-    case done(String)                           // full response — store in SwiftData
+    case done(String, TaskDraft?)               // full response — store in SwiftData
     case personaSwitched(name: String, message: String)
     case error(String)
 }
@@ -258,8 +258,24 @@ final class WebSocketManager: NSObject, URLSessionWebSocketDelegate {
     }
 
     private func handleIncoming(_ text: String) {
-        guard let data = text.data(using: .utf8),
-              let payload = try? JSONDecoder().decode(WSPayload.self, from: data) else {
+        guard let data = text.data(using: .utf8) else {
+            return
+        }
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        decoder.dateDecodingStrategy = .custom { dec in
+            let s = try dec.singleValueContainer().decode(String.self)
+            let withFractional = ISO8601DateFormatter()
+            withFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let d = withFractional.date(from: s) { return d }
+            let withoutFractional = ISO8601DateFormatter()
+            withoutFractional.formatOptions = [.withInternetDateTime]
+            if let d = withoutFractional.date(from: s) { return d }
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: dec.codingPath,
+                debugDescription: "Cannot decode date: \(s)"))
+        }
+        guard let payload = try? decoder.decode(WSPayload.self, from: data) else {
             return
         }
 
@@ -275,7 +291,7 @@ final class WebSocketManager: NSObject, URLSessionWebSocketDelegate {
             responseContinuation?.yield(.token(payload.content))
 
         case "done":
-            responseContinuation?.yield(.done(payload.content))
+            responseContinuation?.yield(.done(payload.content, payload.metadata?.taskDraft))
             responseContinuation?.finish()
             responseContinuation = nil
 
@@ -344,4 +360,23 @@ private struct WSPayload: Decodable {
     let type: String
     let content: String
     let persona: String?
+    let metadata: WSPayloadMetadata?
+}
+
+private struct WSPayloadMetadata: Decodable {
+    let taskDraft: TaskDraft?
+
+    private enum CodingKeys: String, CodingKey {
+        case taskDraft
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        do {
+            taskDraft = try container.decodeIfPresent(TaskDraft.self, forKey: .taskDraft)
+        } catch {
+            print("[ChatTrace] ws_task_draft_decode_error: \(error)")
+            taskDraft = nil
+        }
+    }
 }

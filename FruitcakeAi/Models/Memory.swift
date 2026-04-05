@@ -172,3 +172,32 @@ struct SecretSummary: Identifiable, Codable, Hashable {
         return candidate.isEmpty ? "General" : candidate.capitalized
     }
 }
+
+
+struct SecretAccessEventSummary: Identifiable, Codable, Hashable {
+    let id: Int
+    let secretId: Int?
+    let secretName: String
+    let taskId: Int?
+    let toolName: String
+    let success: Bool
+    let errorClass: String?
+    let createdAt: Date
+
+    var statusDisplay: String {
+        success ? "Success" : "Failed"
+    }
+
+    var statusColor: Color {
+        success ? .green : .orange
+    }
+
+    var toolDisplay: String {
+        toolName.replacingOccurrences(of: ":", with: " · ")
+    }
+
+    var errorDisplay: String? {
+        let candidate = (errorClass ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return candidate.isEmpty ? nil : candidate
+    }
+}

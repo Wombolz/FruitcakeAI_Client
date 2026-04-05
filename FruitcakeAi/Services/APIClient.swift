@@ -30,7 +30,7 @@ final class APIClient {
     ) async throws -> T {
         let req = try await buildRequest(path, method: method, body: body, timeout: timeout)
         let (data, response) = try await URLSession.shared.data(for: req)
-        try validate(response)
+        try validate(response, data: data)
         return try decode(T.self, from: data)
     }
 
@@ -38,8 +38,8 @@ final class APIClient {
 
     func requestVoid(_ path: String, method: String) async throws {
         let req = try await buildRequest(path, method: method)
-        let (_, response) = try await URLSession.shared.data(for: req)
-        try validate(response)
+        let (data, response) = try await URLSession.shared.data(for: req)
+        try validate(response, data: data)
     }
 
     // MARK: - Multipart file upload
@@ -73,7 +73,7 @@ final class APIClient {
         req.httpBody = body
 
         let (data, response) = try await URLSession.shared.data(for: req)
-        try validate(response)
+        try validate(response, data: data)
         return data
     }
 
@@ -123,17 +123,37 @@ final class APIClient {
         return url
     }
 
-    private func validate(_ response: URLResponse) throws {
+    private func validate(_ response: URLResponse, data: Data? = nil) throws {
         guard let http = response as? HTTPURLResponse else {
             throw APIError.invalidResponse
         }
+        let message = data.flatMap { extractErrorMessage(from: $0) }
         switch http.statusCode {
         case 200...299: break
         case 401: throw APIError.unauthorized
         case 404: throw APIError.notFound
-        case 500...599: throw APIError.serverError(http.statusCode)
-        default: throw APIError.httpError(http.statusCode)
+        case 500...599: throw APIError.serverError(http.statusCode, message)
+        default: throw APIError.httpError(http.statusCode, message)
         }
+    }
+
+    private func extractErrorMessage(from data: Data) -> String? {
+        guard !data.isEmpty else { return nil }
+        if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let detail = object["detail"] as? String, !detail.isEmpty {
+                return detail
+            }
+            if let message = object["message"] as? String, !message.isEmpty {
+                return message
+            }
+            if let error = object["error"] as? String, !error.isEmpty {
+                return error
+            }
+        }
+        let text = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let text, !text.isEmpty else { return nil }
+        return text
     }
 
     private func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
@@ -172,6 +192,10 @@ final class APIClient {
 
     func createTask(_ req: CreateTaskRequest) async throws -> TaskSummary {
         try await request("/tasks", method: "POST", body: req)
+    }
+
+    func updateTask(_ id: Int, _ req: TaskUpdateRequest) async throws -> TaskSummary {
+        try await request("/tasks/\(id)", method: "PATCH", body: req)
     }
 
     func updateTaskModelOverride(_ id: Int, llmModelOverride: String?) async throws -> TaskSummary {
@@ -312,6 +336,11 @@ final class APIClient {
             method: "POST",
             body: SecretRotateBody(value: value)
         )
+    }
+
+
+    func fetchSecretAccessEvents(_ id: Int, limit: Int = 10) async throws -> [SecretAccessEventSummary] {
+        try await request("/secrets/\(id)/access-events?limit=\(limit)")
     }
 
     func updateChatRoutingPreference(_ preference: String) async throws {
@@ -461,17 +490,25 @@ enum APIError: LocalizedError {
     case invalidResponse
     case unauthorized
     case notFound
-    case serverError(Int)
-    case httpError(Int)
+    case serverError(Int, String?)
+    case httpError(Int, String?)
 
     var errorDescription: String? {
         switch self {
-        case .noServerConfigured: "No server URL configured. Add one in Settings."
-        case .invalidResponse:    "Invalid response from server"
-        case .unauthorized:       "Authentication required — please log in"
-        case .notFound:           "Resource not found"
-        case .serverError(let c): "Server error (\(c))"
-        case .httpError(let c):   "HTTP error \(c)"
+        case .noServerConfigured: return "No server URL configured. Add one in Settings."
+        case .invalidResponse:    return "Invalid response from server"
+        case .unauthorized:       return "Authentication required — please log in"
+        case .notFound:           return "Resource not found"
+        case .serverError(let c, let message):
+            if let message, !message.isEmpty {
+                return message
+            }
+            return "Server error (\(c))"
+        case .httpError(let c, let message):
+            if let message, !message.isEmpty {
+                return message
+            }
+            return "HTTP error \(c)"
         }
     }
 }

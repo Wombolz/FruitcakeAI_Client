@@ -2,7 +2,7 @@
 //  TaskCreateSheet.swift
 //  FruitcakeAi
 //
-//  Modal form for creating a new task. Presented as a sheet from InboxView.
+//  Modal form for creating a new task or editing an existing one.
 //
 
 import SwiftUI
@@ -32,13 +32,13 @@ private struct TaskModelListResponse: Decodable {
 }
 
 struct TaskCreateSheet: View {
-
     @Environment(AuthManager.self) private var authManager
     @Environment(\.dismiss) private var dismiss
 
+    let initialDraft: TaskDraft?
+    let initialTask: TaskSummary?
     var onCreated: () -> Void = {}
-
-    // MARK: - Form state
+    var onSaved: ((TaskSummary) -> Void)? = nil
 
     @State private var title = ""
     @State private var instruction = ""
@@ -52,49 +52,136 @@ struct TaskCreateSheet: View {
     @State private var activeHoursEnd = "22:00"
     @State private var availableModels: [TaskModelOption] = []
     @State private var selectedModelOverride = ""
-
-    // MARK: - Submission state
+    @State private var selectedRecipeFamily = ""
+    @State private var briefingTopic = ""
+    @State private var briefingPath = ""
+    @State private var briefingWindowHours = "24"
+    @State private var briefingCustomGuidance = ""
+    @State private var watcherTopic = ""
+    @State private var watcherThreshold = "medium"
+    @State private var watcherSources = ""
 
     @State private var isSubmitting = false
     @State private var submitError: String?
 
-    // MARK: - Schedule options
-
-    private let scheduleOptions: [(key: String, label: String)] = [
-        ("one_shot",   "One time"),
-        ("every:30m",  "Every 30 min"),
-        ("every:1h",   "Every hour"),
-        ("every:6h",   "Every 6 hours"),
-        ("every:12h",  "Every 12 hours"),
-        ("every:1d",   "Daily"),
-        ("custom",     "Custom cron…"),
+    private let createScheduleOptions: [(key: String, label: String)] = [
+        ("one_shot", "One time"),
+        ("every:30m", "Every 30 min"),
+        ("every:1h", "Every hour"),
+        ("every:6h", "Every 6 hours"),
+        ("every:12h", "Every 12 hours"),
+        ("every:1d", "Daily"),
+        ("custom", "Custom cron…"),
     ]
 
-    // MARK: - Validation
+    private let taskFamilyOptions: [(key: String, label: String)] = [
+        ("", "Generic"),
+        ("topic_watcher", "Watcher"),
+        ("daily_research_briefing", "Daily Briefing"),
+        ("morning_briefing", "Morning Briefing"),
+        ("iss_pass_watcher", "ISS Watcher"),
+        ("weather_conditions", "Weather"),
+        ("maintenance", "Maintenance")
+    ]
 
-    private var canCreate: Bool {
-        !title.trimmingCharacters(in: .whitespaces).isEmpty &&
-        !instruction.trimmingCharacters(in: .whitespaces).isEmpty &&
-        !isSubmitting
+    init(initialDraft: TaskDraft? = nil, initialTask: TaskSummary? = nil, onCreated: @escaping () -> Void = {}, onSaved: ((TaskSummary) -> Void)? = nil) {
+        self.initialDraft = initialDraft
+        self.initialTask = initialTask
+        self.onCreated = onCreated
+        self.onSaved = onSaved
+
+        let recipe = initialDraft?.taskRecipe ?? initialTask?.taskRecipe
+        let draftOrTaskTitle = initialDraft?.title ?? initialTask?.title ?? ""
+        let draftOrTaskInstruction = initialDraft?.instruction ?? initialTask?.instruction ?? ""
+        let draftOrTaskDeliver = initialDraft?.deliver ?? initialTask?.deliver ?? true
+        let draftOrTaskApproval = initialDraft?.requiresApproval ?? initialTask?.requiresApproval ?? true
+        let draftOrTaskStart = initialDraft?.activeHoursStart ?? initialTask?.activeHoursStart ?? "07:00"
+        let draftOrTaskEnd = initialDraft?.activeHoursEnd ?? initialTask?.activeHoursEnd ?? "22:00"
+        let draftOrTaskTz = initialDraft?.activeHoursTz ?? initialTask?.activeHoursTz
+        let draftOrTaskModel = initialDraft?.llmModelOverride ?? initialTask?.llmModelOverride ?? ""
+        let draftOrTaskFamily = recipe?.family ?? ""
+        let draftOrTaskType = initialDraft?.taskType ?? initialTask?.taskType ?? "one_shot"
+        let draftOrTaskSchedule = initialDraft?.schedule ?? initialTask?.schedule
+        let briefingGuidance = recipe?.paramString("custom_guidance") ?? ""
+        let watcherSourceText = recipe?.paramStringArray("sources").joined(separator: ", ") ?? ""
+
+        _title = State(initialValue: draftOrTaskTitle)
+        _instruction = State(initialValue: draftOrTaskFamily == "daily_research_briefing" ? "" : draftOrTaskInstruction)
+        _deliver = State(initialValue: draftOrTaskDeliver)
+        _requiresApproval = State(initialValue: draftOrTaskApproval)
+        _activeHoursStart = State(initialValue: draftOrTaskStart)
+        _activeHoursEnd = State(initialValue: draftOrTaskEnd)
+        _activeHoursEnabled = State(initialValue: !(draftOrTaskTz ?? "").isEmpty)
+        _selectedModelOverride = State(initialValue: draftOrTaskModel)
+        _selectedRecipeFamily = State(initialValue: draftOrTaskFamily)
+        _briefingTopic = State(initialValue: recipe?.paramString("topic") ?? "")
+        _briefingPath = State(initialValue: recipe?.paramString("path") ?? "")
+        _briefingWindowHours = State(initialValue: String(recipe?.paramInt("window_hours") ?? 24))
+        _briefingCustomGuidance = State(initialValue: briefingGuidance)
+        _watcherTopic = State(initialValue: recipe?.paramString("topic") ?? "")
+        _watcherThreshold = State(initialValue: recipe?.paramString("threshold") ?? "medium")
+        _watcherSources = State(initialValue: watcherSourceText)
+
+        if draftOrTaskType == "one_shot" || draftOrTaskSchedule == nil {
+            _scheduleKey = State(initialValue: "one_shot")
+            _customCron = State(initialValue: "")
+        } else if ["every:30m", "every:1h", "every:6h", "every:12h", "every:1d"].contains(draftOrTaskSchedule) {
+            _scheduleKey = State(initialValue: draftOrTaskSchedule ?? "every:1d")
+            _customCron = State(initialValue: "")
+        } else {
+            _scheduleKey = State(initialValue: "custom")
+            _customCron = State(initialValue: draftOrTaskSchedule ?? "")
+        }
     }
 
-    // MARK: - Body
+    private var isEditing: Bool { initialTask != nil }
+
+    private var editorTitle: String {
+        isEditing ? "Edit Task" : "New Task"
+    }
+
+    private var submitLabel: String {
+        isEditing ? "Save" : "Create"
+    }
+
+    private var canSubmit: Bool {
+        let hasTitle = !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if selectedRecipeFamily == "daily_research_briefing" {
+            return hasTitle
+                && !briefingTopic.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !briefingPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !isSubmitting
+        }
+        if selectedRecipeFamily == "topic_watcher" {
+            return hasTitle
+                && !watcherTopic.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !isSubmitting
+        }
+        return hasTitle && !instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isSubmitting
+    }
+
+    private var sourceRecipeFamily: String? {
+        initialDraft?.taskRecipe?.family ?? initialTask?.taskRecipe?.family
+    }
+
+    private var sourceRecipeParams: [String: StringCodable]? {
+        initialDraft?.taskRecipe?.params ?? initialTask?.taskRecipe?.params
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
             HStack {
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Spacer()
-                Text("New Task")
+                Text(editorTitle)
                     .font(.headline)
                 Spacer()
-                Button("Create") {
+                Button(submitLabel) {
                     Task { await submit() }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(!canCreate)
+                .disabled(!canSubmit)
                 .overlay {
                     if isSubmitting {
                         ProgressView().controlSize(.mini)
@@ -105,9 +192,11 @@ struct TaskCreateSheet: View {
 
             Divider()
 
-            // Scrollable form content
             Form {
+                recipeContextSection
+                taskFamilySection
                 titleSection
+                familySpecificSection
                 instructionSection
                 scheduleSection
                 modelSection
@@ -124,14 +213,91 @@ struct TaskCreateSheet: View {
             .formStyle(.grouped)
         }
         .task { await loadModels() }
+        .onChange(of: selectedRecipeFamily) { _, newValue in
+            applyFamilyDefaults(for: newValue)
+        }
         #if os(macOS)
-        .frame(width: 480, height: 520)
+        .frame(width: 520, height: 700)
         #else
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         #endif
     }
 
-    // MARK: - Sections
+    @ViewBuilder
+    private var recipeContextSection: some View {
+        if let draft = initialDraft,
+           hasRecipeContext(draft.taskRecipe, confirmation: draft.taskConfirmation) {
+            recipeContextSection(recipe: draft.taskRecipe, confirmation: draft.taskConfirmation)
+        } else if let recipe = initialTask?.taskRecipe,
+                  hasRecipeContext(recipe, confirmation: nil) {
+            recipeContextSection(recipe: recipe, confirmation: nil)
+        }
+    }
+
+    private func hasRecipeContext(_ recipe: TaskRecipeMetadata?, confirmation: String?) -> Bool {
+        let hasFamily = !((recipe?.family ?? "").isEmpty)
+        let hasAssumptions = !(recipe?.assumptions ?? []).isEmpty
+        let hasConfirmation = !((confirmation ?? "").isEmpty)
+        return hasFamily || hasAssumptions || hasConfirmation
+    }
+
+    private func recipeContextSection(recipe: TaskRecipeMetadata?, confirmation: String?) -> some View {
+        Section("Recipe Context") {
+            if let family = recipe?.family, !family.isEmpty {
+                LabeledContent("Recipe", value: family.replacingOccurrences(of: "_", with: " ").capitalized)
+            }
+            if let confirmation, !confirmation.isEmpty {
+                Text(confirmation)
+                    .font(.subheadline)
+            }
+            if let assumptions = recipe?.assumptions, !assumptions.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Assumptions")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    ForEach(assumptions, id: \.self) { assumption in
+                        Text("• \(assumption)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
+    private var taskFamilySection: some View {
+        Section("Task Type") {
+            Picker("Type", selection: $selectedRecipeFamily) {
+                ForEach(taskFamilyOptions, id: \.key) { option in
+                    Text(option.label).tag(option.key)
+                }
+            }
+            .pickerStyle(.menu)
+
+            Text(taskFamilyHelperText(for: selectedRecipeFamily))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func taskFamilyHelperText(for family: String) -> String {
+        switch family {
+        case "topic_watcher":
+            return "Use this for ongoing monitoring tasks that alert you when something meaningfully changes."
+        case "daily_research_briefing":
+            return "Use this for scheduled summaries or briefings that gather and write up recent developments."
+        case "morning_briefing":
+            return "Use this for a recurring start-of-day briefing with a stable agenda."
+        case "iss_pass_watcher":
+            return "Use this for recurring ISS visibility checks tied to a location."
+        case "weather_conditions":
+            return "Use this for recurring weather checks for a place or region."
+        case "maintenance":
+            return "Use this for bounded upkeep tasks like refresh, cleanup, or health checks."
+        default:
+            return "Use Generic when the task should stay freeform rather than following a built-in recipe."
+        }
+    }
 
     private var titleSection: some View {
         Section("Title") {
@@ -140,28 +306,89 @@ struct TaskCreateSheet: View {
         }
     }
 
-    private var instructionSection: some View {
-        Section {
-            ZStack(alignment: .topLeading) {
-                if instruction.isEmpty {
-                    Text("What should FruitcakeAI do?")
-                        .foregroundStyle(.tertiary)
-                        .padding(.top, 8)
-                        .padding(.leading, 4)
-                        .allowsHitTesting(false)
+    @ViewBuilder
+    private var familySpecificSection: some View {
+        if selectedRecipeFamily == "daily_research_briefing" {
+            Section {
+                TextField("Topic", text: $briefingTopic)
+                    .autocorrectionDisabled()
+                TextField("Output path", text: $briefingPath)
+                    .autocorrectionDisabled()
+                HStack {
+                    Text("Window (hours)")
+                    Spacer()
+                    TextField("24", text: $briefingWindowHours)
+                        .font(.system(.body, design: .monospaced))
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 64)
+                        #if os(iOS)
+                        .keyboardType(.numbersAndPunctuation)
+                        #endif
                 }
-                TextEditor(text: $instruction)
-                    .frame(minHeight: 80)
+            } header: {
+                Text("Briefing Details")
+            } footer: {
+                Text("These fields drive the briefing recipe directly, so the task can be repaired or saved without relying on instruction parsing.")
             }
-        } header: {
-            Text("Instruction")
+
+            Section("Additional Guidance") {
+                ZStack(alignment: .topLeading) {
+                    if briefingCustomGuidance.isEmpty {
+                        Text("Optional extra guidance for how the briefing should be written")
+                            .foregroundStyle(.tertiary)
+                            .padding(.top, 8)
+                            .padding(.leading, 4)
+                            .allowsHitTesting(false)
+                    }
+                    TextEditor(text: $briefingCustomGuidance)
+                        .frame(minHeight: 90)
+                }
+            }
+        } else if selectedRecipeFamily == "topic_watcher" {
+            Section {
+                TextField("Topic", text: $watcherTopic)
+                    .autocorrectionDisabled()
+                Picker("Threshold", selection: $watcherThreshold) {
+                    Text("Low").tag("low")
+                    Text("Medium").tag("medium")
+                    Text("High").tag("high")
+                }
+                .pickerStyle(.menu)
+                TextField("Suggested sources (comma-separated)", text: $watcherSources)
+                    .autocorrectionDisabled()
+            } header: {
+                Text("Watcher Details")
+            } footer: {
+                Text("Watcher fields define the saved topic and threshold directly. Suggested sources are optional and will only stick if they match active RSS feeds.")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var instructionSection: some View {
+        if selectedRecipeFamily != "daily_research_briefing" && selectedRecipeFamily != "topic_watcher" {
+            Section {
+                ZStack(alignment: .topLeading) {
+                    if instruction.isEmpty {
+                        Text("What should FruitcakeAI do?")
+                            .foregroundStyle(.tertiary)
+                            .padding(.top, 8)
+                            .padding(.leading, 4)
+                            .allowsHitTesting(false)
+                    }
+                    TextEditor(text: $instruction)
+                        .frame(minHeight: 90)
+                }
+            } header: {
+                Text("Instruction")
+            }
         }
     }
 
     private var scheduleSection: some View {
         Section("Frequency") {
             Picker("Schedule", selection: $scheduleKey) {
-                ForEach(scheduleOptions, id: \.key) { option in
+                ForEach(createScheduleOptions, id: \.key) { option in
                     Text(option.label).tag(option.key)
                 }
             }
@@ -182,7 +409,7 @@ struct TaskCreateSheet: View {
         Section("Options") {
             Toggle("Push when done", isOn: $deliver)
             Toggle("Require approval before acting", isOn: $requiresApproval)
-            if scheduleKey == "one_shot" {
+            if !isEditing && scheduleKey == "one_shot" {
                 Toggle("Run immediately after create", isOn: $runNow)
             }
         }
@@ -240,49 +467,150 @@ struct TaskCreateSheet: View {
         }
     }
 
-    // MARK: - Submit
+    private func applyFamilyDefaults(for family: String) {
+        let trimmedInstruction = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedGuidance = briefingCustomGuidance.trimmingCharacters(in: .whitespacesAndNewlines)
+        if family == "daily_research_briefing" {
+            if briefingWindowHours.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                briefingWindowHours = "24"
+            }
+            if briefingCustomGuidance.isEmpty && !trimmedInstruction.isEmpty {
+                briefingCustomGuidance = trimmedInstruction
+            }
+        } else if family == "topic_watcher" {
+            if watcherThreshold.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                watcherThreshold = "medium"
+            }
+            if watcherTopic.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                watcherTopic = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        } else if instruction.isEmpty && !trimmedGuidance.isEmpty {
+            instruction = trimmedGuidance
+        }
+    }
+
+    private func resolvedSchedule() -> String? {
+        switch scheduleKey {
+        case "one_shot":
+            return nil
+        case "custom":
+            let trimmed = customCron.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        default:
+            return scheduleKey
+        }
+    }
+
+    private func resolvedBriefingWindowHours() -> Int {
+        let trimmed = briefingWindowHours.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let value = Int(trimmed), value > 0 {
+            return value
+        }
+        return 24
+    }
+
+    private func resolvedRecipeParams() -> [String: StringCodable]? {
+        switch selectedRecipeFamily {
+        case "":
+            return nil
+        case "daily_research_briefing":
+            var params: [String: StringCodable] = [
+                "topic": .string(briefingTopic.trimmingCharacters(in: .whitespacesAndNewlines)),
+                "path": .string(briefingPath.trimmingCharacters(in: .whitespacesAndNewlines)),
+                "window_hours": .int(resolvedBriefingWindowHours()),
+            ]
+            let guidance = briefingCustomGuidance.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !guidance.isEmpty {
+                params["custom_guidance"] = .string(guidance)
+            }
+            return params
+        case "topic_watcher":
+            let sourceValues = watcherSources
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            var params: [String: StringCodable] = [
+                "topic": .string(watcherTopic.trimmingCharacters(in: .whitespacesAndNewlines)),
+                "threshold": .string(watcherThreshold.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()),
+            ]
+            if !sourceValues.isEmpty {
+                params["sources"] = .array(sourceValues.map { .string($0) })
+            }
+            return params
+        default:
+            return selectedRecipeFamily == sourceRecipeFamily ? sourceRecipeParams : nil
+        }
+    }
+
+    private func resolvedInstruction() -> String {
+        if selectedRecipeFamily == "daily_research_briefing" {
+            let guidance = briefingCustomGuidance.trimmingCharacters(in: .whitespacesAndNewlines)
+            return guidance.isEmpty ? "Prepare a daily research briefing." : guidance
+        }
+        if selectedRecipeFamily == "topic_watcher" {
+            return "Watch for significant updates about \(watcherTopic.trimmingCharacters(in: .whitespacesAndNewlines))."
+        }
+        return instruction.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     private func submit() async {
         isSubmitting = true
         submitError = nil
         defer { isSubmitting = false }
 
-        let taskType: String
-        let schedule: String?
-
-        switch scheduleKey {
-        case "one_shot":
-            taskType = "one_shot"
-            schedule = nil
-        case "custom":
-            taskType = "recurring"
-            schedule = customCron.trimmingCharacters(in: .whitespaces).isEmpty ? nil : customCron
-        default:
-            taskType = "recurring"
-            schedule = scheduleKey
-        }
-
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedInstruction = resolvedInstruction()
         let tz = TimeZone.current.identifier
-        let req = CreateTaskRequest(
-            title: title.trimmingCharacters(in: .whitespaces),
-            instruction: instruction.trimmingCharacters(in: .whitespaces),
-            llmModelOverride: selectedModelOverride.isEmpty ? nil : selectedModelOverride,
-            taskType: taskType,
-            schedule: schedule,
-            deliver: deliver,
-            requiresApproval: requiresApproval,
-            activeHoursStart: activeHoursEnabled ? activeHoursStart : nil,
-            activeHoursEnd:   activeHoursEnabled ? activeHoursEnd   : nil,
-            activeHoursTz:    activeHoursEnabled ? tz               : nil
-        )
+        let activeStart = activeHoursEnabled ? activeHoursStart : nil
+        let activeEnd = activeHoursEnabled ? activeHoursEnd : nil
+        let activeTz = activeHoursEnabled ? tz : nil
+        let recipeFamily = selectedRecipeFamily
+        let recipeParams = resolvedRecipeParams()
+        let resolvedTaskType = (scheduleKey == "one_shot") ? "one_shot" : "recurring"
 
         do {
             let api = APIClient(authManager: authManager)
-            let created = try await api.createTask(req)
-            if taskType == "one_shot" && runNow {
-                try await api.runTask(created.id)
+            if let initialTask {
+                let updated = try await api.updateTask(
+                    initialTask.id,
+                    TaskUpdateRequest(
+                        title: trimmedTitle,
+                        instruction: trimmedInstruction,
+                        taskType: resolvedTaskType,
+                        llmModelOverride: selectedModelOverride.isEmpty ? nil : selectedModelOverride,
+                        schedule: resolvedSchedule(),
+                        deliver: deliver,
+                        requiresApproval: requiresApproval,
+                        activeHoursStart: activeStart,
+                        activeHoursEnd: activeEnd,
+                        activeHoursTz: activeTz,
+                        recipeFamily: recipeFamily,
+                        recipeParams: recipeParams
+                    )
+                )
+                onSaved?(updated)
+            } else {
+                let created = try await api.createTask(
+                    CreateTaskRequest(
+                        title: trimmedTitle,
+                        instruction: trimmedInstruction,
+                        llmModelOverride: selectedModelOverride.isEmpty ? nil : selectedModelOverride,
+                        taskType: resolvedTaskType,
+                        schedule: resolvedSchedule(),
+                        deliver: deliver,
+                        requiresApproval: requiresApproval,
+                        activeHoursStart: activeStart,
+                        activeHoursEnd: activeEnd,
+                        activeHoursTz: activeTz,
+                        recipeFamily: recipeFamily,
+                        recipeParams: recipeParams
+                    )
+                )
+                if resolvedTaskType == "one_shot" && runNow {
+                    try await api.runTask(created.id)
+                }
+                onCreated()
             }
-            onCreated()
             dismiss()
         } catch {
             submitError = error.localizedDescription
@@ -299,8 +627,6 @@ struct TaskCreateSheet: View {
         }
     }
 }
-
-// MARK: - Preview
 
 #Preview {
     TaskCreateSheet()
