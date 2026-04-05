@@ -34,8 +34,6 @@ struct TaskSummary: Identifiable, Codable {
     let currentStepTitle: String?
     let waitingApprovalTool: String?
 
-    // MARK: - Computed
-
     var statusColor: Color {
         switch status {
         case "completed":        return .green
@@ -96,6 +94,14 @@ struct TaskRecipeMetadata: Codable, Hashable {
     let selectedProfile: String?
     let selectedExecutorKind: String?
     let instructionStyle: String?
+
+    func paramString(_ key: String) -> String? {
+        params?[key]?.stringValue
+    }
+
+    func paramInt(_ key: String) -> Int? {
+        params?[key]?.intValue
+    }
 }
 
 struct TaskDraft: Identifiable, Codable, Hashable {
@@ -125,19 +131,17 @@ struct TaskDraft: Identifiable, Codable, Hashable {
     let nextRunAt: Date?
 }
 
-// MARK: - CreateTaskRequest
-
 struct CreateTaskRequest: Encodable {
     let title: String
     let instruction: String
     let llmModelOverride: String?
-    let taskType: String            // "one_shot" | "recurring"
-    let schedule: String?           // nil for one_shot; "every:1h" etc. for recurring
+    let taskType: String
+    let schedule: String?
     let deliver: Bool
     let requiresApproval: Bool
-    let activeHoursStart: String?   // "HH:mm" or nil
-    let activeHoursEnd: String?     // "HH:mm" or nil
-    let activeHoursTz: String?      // e.g. "America/Chicago" or nil
+    let activeHoursStart: String?
+    let activeHoursEnd: String?
+    let activeHoursTz: String?
     let recipeFamily: String?
     let recipeParams: [String: StringCodable]?
 }
@@ -213,6 +217,32 @@ enum StringCodable: Codable, Hashable {
     case array([StringCodable])
     case object([String: StringCodable])
     case null
+
+    var stringValue: String? {
+        switch self {
+        case .string(let value):
+            return value
+        case .int(let value):
+            return String(value)
+        case .double(let value):
+            return String(value)
+        case .bool(let value):
+            return value ? "true" : "false"
+        default:
+            return nil
+        }
+    }
+
+    var intValue: Int? {
+        switch self {
+        case .int(let value):
+            return value
+        case .string(let value):
+            return Int(value)
+        default:
+            return nil
+        }
+    }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
