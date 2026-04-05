@@ -121,6 +121,10 @@ struct TaskRecipeMetadata: Codable, Hashable {
     func paramInt(_ key: String) -> Int? {
         params?[key]?.intValue
     }
+
+    func paramStringArray(_ key: String) -> [String] {
+        params?[key]?.stringArrayValue ?? []
+    }
 }
 
 struct TaskDraft: Identifiable, Codable, Hashable {
@@ -148,6 +152,36 @@ struct TaskDraft: Identifiable, Codable, Hashable {
     let activeHoursTz: String?
     let effectiveTimezone: String?
     let nextRunAt: Date?
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        proposed = (try? container.decode(Bool.self, forKey: .proposed)) ?? true
+        title = (try? container.decode(String.self, forKey: .title)) ?? ""
+        instruction = (try? container.decode(String.self, forKey: .instruction)) ?? ""
+        persona = try? container.decode(String.self, forKey: .persona)
+        profile = try? container.decode(String.self, forKey: .profile)
+        taskRecipe = try? container.decode(TaskRecipeMetadata.self, forKey: .taskRecipe)
+        taskSummary = try? container.decode(String.self, forKey: .taskSummary)
+        taskConfirmation = try? container.decode(String.self, forKey: .taskConfirmation)
+        executorKind = try? container.decode(String.self, forKey: .executorKind)
+        llmModelOverride = try? container.decode(String.self, forKey: .llmModelOverride)
+        taskType = (try? container.decode(String.self, forKey: .taskType)) ?? "one_shot"
+        schedule = try? container.decode(String.self, forKey: .schedule)
+        deliver = (try? container.decode(Bool.self, forKey: .deliver)) ?? true
+        requiresApproval = (try? container.decode(Bool.self, forKey: .requiresApproval)) ?? true
+        activeHoursStart = try? container.decode(String.self, forKey: .activeHoursStart)
+        activeHoursEnd = try? container.decode(String.self, forKey: .activeHoursEnd)
+        activeHoursTz = try? container.decode(String.self, forKey: .activeHoursTz)
+        effectiveTimezone = try? container.decode(String.self, forKey: .effectiveTimezone)
+        nextRunAt = try? container.decode(Date.self, forKey: .nextRunAt)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case proposed, title, instruction, persona, profile, taskRecipe
+        case taskSummary, taskConfirmation, executorKind, llmModelOverride
+        case taskType, schedule, deliver, requiresApproval
+        case activeHoursStart, activeHoursEnd, activeHoursTz, effectiveTimezone, nextRunAt
+    }
 }
 
 struct CreateTaskRequest: Encodable {
@@ -260,6 +294,17 @@ enum StringCodable: Codable, Hashable {
             return Int(value)
         default:
             return nil
+        }
+    }
+
+    var stringArrayValue: [String] {
+        switch self {
+        case .array(let values):
+            return values.compactMap { $0.stringValue }
+        case .string(let value):
+            return [value]
+        default:
+            return []
         }
     }
 

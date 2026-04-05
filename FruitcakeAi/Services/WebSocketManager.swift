@@ -263,6 +263,18 @@ final class WebSocketManager: NSObject, URLSessionWebSocketDelegate {
         }
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
+        decoder.dateDecodingStrategy = .custom { dec in
+            let s = try dec.singleValueContainer().decode(String.self)
+            let withFractional = ISO8601DateFormatter()
+            withFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let d = withFractional.date(from: s) { return d }
+            let withoutFractional = ISO8601DateFormatter()
+            withoutFractional.formatOptions = [.withInternetDateTime]
+            if let d = withoutFractional.date(from: s) { return d }
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: dec.codingPath,
+                debugDescription: "Cannot decode date: \(s)"))
+        }
         guard let payload = try? decoder.decode(WSPayload.self, from: data) else {
             return
         }
@@ -353,4 +365,18 @@ private struct WSPayload: Decodable {
 
 private struct WSPayloadMetadata: Decodable {
     let taskDraft: TaskDraft?
+
+    private enum CodingKeys: String, CodingKey {
+        case taskDraft
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        do {
+            taskDraft = try container.decodeIfPresent(TaskDraft.self, forKey: .taskDraft)
+        } catch {
+            print("[ChatTrace] ws_task_draft_decode_error: \(error)")
+            taskDraft = nil
+        }
+    }
 }

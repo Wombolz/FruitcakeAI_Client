@@ -57,6 +57,9 @@ struct TaskCreateSheet: View {
     @State private var briefingPath = ""
     @State private var briefingWindowHours = "24"
     @State private var briefingCustomGuidance = ""
+    @State private var watcherTopic = ""
+    @State private var watcherThreshold = "medium"
+    @State private var watcherSources = ""
 
     @State private var isSubmitting = false
     @State private var submitError: String?
@@ -100,6 +103,7 @@ struct TaskCreateSheet: View {
         let draftOrTaskType = initialDraft?.taskType ?? initialTask?.taskType ?? "one_shot"
         let draftOrTaskSchedule = initialDraft?.schedule ?? initialTask?.schedule
         let briefingGuidance = recipe?.paramString("custom_guidance") ?? ""
+        let watcherSourceText = recipe?.paramStringArray("sources").joined(separator: ", ") ?? ""
 
         _title = State(initialValue: draftOrTaskTitle)
         _instruction = State(initialValue: draftOrTaskFamily == "daily_research_briefing" ? "" : draftOrTaskInstruction)
@@ -114,6 +118,9 @@ struct TaskCreateSheet: View {
         _briefingPath = State(initialValue: recipe?.paramString("path") ?? "")
         _briefingWindowHours = State(initialValue: String(recipe?.paramInt("window_hours") ?? 24))
         _briefingCustomGuidance = State(initialValue: briefingGuidance)
+        _watcherTopic = State(initialValue: recipe?.paramString("topic") ?? "")
+        _watcherThreshold = State(initialValue: recipe?.paramString("threshold") ?? "medium")
+        _watcherSources = State(initialValue: watcherSourceText)
 
         if draftOrTaskType == "one_shot" || draftOrTaskSchedule == nil {
             _scheduleKey = State(initialValue: "one_shot")
@@ -143,6 +150,11 @@ struct TaskCreateSheet: View {
             return hasTitle
                 && !briefingTopic.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && !briefingPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !isSubmitting
+        }
+        if selectedRecipeFamily == "topic_watcher" {
+            return hasTitle
+                && !watcherTopic.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && !isSubmitting
         }
         return hasTitle && !instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isSubmitting
@@ -332,12 +344,29 @@ struct TaskCreateSheet: View {
                         .frame(minHeight: 90)
                 }
             }
+        } else if selectedRecipeFamily == "topic_watcher" {
+            Section {
+                TextField("Topic", text: $watcherTopic)
+                    .autocorrectionDisabled()
+                Picker("Threshold", selection: $watcherThreshold) {
+                    Text("Low").tag("low")
+                    Text("Medium").tag("medium")
+                    Text("High").tag("high")
+                }
+                .pickerStyle(.menu)
+                TextField("Suggested sources (comma-separated)", text: $watcherSources)
+                    .autocorrectionDisabled()
+            } header: {
+                Text("Watcher Details")
+            } footer: {
+                Text("Watcher fields define the saved topic and threshold directly. Suggested sources are optional and will only stick if they match active RSS feeds.")
+            }
         }
     }
 
     @ViewBuilder
     private var instructionSection: some View {
-        if selectedRecipeFamily != "daily_research_briefing" {
+        if selectedRecipeFamily != "daily_research_briefing" && selectedRecipeFamily != "topic_watcher" {
             Section {
                 ZStack(alignment: .topLeading) {
                     if instruction.isEmpty {
@@ -448,6 +477,13 @@ struct TaskCreateSheet: View {
             if briefingCustomGuidance.isEmpty && !trimmedInstruction.isEmpty {
                 briefingCustomGuidance = trimmedInstruction
             }
+        } else if family == "topic_watcher" {
+            if watcherThreshold.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                watcherThreshold = "medium"
+            }
+            if watcherTopic.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                watcherTopic = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
         } else if instruction.isEmpty && !trimmedGuidance.isEmpty {
             instruction = trimmedGuidance
         }
@@ -488,6 +524,19 @@ struct TaskCreateSheet: View {
                 params["custom_guidance"] = .string(guidance)
             }
             return params
+        case "topic_watcher":
+            let sourceValues = watcherSources
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            var params: [String: StringCodable] = [
+                "topic": .string(watcherTopic.trimmingCharacters(in: .whitespacesAndNewlines)),
+                "threshold": .string(watcherThreshold.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()),
+            ]
+            if !sourceValues.isEmpty {
+                params["sources"] = .array(sourceValues.map { .string($0) })
+            }
+            return params
         default:
             return selectedRecipeFamily == sourceRecipeFamily ? sourceRecipeParams : nil
         }
@@ -497,6 +546,9 @@ struct TaskCreateSheet: View {
         if selectedRecipeFamily == "daily_research_briefing" {
             let guidance = briefingCustomGuidance.trimmingCharacters(in: .whitespacesAndNewlines)
             return guidance.isEmpty ? "Prepare a daily research briefing." : guidance
+        }
+        if selectedRecipeFamily == "topic_watcher" {
+            return "Watch for significant updates about \(watcherTopic.trimmingCharacters(in: .whitespacesAndNewlines))."
         }
         return instruction.trimmingCharacters(in: .whitespacesAndNewlines)
     }
