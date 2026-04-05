@@ -8,6 +8,8 @@ struct SecretsView: View {
     @State private var isLoading = false
     @State private var loadError: String?
     @State private var activeSheet: SecretEditorSheet?
+    @State private var accessEventsBySecretID: [Int: [SecretAccessEventSummary]] = [:]
+    @State private var loadingAccessEventIDs: Set<Int> = []
 
     var body: some View {
         Group {
@@ -33,10 +35,15 @@ struct SecretsView: View {
                     ForEach(secrets) { secret in
                         SecretRow(
                             secret: secret,
+                            accessEvents: accessEventsBySecretID[secret.id],
+                            isLoadingActivity: loadingAccessEventIDs.contains(secret.id),
                             onEdit: { activeSheet = .edit(secret) },
                             onRotate: { activeSheet = .rotate(secret) },
                             onToggleActive: { isActive in
                                 Task { await updateSecret(secret, isActive: isActive) }
+                            },
+                            onLoadActivity: {
+                                Task { await loadAccessEvents(for: secret) }
                             }
                         )
                     }
@@ -97,6 +104,20 @@ struct SecretsView: View {
             loadError = nil
         } catch {
             loadError = error.localizedDescription
+        }
+    }
+
+    private func loadAccessEvents(for secret: SecretSummary) async {
+        if accessEventsBySecretID[secret.id] != nil || loadingAccessEventIDs.contains(secret.id) {
+            return
+        }
+        loadingAccessEventIDs.insert(secret.id)
+        defer { loadingAccessEventIDs.remove(secret.id) }
+        do {
+            let api = APIClient(authManager: authManager)
+            accessEventsBySecretID[secret.id] = try await api.fetchSecretAccessEvents(secret.id, limit: 10)
+        } catch {
+            loadError = "Could not load secret activity: \(error.localizedDescription)"
         }
     }
 
@@ -177,53 +198,121 @@ private enum SecretEditorSheet: Identifiable {
 
 private struct SecretRow: View {
     let secret: SecretSummary
+    let accessEvents: [SecretAccessEventSummary]?
+    let isLoadingActivity: Bool
     let onEdit: () -> Void
     let onRotate: () -> Void
     let onToggleActive: (Bool) -> Void
+    let onLoadActivity: () -> Void
+
+    @State private var isShowingActivity = false
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 8) {
-                    Text(secret.name)
-                        .font(.subheadline.weight(.semibold))
-                    Text(secret.providerDisplay)
-                        .font(.caption.weight(.medium))
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Text(secret.name)
+                            .font(.subheadline.weight(.semibold))
+                        Text(secret.providerDisplay)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Color.secondary.opacity(0.12), in: Capsule())
+                    }
+
+                    Text(secret.maskedPreview)
+                        .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(Color.secondary.opacity(0.12), in: Capsule())
+
+                    if let lastUsedAt = secret.lastUsedAt {
+                        Text("Last used \(lastUsedAt.formatted(.relative(presentation: .named)))")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
                 }
 
-                Text(secret.maskedPreview)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
+                Spacer(minLength: 12)
 
-                if let lastUsedAt = secret.lastUsedAt {
-                    Text("Last used \(lastUsedAt.formatted(.relative(presentation: .named)))")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                Menu {
+                    Button("Edit", action: onEdit)
+                    Button("Rotate", action: onRotate)
+                    Button(secret.isActive ? "Disable" : "Enable") {
+                        onToggleActive(!secret.isActive)
+                    }
+                } label: {
+                    VStack(alignment: .trailing, spacing: 6) {
+                        Text(secret.isActive ? "Active" : "Disabled")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(secret.isActive ? .green : .secondary)
+                        Image(systemName: "ellipsis.circle")
+                            .font(.title3)
+                    }
                 }
+                .buttonStyle(.plain)
             }
 
-            Spacer(minLength: 12)
-
-            Menu {
-                Button("Edit", action: onEdit)
-                Button("Rotate", action: onRotate)
-                Button(secret.isActive ? "Disable" : "Enable") {
-                    onToggleActive(!secret.isActive)
+            VStack(alignment: .leading, spacing: 8) {
+                Button {
+                    isShowingActivity.toggle()
+                    if isShowingActivity && accessEvents == nil {
+                        onLoadActivity()
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: isShowingActivity ? "chevron.down" : "chevron.right")
+                            .font(.caption.weight(.semibold))
+                        Text("Recent activity")
+                            .font(.caption.weight(.semibold))
+                        Spacer()
+                    }
                 }
-            } label: {
-                VStack(alignment: .trailing, spacing: 6) {
-                    Text(secret.isActive ? "Active" : "Disabled")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(secret.isActive ? .green : .secondary)
-                    Image(systemName: "ellipsis.circle")
-                        .font(.title3)
+                .buttonStyle(.borderless)
+
+                if isShowingActivity {
+                    if isLoadingActivity {
+                        ProgressView("Loading activity…")
+                            .font(.caption)
+                    } else if let accessEvents, accessEvents.isEmpty {
+                        Text("No recent usage yet.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if let accessEvents {
+                        VStack(alignment: .leading, spacing: 10) {
+                            ForEach(accessEvents) { event in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack(spacing: 8) {
+                                        Text(event.statusDisplay)
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(event.statusColor)
+                                        Text(event.toolDisplay)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    if let taskID = event.taskId {
+                                        Text("Task #\(taskID)")
+                                            .font(.caption2)
+                                            .foregroundStyle(.tertiary)
+                                    }
+                                    if let error = event.errorDisplay, !event.success {
+                                        Text(error)
+                                            .font(.caption2)
+                                            .foregroundStyle(.orange)
+                                    }
+                                    Text(event.createdAt.formatted(date: .abbreviated, time: .shortened))
+                                        .font(.caption2)
+                                        .foregroundStyle(.tertiary)
+                                }
+                                if event.id != accessEvents.last?.id {
+                                    Divider()
+                                }
+                            }
+                        }
+                        .padding(.leading, 18)
+                    }
                 }
             }
-            .buttonStyle(.plain)
         }
         .padding(.vertical, 4)
     }
