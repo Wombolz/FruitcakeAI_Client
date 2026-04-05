@@ -53,6 +53,7 @@ struct TaskCreateSheet: View {
     @State private var availableModels: [TaskModelOption] = []
     @State private var selectedModelOverride = ""
     @State private var selectedRecipeFamily = ""
+    @State private var briefingMode = "morning"
     @State private var briefingTopic = ""
     @State private var briefingPath = ""
     @State private var briefingWindowHours = "24"
@@ -77,8 +78,7 @@ struct TaskCreateSheet: View {
     private let taskFamilyOptions: [(key: String, label: String)] = [
         ("", "Generic"),
         ("topic_watcher", "Watcher"),
-        ("daily_research_briefing", "Daily Briefing"),
-        ("morning_briefing", "Morning Briefing"),
+        ("briefing", "Briefing"),
         ("iss_pass_watcher", "ISS Watcher"),
         ("weather_conditions", "Weather"),
         ("maintenance", "Maintenance")
@@ -99,14 +99,21 @@ struct TaskCreateSheet: View {
         let draftOrTaskEnd = initialDraft?.activeHoursEnd ?? initialTask?.activeHoursEnd ?? "22:00"
         let draftOrTaskTz = initialDraft?.activeHoursTz ?? initialTask?.activeHoursTz
         let draftOrTaskModel = initialDraft?.llmModelOverride ?? initialTask?.llmModelOverride ?? ""
-        let draftOrTaskFamily = recipe?.family ?? ""
+        let rawDraftOrTaskFamily = recipe?.family ?? ""
+        let draftOrTaskFamily = Self.canonicalRecipeFamily(rawDraftOrTaskFamily)
         let draftOrTaskType = initialDraft?.taskType ?? initialTask?.taskType ?? "one_shot"
         let draftOrTaskSchedule = initialDraft?.schedule ?? initialTask?.schedule
+        let briefingMode = Self.initialBriefingMode(
+            family: rawDraftOrTaskFamily,
+            recipe: recipe,
+            title: draftOrTaskTitle,
+            instruction: draftOrTaskInstruction
+        )
         let briefingGuidance = recipe?.paramString("custom_guidance") ?? ""
         let watcherSourceText = recipe?.paramStringArray("sources").joined(separator: ", ") ?? ""
 
         _title = State(initialValue: draftOrTaskTitle)
-        _instruction = State(initialValue: draftOrTaskFamily == "daily_research_briefing" ? "" : draftOrTaskInstruction)
+        _instruction = State(initialValue: draftOrTaskFamily == "briefing" ? "" : draftOrTaskInstruction)
         _deliver = State(initialValue: draftOrTaskDeliver)
         _requiresApproval = State(initialValue: draftOrTaskApproval)
         _activeHoursStart = State(initialValue: draftOrTaskStart)
@@ -114,6 +121,7 @@ struct TaskCreateSheet: View {
         _activeHoursEnabled = State(initialValue: !(draftOrTaskTz ?? "").isEmpty)
         _selectedModelOverride = State(initialValue: draftOrTaskModel)
         _selectedRecipeFamily = State(initialValue: draftOrTaskFamily)
+        _briefingMode = State(initialValue: briefingMode)
         _briefingTopic = State(initialValue: recipe?.paramString("topic") ?? "")
         _briefingPath = State(initialValue: recipe?.paramString("path") ?? "")
         _briefingWindowHours = State(initialValue: String(recipe?.paramInt("window_hours") ?? 24))
@@ -144,13 +152,30 @@ struct TaskCreateSheet: View {
         isEditing ? "Save" : "Create"
     }
 
+    private static func canonicalRecipeFamily(_ family: String) -> String {
+        switch family {
+        case "daily_research_briefing", "morning_briefing":
+            return "briefing"
+        default:
+            return family
+        }
+    }
+
+    private static func initialBriefingMode(family: String, recipe: TaskRecipeMetadata?, title: String, instruction: String) -> String {
+        if let mode = recipe?.paramString("briefing_mode")?.lowercased(), ["morning", "evening"].contains(mode) {
+            return mode
+        }
+        if family == "morning_briefing" {
+            return "morning"
+        }
+        let combined = "\(title)\n\(instruction)".lowercased()
+        return combined.contains("evening") ? "evening" : "morning"
+    }
+
     private var canSubmit: Bool {
         let hasTitle = !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        if selectedRecipeFamily == "daily_research_briefing" {
-            return hasTitle
-                && !briefingTopic.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                && !briefingPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                && !isSubmitting
+        if selectedRecipeFamily == "briefing" {
+            return hasTitle && !isSubmitting
         }
         if selectedRecipeFamily == "topic_watcher" {
             return hasTitle
@@ -161,7 +186,7 @@ struct TaskCreateSheet: View {
     }
 
     private var sourceRecipeFamily: String? {
-        initialDraft?.taskRecipe?.family ?? initialTask?.taskRecipe?.family
+        Self.canonicalRecipeFamily(initialDraft?.taskRecipe?.family ?? initialTask?.taskRecipe?.family ?? "")
     }
 
     private var sourceRecipeParams: [String: StringCodable]? {
@@ -284,10 +309,8 @@ struct TaskCreateSheet: View {
         switch family {
         case "topic_watcher":
             return "Use this for ongoing monitoring tasks that alert you when something meaningfully changes."
-        case "daily_research_briefing":
-            return "Use this for scheduled summaries or briefings that gather and write up recent developments."
-        case "morning_briefing":
-            return "Use this for a recurring start-of-day briefing with a stable agenda."
+        case "briefing":
+            return "Use this for a recurring morning or evening briefing with a stable structure and optional written output."
         case "iss_pass_watcher":
             return "Use this for recurring ISS visibility checks tied to a location."
         case "weather_conditions":
@@ -308,8 +331,13 @@ struct TaskCreateSheet: View {
 
     @ViewBuilder
     private var familySpecificSection: some View {
-        if selectedRecipeFamily == "daily_research_briefing" {
+        if selectedRecipeFamily == "briefing" {
             Section {
+                Picker("Mode", selection: $briefingMode) {
+                    Text("Morning").tag("morning")
+                    Text("Evening").tag("evening")
+                }
+                .pickerStyle(.menu)
                 TextField("Topic", text: $briefingTopic)
                     .autocorrectionDisabled()
                 TextField("Output path", text: $briefingPath)
@@ -328,7 +356,7 @@ struct TaskCreateSheet: View {
             } header: {
                 Text("Briefing Details")
             } footer: {
-                Text("These fields drive the briefing recipe directly, so the task can be repaired or saved without relying on instruction parsing.")
+                Text("Mode is required. Topic and output path enable a written research briefing; leave them blank for a profile-backed morning or evening briefing.")
             }
 
             Section("Additional Guidance") {
@@ -366,7 +394,7 @@ struct TaskCreateSheet: View {
 
     @ViewBuilder
     private var instructionSection: some View {
-        if selectedRecipeFamily != "daily_research_briefing" && selectedRecipeFamily != "topic_watcher" {
+        if selectedRecipeFamily != "briefing" && selectedRecipeFamily != "topic_watcher" {
             Section {
                 ZStack(alignment: .topLeading) {
                     if instruction.isEmpty {
@@ -470,7 +498,7 @@ struct TaskCreateSheet: View {
     private func applyFamilyDefaults(for family: String) {
         let trimmedInstruction = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedGuidance = briefingCustomGuidance.trimmingCharacters(in: .whitespacesAndNewlines)
-        if family == "daily_research_briefing" {
+        if family == "briefing" {
             if briefingWindowHours.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 briefingWindowHours = "24"
             }
@@ -513,12 +541,19 @@ struct TaskCreateSheet: View {
         switch selectedRecipeFamily {
         case "":
             return nil
-        case "daily_research_briefing":
+        case "briefing":
+            let topic = briefingTopic.trimmingCharacters(in: .whitespacesAndNewlines)
+            let pathValue = briefingPath.trimmingCharacters(in: .whitespacesAndNewlines)
             var params: [String: StringCodable] = [
-                "topic": .string(briefingTopic.trimmingCharacters(in: .whitespacesAndNewlines)),
-                "path": .string(briefingPath.trimmingCharacters(in: .whitespacesAndNewlines)),
+                "briefing_mode": .string(briefingMode),
                 "window_hours": .int(resolvedBriefingWindowHours()),
             ]
+            if !topic.isEmpty {
+                params["topic"] = .string(topic)
+            }
+            if !pathValue.isEmpty {
+                params["path"] = .string(pathValue)
+            }
             let guidance = briefingCustomGuidance.trimmingCharacters(in: .whitespacesAndNewlines)
             if !guidance.isEmpty {
                 params["custom_guidance"] = .string(guidance)
@@ -543,9 +578,9 @@ struct TaskCreateSheet: View {
     }
 
     private func resolvedInstruction() -> String {
-        if selectedRecipeFamily == "daily_research_briefing" {
+        if selectedRecipeFamily == "briefing" {
             let guidance = briefingCustomGuidance.trimmingCharacters(in: .whitespacesAndNewlines)
-            return guidance.isEmpty ? "Prepare a daily research briefing." : guidance
+            return guidance.isEmpty ? "Prepare a \(briefingMode) briefing." : guidance
         }
         if selectedRecipeFamily == "topic_watcher" {
             return "Watch for significant updates about \(watcherTopic.trimmingCharacters(in: .whitespacesAndNewlines))."
