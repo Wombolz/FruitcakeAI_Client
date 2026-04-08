@@ -263,6 +263,19 @@ final class APIClient {
         try await requestVoid("/tasks/\(id)/reset", method: "POST")
     }
 
+    func exportTaskResult(
+        _ id: Int,
+        path: String,
+        artifactType: String = "final_output",
+        overwrite: Bool = true
+    ) async throws -> TaskResultExportResponse {
+        try await request(
+            "/tasks/\(id)/export-result-file",
+            method: "POST",
+            body: TaskResultExportBody(path: path, artifactType: artifactType, overwrite: overwrite)
+        )
+    }
+
     // MARK: - Memories (Phase 4)
 
     func fetchMemories(type: String? = nil) async throws -> [MemorySummary] {
@@ -442,6 +455,11 @@ private struct LinkSourceBody: Encodable {
     let excludedPaths: [String]
 }
 private struct LinkedSourceExclusionBody: Encodable { let excludedPaths: [String] }
+private struct TaskResultExportBody: Encodable {
+    let path: String
+    let artifactType: String
+    let overwrite: Bool
+}
 private struct TaskModelOverridePatch: Encodable {
     let llmModelOverride: String?
 

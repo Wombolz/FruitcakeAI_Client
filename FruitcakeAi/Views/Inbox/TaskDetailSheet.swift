@@ -54,6 +54,9 @@ struct TaskDetailSheet: View {
     @State private var isSavingModel = false
     @State private var showEditor = false
     @State private var editedTask: TaskSummary? = nil
+    @State private var exportPath = ""
+    @State private var isExporting = false
+    @State private var exportStatusMessage: String?
 
     private var currentTask: TaskSummary {
         editedTask ?? task
@@ -154,6 +157,33 @@ struct TaskDetailSheet: View {
                         }
                     }
 
+                    if currentTask.isAgentTask && (currentTask.hasRichResult || audit.result != nil) {
+                        Section("Export Findings") {
+                            TextField("Workspace path", text: $exportPath)
+                                #if os(iOS)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                #endif
+
+                            Button {
+                                Task { await exportFindings() }
+                            } label: {
+                                if isExporting {
+                                    Label("Exporting…", systemImage: "square.and.arrow.down")
+                                } else {
+                                    Label("Write to Workspace File", systemImage: "square.and.arrow.down")
+                                }
+                            }
+                            .disabled(isExporting || exportPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                            if let exportStatusMessage, !exportStatusMessage.isEmpty {
+                                Text(exportStatusMessage)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+
                     if !steps.isEmpty {
                         Section("Plan Steps") {
                             ForEach(steps) { step in
@@ -165,6 +195,9 @@ struct TaskDetailSheet: View {
                     Section("Task Settings") {
                         if let family = currentTask.recipeFamilyLabel {
                             LabeledContent("Family", value: family)
+                        }
+                        if let agentRole = currentTask.agentRoleLabel {
+                            LabeledContent("Agent Role", value: agentRole)
                         }
                         LabeledContent("Type", value: currentTask.taskType == "one_shot" ? "One time" : "Recurring")
                         if let schedule = currentTask.scheduleLabel {
@@ -234,6 +267,9 @@ struct TaskDetailSheet: View {
         }
         .task {
             selectedModelOverride = currentTask.llmModelOverride ?? ""
+            if exportPath.isEmpty {
+                exportPath = suggestedExportPath(for: currentTask)
+            }
             await load()
             await loadModels()
         }
@@ -314,8 +350,10 @@ struct TaskDetailSheet: View {
         defer { isLoading = false }
         do {
             let api = APIClient(authManager: authManager)
+            async let taskData = api.fetchTask(currentTask.id)
             async let auditData = api.fetchTaskAudit(currentTask.id)
             async let stepData = api.fetchTaskSteps(currentTask.id)
+            editedTask = try await taskData
             audit = try await auditData
             steps = (try? await stepData) ?? []
         } catch {
@@ -347,6 +385,31 @@ struct TaskDetailSheet: View {
             loadError = error.localizedDescription
             selectedModelOverride = currentTask.llmModelOverride ?? ""
         }
+    }
+
+    private func exportFindings() async {
+        let path = exportPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else { return }
+        isExporting = true
+        exportStatusMessage = nil
+        defer { isExporting = false }
+        do {
+            let api = APIClient(authManager: authManager)
+            let response = try await api.exportTaskResult(currentTask.id, path: path)
+            exportPath = response.path
+            exportStatusMessage = "Exported to \(response.path)"
+        } catch {
+            exportStatusMessage = error.localizedDescription
+        }
+    }
+
+    private func suggestedExportPath(for task: TaskSummary) -> String {
+        let slug = task.title
+            .lowercased()
+            .replacingOccurrences(of: "[^a-z0-9]+", with: "_", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "_"))
+        let base = slug.isEmpty ? "agent_findings" : slug
+        return "reports/\(base).md"
     }
 
     @ViewBuilder

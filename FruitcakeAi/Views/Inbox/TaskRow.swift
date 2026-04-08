@@ -24,6 +24,8 @@ struct TaskRow: View {
 
     @State private var showResult = false
     @State private var showDetail = false
+    @State private var isExporting = false
+    @State private var exportStatusMessage: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -46,6 +48,12 @@ struct TaskRow: View {
             }
 
             actionButtons
+
+            if let exportStatusMessage, !exportStatusMessage.isEmpty {
+                Text(exportStatusMessage)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
 
             if task.result != nil {
                 replyButton
@@ -118,6 +126,9 @@ struct TaskRow: View {
             HStack(spacing: 6) {
                 if let family = task.recipeFamilyLabel {
                     metadataBadge(family, tint: .blue)
+                }
+                if let agentRole = task.agentRoleLabel {
+                    metadataBadge(agentRole, tint: .orange)
                 }
                 if let schedule = task.scheduleLabel {
                     metadataBadge(schedule, tint: .secondary)
@@ -310,7 +321,7 @@ struct TaskRow: View {
 
     @ViewBuilder
     private var actionButtons: some View {
-        if task.canRun || task.canReset || task.canStop {
+        if task.canRun || task.canReset || task.canStop || (task.isAgentTask && hasAnyResult) {
             HStack(spacing: 12) {
                 if task.canRun {
                     Button {
@@ -341,6 +352,17 @@ struct TaskRow: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
+                }
+
+                if task.isAgentTask && hasAnyResult {
+                    Button {
+                        Task { await exportFindings() }
+                    } label: {
+                        Label(isExporting ? "Exporting…" : "Export", systemImage: "square.and.arrow.down")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(isExporting)
                 }
             }
             .padding(.top, 2)
@@ -373,6 +395,28 @@ struct TaskRow: View {
 
     private func linkifiedAttributedString(_ text: String) -> AttributedString {
         MarkdownText.attributedString(from: text)
+    }
+
+    private func exportFindings() async {
+        isExporting = true
+        exportStatusMessage = nil
+        defer { isExporting = false }
+        do {
+            let api = APIClient(authManager: authManager)
+            let response = try await api.exportTaskResult(task.id, path: suggestedExportPath())
+            exportStatusMessage = "Exported to \(response.path)"
+        } catch {
+            exportStatusMessage = error.localizedDescription
+        }
+    }
+
+    private func suggestedExportPath() -> String {
+        let slug = task.title
+            .lowercased()
+            .replacingOccurrences(of: "[^a-z0-9]+", with: "_", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "_"))
+        let base = slug.isEmpty ? "agent_findings" : slug
+        return "reports/\(base).md"
     }
 }
 

@@ -59,6 +59,7 @@ struct TaskCreateSheet: View {
     @State private var briefingWindowHours = "24"
     @State private var briefingMarketSymbol = "KO"
     @State private var briefingCustomGuidance = ""
+    @State private var agentRole = "general_agent"
     @State private var watcherTopic = ""
     @State private var watcherThreshold = "medium"
     @State private var watcherSources = ""
@@ -80,6 +81,7 @@ struct TaskCreateSheet: View {
         ("", "Generic"),
         ("topic_watcher", "Watcher"),
         ("briefing", "Briefing"),
+        ("agent", "Agent"),
         ("iss_pass_watcher", "ISS Watcher"),
         ("weather_conditions", "Weather"),
         ("maintenance", "Maintenance")
@@ -128,6 +130,7 @@ struct TaskCreateSheet: View {
         _briefingWindowHours = State(initialValue: String(recipe?.paramInt("window_hours") ?? 24))
         _briefingMarketSymbol = State(initialValue: recipe?.paramString("market_symbol") ?? "KO")
         _briefingCustomGuidance = State(initialValue: briefingGuidance)
+        _agentRole = State(initialValue: recipe?.paramString("agent_role") ?? "general_agent")
         _watcherTopic = State(initialValue: recipe?.paramString("topic") ?? "")
         _watcherThreshold = State(initialValue: recipe?.paramString("threshold") ?? "medium")
         _watcherSources = State(initialValue: watcherSourceText)
@@ -313,6 +316,8 @@ struct TaskCreateSheet: View {
             return "Use this for ongoing monitoring tasks that alert you when something meaningfully changes."
         case "briefing":
             return "Use this for a recurring morning or evening briefing with a stable structure and optional written output."
+        case "agent":
+            return "Use this when the task should run as bounded delegated work under an explicit agent role rather than a built-in profile recipe."
         case "iss_pass_watcher":
             return "Use this for recurring ISS visibility checks tied to a location."
         case "weather_conditions":
@@ -345,7 +350,9 @@ struct TaskCreateSheet: View {
                 TextField("Output path", text: $briefingPath)
                     .autocorrectionDisabled()
                 TextField("Market symbol", text: $briefingMarketSymbol)
+                    #if os(iOS)
                     .textInputAutocapitalization(.characters)
+                    #endif
                     .autocorrectionDisabled()
                 HStack {
                     Text("Window (hours)")
@@ -376,6 +383,18 @@ struct TaskCreateSheet: View {
                     TextEditor(text: $briefingCustomGuidance)
                         .frame(minHeight: 90)
                 }
+            }
+        } else if selectedRecipeFamily == "agent" {
+            Section {
+                TextField("Agent role", text: $agentRole)
+                    .autocorrectionDisabled()
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never)
+                    #endif
+            } header: {
+                Text("Agent Details")
+            } footer: {
+                Text("Use the instruction field for the delegated objective. Agent role names like roadmap_verifier or memory_reviewer make later run inspection much clearer.")
             }
         } else if selectedRecipeFamily == "topic_watcher" {
             Section {
@@ -510,6 +529,10 @@ struct TaskCreateSheet: View {
             if briefingCustomGuidance.isEmpty && !trimmedInstruction.isEmpty {
                 briefingCustomGuidance = trimmedInstruction
             }
+        } else if family == "agent" {
+            if agentRole.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                agentRole = "general_agent"
+            }
         } else if family == "topic_watcher" {
             if watcherThreshold.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 watcherThreshold = "medium"
@@ -568,6 +591,11 @@ struct TaskCreateSheet: View {
                 params["custom_guidance"] = .string(guidance)
             }
             return params
+        case "agent":
+            let role = agentRole.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return [
+                "agent_role": .string(role.isEmpty ? "general_agent" : role)
+            ]
         case "topic_watcher":
             let sourceValues = watcherSources
                 .split(separator: ",")

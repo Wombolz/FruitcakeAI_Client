@@ -100,6 +100,18 @@ struct TaskSummary: Identifiable, Codable {
         return family.replacingOccurrences(of: "_", with: " ").capitalized
     }
 
+    var isAgentTask: Bool {
+        taskRecipe?.family == "agent"
+    }
+
+    var agentRoleLabel: String? {
+        guard let role = taskRecipe?.paramString("agent_role"), !role.isEmpty else { return nil }
+        return role
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+            .capitalized
+    }
+
     var scheduleLabel: String? {
         guard let schedule, !schedule.isEmpty else {
             return taskType == "one_shot" ? "One time" : nil
@@ -125,6 +137,14 @@ struct TaskStepSummary: Identifiable, Codable {
     let outputSummary: String?
     let error: String?
     let waitingApprovalTool: String?
+}
+
+struct TaskResultExportResponse: Codable {
+    let exported: Bool
+    let taskId: Int
+    let runId: Int
+    let path: String
+    let sourceArtifactType: String
 }
 
 struct TaskRecipeMetadata: Codable, Hashable {
