@@ -8,6 +8,21 @@
 
 import SwiftUI
 
+// MARK: - TaskResultSection
+
+struct TaskResultSection: Codable {
+    let heading: String
+    let body: String
+    let isEmptyState: Bool
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        heading = try container.decodeIfPresent(String.self, forKey: .heading) ?? ""
+        body = try container.decodeIfPresent(String.self, forKey: .body) ?? ""
+        isEmptyState = try container.decodeIfPresent(Bool.self, forKey: .isEmptyState) ?? false
+    }
+}
+
 // MARK: - TaskSummary
 
 struct TaskSummary: Identifiable, Codable {
@@ -23,6 +38,9 @@ struct TaskSummary: Identifiable, Codable {
     let deliver: Bool
     let requiresApproval: Bool
     let result: String?
+    var resultMarkdown: String? = nil
+    var resultFormat: String? = nil
+    var resultSections: [TaskResultSection]? = nil
     let error: String?
     let activeHoursStart: String?
     let activeHoursEnd: String?
@@ -33,6 +51,10 @@ struct TaskSummary: Identifiable, Codable {
     let nextRunAt: Date?
     let currentStepTitle: String?
     let waitingApprovalTool: String?
+
+    var hasRichResult: Bool {
+        !(resultSections?.isEmpty ?? true) || resultMarkdown != nil
+    }
 
     var statusColor: Color {
         switch status {

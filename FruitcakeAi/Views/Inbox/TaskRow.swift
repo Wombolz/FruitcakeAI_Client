@@ -161,9 +161,34 @@ struct TaskRow: View {
         .padding(.top, 4)
     }
 
+    private var hasAnyResult: Bool {
+        task.hasRichResult || task.result != nil
+    }
+
+    private var collapsedPreview: String {
+        if let sections = task.resultSections, !sections.isEmpty {
+            let headings = sections
+                .map(\.heading)
+                .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                .joined(separator: " · ")
+            if headings.isEmpty {
+                let fallback = sections
+                    .map(\.body)
+                    .joined(separator: "\n")
+                let truncated = String(fallback.prefix(80))
+                return fallback.count > 80 ? truncated + "…" : truncated
+            }
+            let truncated = String(headings.prefix(80))
+            return headings.count > 80 ? truncated + "…" : truncated
+        }
+        let text = task.resultMarkdown ?? task.result ?? ""
+        let truncated = String(text.prefix(80))
+        return text.count > 80 ? truncated + "…" : truncated
+    }
+
     @ViewBuilder
     private var resultRow: some View {
-        if let result = task.result {
+        if hasAnyResult {
             VStack(alignment: .leading, spacing: 4) {
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) {
@@ -186,31 +211,90 @@ struct TaskRow: View {
                 .buttonStyle(.borderless)
 
                 if !showResult {
-                    Text(String(result.prefix(80)) + (result.count > 80 ? "…" : ""))
+                    Text(collapsedPreview)
                         .font(.caption)
                         .foregroundStyle(.primary)
                         .lineLimit(2)
                 }
 
                 if showResult {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 0) {
-                            Text(linkifiedAttributedString(result))
-                                .font(.callout)
-                                .lineSpacing(4)
-                                .foregroundStyle(.primary)
-                                .multilineTextAlignment(.leading)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .textSelection(.enabled)
-                                .tint(.accentColor)
-                        }
-                    }
-                    .frame(maxHeight: 200)
-                    .padding(10)
-                    .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                    expandedResult
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private var expandedResult: some View {
+        if let sections = task.resultSections, !sections.isEmpty {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(Array(sections.enumerated()), id: \.offset) { index, section in
+                        VStack(alignment: .leading, spacing: 4) {
+                            if !section.heading.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                Text(section.heading)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(section.isEmptyState ? .secondary : .primary)
+                            }
+                            sectionBodyView(section.body, isEmptyState: section.isEmptyState)
+                        }
+                        if index < sections.count - 1 {
+                            Divider()
+                        }
+                    }
+                }
+            }
+            .frame(maxHeight: 400)
+            .padding(10)
+            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+        } else if let markdown = task.resultMarkdown {
+            flatResultScroll(text: markdown)
+        } else if let result = task.result {
+            flatResultScroll(text: result)
+        }
+    }
+
+    private func flatResultScroll(text: String) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(linkifiedAttributedString(text))
+                    .font(.callout)
+                    .lineSpacing(4)
+                    .foregroundStyle(.primary)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                    .tint(.accentColor)
+            }
+        }
+        .frame(maxHeight: 200)
+        .padding(10)
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    @ViewBuilder
+    private func sectionBodyView(_ text: String, isEmptyState: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(sectionBodyLines(text).enumerated()), id: \.offset) { _, line in
+                if line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Color.clear
+                        .frame(height: 4)
+                } else {
+                    Text(linkifiedAttributedString(line))
+                        .font(.caption)
+                        .lineSpacing(3)
+                        .italic(isEmptyState)
+                        .foregroundStyle(isEmptyState ? .secondary : .primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
+            }
+        }
+    }
+
+    private func sectionBodyLines(_ text: String) -> [String] {
+        text.replacingOccurrences(of: "\r\n", with: "\n")
+            .components(separatedBy: "\n")
     }
 
     private var replyButton: some View {
