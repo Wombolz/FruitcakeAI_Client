@@ -57,6 +57,7 @@ struct TaskCreateSheet: View {
     @State private var briefingTopic = ""
     @State private var briefingPath = ""
     @State private var briefingWindowHours = "24"
+    @State private var briefingMarketSymbol = "KO"
     @State private var briefingCustomGuidance = ""
     @State private var watcherTopic = ""
     @State private var watcherThreshold = "medium"
@@ -125,6 +126,7 @@ struct TaskCreateSheet: View {
         _briefingTopic = State(initialValue: recipe?.paramString("topic") ?? "")
         _briefingPath = State(initialValue: recipe?.paramString("path") ?? "")
         _briefingWindowHours = State(initialValue: String(recipe?.paramInt("window_hours") ?? 24))
+        _briefingMarketSymbol = State(initialValue: recipe?.paramString("market_symbol") ?? "KO")
         _briefingCustomGuidance = State(initialValue: briefingGuidance)
         _watcherTopic = State(initialValue: recipe?.paramString("topic") ?? "")
         _watcherThreshold = State(initialValue: recipe?.paramString("threshold") ?? "medium")
@@ -342,6 +344,9 @@ struct TaskCreateSheet: View {
                     .autocorrectionDisabled()
                 TextField("Output path", text: $briefingPath)
                     .autocorrectionDisabled()
+                TextField("Market symbol", text: $briefingMarketSymbol)
+                    .textInputAutocapitalization(.characters)
+                    .autocorrectionDisabled()
                 HStack {
                     Text("Window (hours)")
                     Spacer()
@@ -356,7 +361,7 @@ struct TaskCreateSheet: View {
             } header: {
                 Text("Briefing Details")
             } footer: {
-                Text("Mode is required. Topic and output path enable a written research briefing; leave them blank for a profile-backed morning or evening briefing.")
+                Text("Mode is required. Topic and output path enable a written research briefing; leave them blank for a profile-backed morning or evening briefing. Market symbol defaults to KO but can be changed.")
             }
 
             Section("Additional Guidance") {
@@ -548,6 +553,10 @@ struct TaskCreateSheet: View {
                 "briefing_mode": .string(briefingMode),
                 "window_hours": .int(resolvedBriefingWindowHours()),
             ]
+            let marketSymbol = briefingMarketSymbol.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            if !marketSymbol.isEmpty {
+                params["market_symbol"] = .string(marketSymbol)
+            }
             if !topic.isEmpty {
                 params["topic"] = .string(topic)
             }
@@ -598,10 +607,11 @@ struct TaskCreateSheet: View {
         let tz = TimeZone.current.identifier
         let activeStart = activeHoursEnabled ? activeHoursStart : nil
         let activeEnd = activeHoursEnabled ? activeHoursEnd : nil
-        let activeTz = activeHoursEnabled ? tz : nil
+        let resolvedTaskType = (scheduleKey == "one_shot") ? "one_shot" : "recurring"
+        let existingTaskTz = initialDraft?.activeHoursTz ?? initialTask?.activeHoursTz
+        let activeTz = activeHoursEnabled ? tz : ((resolvedTaskType == "recurring") ? (existingTaskTz ?? tz) : nil)
         let recipeFamily = selectedRecipeFamily
         let recipeParams = resolvedRecipeParams()
-        let resolvedTaskType = (scheduleKey == "one_shot") ? "one_shot" : "recurring"
 
         do {
             let api = APIClient(authManager: authManager)

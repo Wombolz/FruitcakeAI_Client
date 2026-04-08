@@ -211,20 +211,7 @@ struct TaskDetailSheet: View {
                     }
 
                     // ── Result ────────────────────────────────────────────
-                    if let result = audit.result {
-                        Section("Result") {
-                            VStack(alignment: .leading, spacing: 0) {
-                                Text(linkifiedAttributedString(result))
-                                    .font(.body)
-                                    .lineSpacing(5)
-                                    .textSelection(.enabled)
-                                    .tint(.accentColor)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                            .padding(12)
-                            .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
-                        }
-                    }
+                    resultSection(audit: audit)
 
                     // ── Tool calls ────────────────────────────────────────
                     if !audit.toolCalls.isEmpty {
@@ -235,7 +222,7 @@ struct TaskDetailSheet: View {
                         }
                     }
 
-                    if audit.result == nil && audit.toolCalls.isEmpty {
+                    if !currentTask.hasRichResult && audit.result == nil && audit.toolCalls.isEmpty {
                         Section {
                             Text("No execution data available yet.")
                                 .foregroundStyle(.secondary)
@@ -360,6 +347,82 @@ struct TaskDetailSheet: View {
             loadError = error.localizedDescription
             selectedModelOverride = currentTask.llmModelOverride ?? ""
         }
+    }
+
+    @ViewBuilder
+    private func resultSection(audit: TaskAuditOut) -> some View {
+        if let sections = currentTask.resultSections, !sections.isEmpty {
+            Section("Result") {
+                VStack(alignment: .leading, spacing: 16) {
+                    ForEach(Array(sections.enumerated()), id: \.offset) { index, section in
+                        VStack(alignment: .leading, spacing: 6) {
+                            if !section.heading.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                Text(section.heading)
+                                    .font(.headline)
+                                    .foregroundStyle(section.isEmptyState ? .secondary : .primary)
+                            }
+                            sectionBodyView(section.body, isEmptyState: section.isEmptyState)
+                        }
+                        if index < sections.count - 1 {
+                            Divider()
+                        }
+                    }
+                }
+                .padding(12)
+                .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+            }
+        } else if let markdown = currentTask.resultMarkdown {
+            Section("Result") {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(linkifiedAttributedString(markdown))
+                        .font(.body)
+                        .lineSpacing(5)
+                        .textSelection(.enabled)
+                        .tint(.accentColor)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(12)
+                .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+            }
+        } else if let result = audit.result {
+            Section("Result") {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(linkifiedAttributedString(result))
+                        .font(.body)
+                        .lineSpacing(5)
+                        .textSelection(.enabled)
+                        .tint(.accentColor)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(12)
+                .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func sectionBodyView(_ text: String, isEmptyState: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(sectionBodyLines(text).enumerated()), id: \.offset) { _, line in
+                if line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Color.clear
+                        .frame(height: 4)
+                } else {
+                    Text(linkifiedAttributedString(line))
+                        .font(.body)
+                        .lineSpacing(4)
+                        .italic(isEmptyState)
+                        .foregroundStyle(isEmptyState ? .secondary : .primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
+            }
+        }
+    }
+
+    private func sectionBodyLines(_ text: String) -> [String] {
+        text.replacingOccurrences(of: "\r\n", with: "\n")
+            .components(separatedBy: "\n")
     }
 
     private func linkifiedAttributedString(_ text: String) -> AttributedString {
