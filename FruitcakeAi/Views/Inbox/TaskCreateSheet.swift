@@ -32,8 +32,11 @@ private struct TaskModelListResponse: Decodable {
     let models: [TaskModelOption]
 }
 
-private struct AgentOptionPayload: Decodable {
+private struct AgentPresetPayload: Decodable {
+    let id: String
     let displayName: String
+    let category: String
+    let categoryDisplayName: String
     let whenToUse: String
     let executionMode: String
     let background: Bool
@@ -43,8 +46,21 @@ private struct AgentOptionPayload: Decodable {
     let outputContract: [String]
 }
 
+private struct AgentCategoryPayload: Decodable {
+    let id: String
+    let displayName: String
+    let whenToUse: String
+    let presets: [AgentPresetPayload]
+}
+
+private struct AgentListResponse: Decodable {
+    let categories: [AgentCategoryPayload]
+}
+
 private struct AgentOption: Identifiable, Hashable {
     let id: String
+    let categoryId: String
+    let categoryDisplayName: String
     let displayName: String
     let whenToUse: String
     let executionMode: String
@@ -69,6 +85,12 @@ private struct AgentOption: Identifiable, Hashable {
     }
 }
 
+private struct AgentCategorySection: Identifiable, Hashable {
+    let id: String
+    let displayName: String
+    let options: [AgentOption]
+}
+
 struct TaskCreateSheet: View {
     private static let maxTitleLength = 255
 
@@ -91,7 +113,7 @@ struct TaskCreateSheet: View {
     @State private var activeHoursStart = "07:00"
     @State private var activeHoursEnd = "22:00"
     @State private var availableModels: [TaskModelOption] = []
-    @State private var availableAgents: [AgentOption] = []
+    @State private var availableAgentCategories: [AgentCategorySection] = []
     @State private var selectedModelOverride = ""
     @State private var selectedRecipeFamily = ""
     @State private var briefingMode = "morning"
@@ -192,6 +214,10 @@ struct TaskCreateSheet: View {
     }
 
     private var isEditing: Bool { initialTask != nil }
+
+    private var availableAgents: [AgentOption] {
+        availableAgentCategories.flatMap(\.options)
+    }
 
     private var editorTitle: String {
         isEditing ? "Edit Task" : "New Task"
@@ -466,8 +492,12 @@ private var familySpecificSection: some View {
                         #endif
                 } else {
                     Picker("Agent role", selection: $agentRole) {
-                        ForEach(availableAgents) { option in
-                            Text(option.pickerLabel).tag(option.id)
+                        ForEach(availableAgentCategories) { category in
+                            Section(category.displayName) {
+                                ForEach(category.options) { option in
+                                    Text(option.pickerLabel).tag(option.id)
+                                }
+                            }
                         }
                     }
                     .pickerStyle(.menu)
@@ -824,23 +854,34 @@ private var familySpecificSection: some View {
     private func loadAgents() async {
         do {
             let api = APIClient(authManager: authManager)
-            let payload: [String: AgentOptionPayload] = try await api.request("/chat/agents")
-            availableAgents = payload
-                .map { key, value in
-                    AgentOption(
-                        id: key,
-                        displayName: value.displayName,
-                        whenToUse: value.whenToUse,
-                        executionMode: value.executionMode,
-                        background: value.background
-                    )
-                }
-                .sorted { $0.pickerLabel.localizedCaseInsensitiveCompare($1.pickerLabel) == .orderedAscending }
+            let payload: AgentListResponse = try await api.request("/chat/agents")
+            availableAgentCategories = payload.categories.compactMap { category in
+                let options = category.presets
+                    .map { preset in
+                        AgentOption(
+                            id: preset.id,
+                            categoryId: preset.category,
+                            categoryDisplayName: preset.categoryDisplayName,
+                            displayName: preset.displayName,
+                            whenToUse: preset.whenToUse,
+                            executionMode: preset.executionMode,
+                            background: preset.background
+                        )
+                    }
+                    .sorted { $0.pickerLabel.localizedCaseInsensitiveCompare($1.pickerLabel) == .orderedAscending }
+                guard !options.isEmpty else { return nil }
+                return AgentCategorySection(
+                    id: category.id,
+                    displayName: category.displayName,
+                    options: options
+                )
+            }
+            .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
             if selectedRecipeFamily == "agent" {
                 applyFamilyDefaults(for: "agent")
             }
         } catch {
-            availableAgents = []
+            availableAgentCategories = []
         }
     }
 

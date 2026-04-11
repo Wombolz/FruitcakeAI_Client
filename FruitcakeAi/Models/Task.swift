@@ -26,11 +26,20 @@ struct TaskResultSection: Codable {
 struct ResolvedAgentSummary: Codable, Hashable {
     let id: String
     let displayName: String
+    let category: String
+    let categoryDisplayName: String
     let executionMode: String
     let background: Bool
     let memoryScope: String
     let personaCompatibility: String?
     let whenToUse: String
+
+    var categoryLabel: String {
+        if !categoryDisplayName.isEmpty {
+            return categoryDisplayName
+        }
+        return category.replacingOccurrences(of: "_", with: " ").capitalized
+    }
 
     var executionModeLabel: String {
         executionMode.replacingOccurrences(of: "_", with: " ").capitalized

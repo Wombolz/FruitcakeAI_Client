@@ -204,7 +204,8 @@ struct TaskDetailSheet: View {
                             LabeledContent("Agent Role", value: agentRole)
                         }
                         if let resolvedAgent {
-                            LabeledContent("Agent Definition", value: resolvedAgent.displayName)
+                            LabeledContent("Preset", value: resolvedAgent.displayName)
+                            LabeledContent("Category", value: resolvedAgent.categoryLabel)
                             LabeledContent("Execution Mode", value: resolvedAgent.executionModeLabel)
                             LabeledContent("Memory Scope", value: resolvedAgent.memoryScopeLabel)
                             if let compatPersona = resolvedAgent.personaCompatibility, !compatPersona.isEmpty {
