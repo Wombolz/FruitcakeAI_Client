@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import UniformTypeIdentifiers
 
 private struct TaskModelOption: Decodable, Identifiable, Hashable {
     let id: String
@@ -31,7 +32,46 @@ private struct TaskModelListResponse: Decodable {
     let models: [TaskModelOption]
 }
 
+private struct AgentOptionPayload: Decodable {
+    let displayName: String
+    let whenToUse: String
+    let executionMode: String
+    let background: Bool
+    let memoryScope: String
+    let personaCompatibility: String
+    let requiredContextSources: [String]
+    let outputContract: [String]
+}
+
+private struct AgentOption: Identifiable, Hashable {
+    let id: String
+    let displayName: String
+    let whenToUse: String
+    let executionMode: String
+    let background: Bool
+
+    var pickerLabel: String {
+        displayName.isEmpty ? id.replacingOccurrences(of: "_", with: " ").capitalized : displayName
+    }
+
+    var helperText: String {
+        var parts: [String] = []
+        if !whenToUse.isEmpty {
+            parts.append(whenToUse)
+        }
+        if !executionMode.isEmpty {
+            parts.append("Mode: \(executionMode)")
+        }
+        if background {
+            parts.append("Runs in background")
+        }
+        return parts.joined(separator: " · ")
+    }
+}
+
 struct TaskCreateSheet: View {
+    private static let maxTitleLength = 255
+
     @Environment(AuthManager.self) private var authManager
     @Environment(\.dismiss) private var dismiss
 
@@ -51,6 +91,7 @@ struct TaskCreateSheet: View {
     @State private var activeHoursStart = "07:00"
     @State private var activeHoursEnd = "22:00"
     @State private var availableModels: [TaskModelOption] = []
+    @State private var availableAgents: [AgentOption] = []
     @State private var selectedModelOverride = ""
     @State private var selectedRecipeFamily = ""
     @State private var briefingMode = "morning"
@@ -60,6 +101,8 @@ struct TaskCreateSheet: View {
     @State private var briefingMarketSymbol = "KO"
     @State private var briefingCustomGuidance = ""
     @State private var agentRole = "general_agent"
+    @State private var contextPaths: [String] = []
+    @State private var showContextFilePicker = false
     @State private var watcherTopic = ""
     @State private var watcherThreshold = "medium"
     @State private var watcherSources = ""
@@ -131,6 +174,7 @@ struct TaskCreateSheet: View {
         _briefingMarketSymbol = State(initialValue: recipe?.paramString("market_symbol") ?? "KO")
         _briefingCustomGuidance = State(initialValue: briefingGuidance)
         _agentRole = State(initialValue: recipe?.paramString("agent_role") ?? "general_agent")
+        _contextPaths = State(initialValue: recipe?.paramStringArray("context_paths") ?? [])
         _watcherTopic = State(initialValue: recipe?.paramString("topic") ?? "")
         _watcherThreshold = State(initialValue: recipe?.paramString("threshold") ?? "medium")
         _watcherSources = State(initialValue: watcherSourceText)
@@ -179,15 +223,17 @@ struct TaskCreateSheet: View {
 
     private var canSubmit: Bool {
         let hasTitle = !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let titleFits = title.count <= Self.maxTitleLength
         if selectedRecipeFamily == "briefing" {
-            return hasTitle && !isSubmitting
+            return hasTitle && titleFits && !isSubmitting
         }
         if selectedRecipeFamily == "topic_watcher" {
             return hasTitle
+                && titleFits
                 && !watcherTopic.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && !isSubmitting
         }
-        return hasTitle && !instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isSubmitting
+        return hasTitle && titleFits && !instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isSubmitting
     }
 
     private var sourceRecipeFamily: String? {
@@ -242,9 +288,19 @@ struct TaskCreateSheet: View {
             }
             .formStyle(.grouped)
         }
-        .task { await loadModels() }
+        .task {
+            await loadModels()
+            await loadAgents()
+        }
         .onChange(of: selectedRecipeFamily) { _, newValue in
             applyFamilyDefaults(for: newValue)
+        }
+        .fileImporter(
+            isPresented: $showContextFilePicker,
+            allowedContentTypes: Self.contextFileTypes,
+            allowsMultipleSelection: true
+        ) { result in
+            handleContextFileResult(result)
         }
         #if os(macOS)
         .frame(width: 520, height: 700)
@@ -333,11 +389,27 @@ struct TaskCreateSheet: View {
         Section("Title") {
             TextField("e.g. Morning Briefing", text: $title)
                 .autocorrectionDisabled()
+                .onChange(of: title) { _, newValue in
+                    if newValue.count > Self.maxTitleLength {
+                        title = String(newValue.prefix(Self.maxTitleLength))
+                    }
+                }
+            HStack {
+                Spacer()
+                Text("\(title.count)/\(Self.maxTitleLength)")
+                    .font(.caption2)
+                    .foregroundStyle(title.count >= Self.maxTitleLength ? .orange : .secondary)
+            }
+            if title.count >= Self.maxTitleLength {
+                Text("Keep the title short. Put the detailed prompt in the instruction field.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
         }
     }
 
     @ViewBuilder
-    private var familySpecificSection: some View {
+private var familySpecificSection: some View {
         if selectedRecipeFamily == "briefing" {
             Section {
                 Picker("Mode", selection: $briefingMode) {
@@ -386,15 +458,55 @@ struct TaskCreateSheet: View {
             }
         } else if selectedRecipeFamily == "agent" {
             Section {
-                TextField("Agent role", text: $agentRole)
-                    .autocorrectionDisabled()
-                    #if os(iOS)
-                    .textInputAutocapitalization(.never)
-                    #endif
+                if availableAgents.isEmpty {
+                    TextField("Agent role", text: $agentRole)
+                        .autocorrectionDisabled()
+                        #if os(iOS)
+                        .textInputAutocapitalization(.never)
+                        #endif
+                } else {
+                    Picker("Agent role", selection: $agentRole) {
+                        ForEach(availableAgents) { option in
+                            Text(option.pickerLabel).tag(option.id)
+                        }
+                    }
+                    .pickerStyle(.menu)
+
+                    if let selectedAgent = availableAgents.first(where: { $0.id == agentRole }) {
+                        Text(selectedAgent.helperText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Button {
+                    showContextFilePicker = true
+                } label: {
+                    Label(contextPaths.isEmpty ? "Choose Context Files" : "Add Context Files", systemImage: "doc.badge.plus")
+                }
+
+                if !contextPaths.isEmpty {
+                    ForEach(contextPaths, id: \.self) { path in
+                        HStack(spacing: 8) {
+                            Image(systemName: "doc.text")
+                                .foregroundStyle(.secondary)
+                            Text(path)
+                                .font(.caption)
+                                .lineLimit(1)
+                            Spacer()
+                            Button(role: .destructive) {
+                                removeContextPath(path)
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
             } header: {
                 Text("Agent Details")
             } footer: {
-                Text("Use the instruction field for the delegated objective. Agent role names like roadmap_verifier or memory_reviewer make later run inspection much clearer.")
+                Text("Use the instruction field for the delegated objective. Available roles are loaded from Fruitcake's built-in agent definitions. Selected context files are preloaded before the agent falls back to search.")
             }
         } else if selectedRecipeFamily == "topic_watcher" {
             Section {
@@ -530,7 +642,12 @@ struct TaskCreateSheet: View {
                 briefingCustomGuidance = trimmedInstruction
             }
         } else if family == "agent" {
-            if agentRole.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if !availableAgents.isEmpty {
+                let validIds = Set(availableAgents.map(\.id))
+                if !validIds.contains(agentRole) {
+                    agentRole = availableAgents.first?.id ?? "general_agent"
+                }
+            } else if agentRole.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 agentRole = "general_agent"
             }
         } else if family == "topic_watcher" {
@@ -593,9 +710,13 @@ struct TaskCreateSheet: View {
             return params
         case "agent":
             let role = agentRole.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            return [
+            var params: [String: StringCodable] = [
                 "agent_role": .string(role.isEmpty ? "general_agent" : role)
             ]
+            if !contextPaths.isEmpty {
+                params["context_paths"] = .array(contextPaths.map { .string($0) })
+            }
+            return params
         case "topic_watcher":
             let sourceValues = watcherSources
                 .split(separator: ",")
@@ -698,6 +819,62 @@ struct TaskCreateSheet: View {
         } catch {
             submitError = error.localizedDescription
         }
+    }
+
+    private func loadAgents() async {
+        do {
+            let api = APIClient(authManager: authManager)
+            let payload: [String: AgentOptionPayload] = try await api.request("/chat/agents")
+            availableAgents = payload
+                .map { key, value in
+                    AgentOption(
+                        id: key,
+                        displayName: value.displayName,
+                        whenToUse: value.whenToUse,
+                        executionMode: value.executionMode,
+                        background: value.background
+                    )
+                }
+                .sorted { $0.pickerLabel.localizedCaseInsensitiveCompare($1.pickerLabel) == .orderedAscending }
+            if selectedRecipeFamily == "agent" {
+                applyFamilyDefaults(for: "agent")
+            }
+        } catch {
+            availableAgents = []
+        }
+    }
+
+    private static var contextFileTypes: [UTType] {
+        [
+            UTType(filenameExtension: "md") ?? .plainText,
+            UTType(filenameExtension: "txt") ?? .plainText,
+            UTType(filenameExtension: "py") ?? .sourceCode,
+            UTType(filenameExtension: "swift") ?? .sourceCode,
+            UTType(filenameExtension: "json") ?? .json,
+            UTType(filenameExtension: "yaml") ?? .data,
+            UTType(filenameExtension: "yml") ?? .data,
+            .plainText,
+            .sourceCode,
+            .data,
+        ]
+    }
+
+    private func handleContextFileResult(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            let mapped = urls.map(\.path)
+            var merged = contextPaths
+            for path in mapped where !merged.contains(path) {
+                merged.append(path)
+            }
+            contextPaths = merged.sorted()
+        case .failure(let error):
+            submitError = error.localizedDescription
+        }
+    }
+
+    private func removeContextPath(_ path: String) {
+        contextPaths.removeAll { $0 == path }
     }
 }
 

@@ -23,6 +23,24 @@ struct TaskResultSection: Codable {
     }
 }
 
+struct ResolvedAgentSummary: Codable, Hashable {
+    let id: String
+    let displayName: String
+    let executionMode: String
+    let background: Bool
+    let memoryScope: String
+    let personaCompatibility: String?
+    let whenToUse: String
+
+    var executionModeLabel: String {
+        executionMode.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+
+    var memoryScopeLabel: String {
+        memoryScope.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+}
+
 // MARK: - TaskSummary
 
 struct TaskSummary: Identifiable, Codable {
@@ -47,6 +65,7 @@ struct TaskSummary: Identifiable, Codable {
     let activeHoursTz: String?
     let effectiveTimezone: String?
     let taskRecipe: TaskRecipeMetadata?
+    let resolvedAgent: ResolvedAgentSummary?
     let lastRunAt: Date?
     let nextRunAt: Date?
     let currentStepTitle: String?
@@ -105,11 +124,18 @@ struct TaskSummary: Identifiable, Codable {
     }
 
     var agentRoleLabel: String? {
+        if let displayName = resolvedAgent?.displayName, !displayName.isEmpty {
+            return displayName
+        }
         guard let role = taskRecipe?.paramString("agent_role"), !role.isEmpty else { return nil }
         return role
             .replacingOccurrences(of: "_", with: " ")
             .replacingOccurrences(of: "-", with: " ")
             .capitalized
+    }
+
+    var contextPaths: [String] {
+        taskRecipe?.paramStringArray("context_paths") ?? []
     }
 
     var scheduleLabel: String? {

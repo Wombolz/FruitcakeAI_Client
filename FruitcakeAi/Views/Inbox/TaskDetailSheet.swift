@@ -62,6 +62,10 @@ struct TaskDetailSheet: View {
         editedTask ?? task
     }
 
+    private var resolvedAgent: ResolvedAgentSummary? {
+        currentTask.resolvedAgent ?? audit?.resolvedAgent
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Header
@@ -199,6 +203,14 @@ struct TaskDetailSheet: View {
                         if let agentRole = currentTask.agentRoleLabel {
                             LabeledContent("Agent Role", value: agentRole)
                         }
+                        if let resolvedAgent {
+                            LabeledContent("Agent Definition", value: resolvedAgent.displayName)
+                            LabeledContent("Execution Mode", value: resolvedAgent.executionModeLabel)
+                            LabeledContent("Memory Scope", value: resolvedAgent.memoryScopeLabel)
+                            if let compatPersona = resolvedAgent.personaCompatibility, !compatPersona.isEmpty {
+                                LabeledContent("Compat Persona", value: compatPersona)
+                            }
+                        }
                         LabeledContent("Type", value: currentTask.taskType == "one_shot" ? "One time" : "Recurring")
                         if let schedule = currentTask.scheduleLabel {
                             LabeledContent("Schedule", value: schedule)
@@ -221,6 +233,24 @@ struct TaskDetailSheet: View {
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
+                        }
+                    }
+
+                    if !currentTask.contextPaths.isEmpty {
+                        Section("Context Files") {
+                            ForEach(currentTask.contextPaths, id: \.self) { path in
+                                Text(path)
+                                    .font(.caption)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                    }
+
+                    if let resolvedAgent, !resolvedAgent.whenToUse.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Section("Agent Guidance") {
+                            Text(resolvedAgent.whenToUse)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
                         }
                     }
 
@@ -515,6 +545,7 @@ struct TaskDetailSheet: View {
         activeHoursTz: nil,
         effectiveTimezone: nil,
         taskRecipe: nil,
+        resolvedAgent: nil,
         lastRunAt: Date(),
         nextRunAt: Calendar.current.date(byAdding: .day, value: 1, to: Date()),
         currentStepTitle: nil,

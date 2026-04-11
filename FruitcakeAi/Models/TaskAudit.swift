@@ -34,6 +34,7 @@ struct TaskAuditOut: Codable {
     let taskId: Int
     let title: String
     let result: String?
+    let resolvedAgent: ResolvedAgentSummary?
     let toolCalls: [TaskAuditEntry]
 }
 

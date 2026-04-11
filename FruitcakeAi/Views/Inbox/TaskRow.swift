@@ -443,9 +443,9 @@ struct TaskRow: View {
             activeHoursTz: nil,
             effectiveTimezone: nil,
             taskRecipe: nil,
+            resolvedAgent: nil,
             lastRunAt: Date(),
-            nextRunAt: Calendar.current.date(byAdding: .day, value: 1, to: Date())
-            ,
+            nextRunAt: Calendar.current.date(byAdding: .day, value: 1, to: Date()),
             currentStepTitle: nil,
             waitingApprovalTool: nil
         ))
@@ -474,6 +474,7 @@ struct TaskRow: View {
                 activeHoursTz: nil,
                 effectiveTimezone: nil,
                 taskRecipe: nil,
+                resolvedAgent: nil,
                 lastRunAt: nil,
                 nextRunAt: nil,
                 currentStepTitle: "Create calendar event",
@@ -506,6 +507,7 @@ struct TaskRow: View {
             activeHoursTz: nil,
             effectiveTimezone: nil,
             taskRecipe: nil,
+            resolvedAgent: nil,
             lastRunAt: Date(timeIntervalSinceNow: -3600),
             nextRunAt: Date(timeIntervalSinceNow: 1800),
             currentStepTitle: nil,
