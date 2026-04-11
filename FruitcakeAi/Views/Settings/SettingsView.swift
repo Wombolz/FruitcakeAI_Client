@@ -55,6 +55,10 @@ struct SettingsView: View {
                 settingsLink("Personas", systemImage: "person.3", destination: .personas)
             }
 
+            Section("Agents") {
+                settingsLink("Agents", systemImage: "sparkles.rectangle.stack", destination: .agents)
+            }
+
             Section("Assistant") {
                 settingsLink("Routing", systemImage: "point.3.connected.trianglepath.dotted", destination: .routing)
                 settingsLink("Secrets", systemImage: "key", destination: .secrets)
@@ -86,6 +90,9 @@ struct SettingsView: View {
             }
         case .personas:
             PersonaPicker(embedded: true)
+                .environment(authManager)
+        case .agents:
+            AgentPresetsView()
                 .environment(authManager)
         case .routing:
             ChatRoutingView()
@@ -283,6 +290,7 @@ private enum SettingsDestination: String, Hashable, CaseIterable {
     case server
     case pushTesting
     case personas
+    case agents
     case routing
     case secrets
     case memories

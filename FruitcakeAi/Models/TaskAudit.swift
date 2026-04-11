@@ -35,10 +35,38 @@ struct TaskAuditOut: Codable {
     let title: String
     let result: String?
     let resolvedAgent: ResolvedAgentSummary?
+    let latestRun: TaskAuditRunSummary?
     let toolCalls: [TaskAuditEntry]
 }
 
-private enum JSONValue: Codable {
+struct TaskAuditRunSummary: Codable, Hashable {
+    let id: Int
+    let status: String
+    let summary: String?
+    let error: String?
+    let runKind: String
+    let agentRole: String?
+    let triggerSource: String?
+    let sourceContext: JSONValue?
+    let startedAt: Date
+    let finishedAt: Date?
+    let artifactCount: Int
+    let artifactTypes: [String]
+
+    var statusLabel: String {
+        status.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+
+    var runKindLabel: String {
+        runKind.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+
+    var sourceContextText: String? {
+        sourceContext?.stringValue
+    }
+}
+
+enum JSONValue: Codable, Hashable {
     case string(String)
     case int(Int)
     case double(Double)
@@ -108,6 +136,15 @@ private enum JSONValue: Codable {
                 return text
             }
             return "[...]"
+        }
+    }
+
+    var intValue: Int? {
+        switch self {
+        case .int(let value): return value
+        case .double(let value): return Int(value)
+        case .string(let value): return Int(value)
+        default: return nil
         }
     }
 }

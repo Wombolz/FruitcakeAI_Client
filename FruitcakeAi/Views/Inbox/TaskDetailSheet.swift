@@ -66,6 +66,10 @@ struct TaskDetailSheet: View {
         currentTask.resolvedAgent ?? audit?.resolvedAgent
     }
 
+    private var latestRun: TaskAuditRunSummary? {
+        audit?.latestRun
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Header
@@ -192,6 +196,57 @@ struct TaskDetailSheet: View {
                         Section("Plan Steps") {
                             ForEach(steps) { step in
                                 stepRow(step)
+                            }
+                        }
+                    }
+
+                    if let latestRun {
+                        Section("Latest Run") {
+                            LabeledContent("Run ID", value: String(latestRun.id))
+                            LabeledContent("Status", value: latestRun.statusLabel)
+                            LabeledContent("Run Kind", value: latestRun.runKindLabel)
+                            if let agentRole = latestRun.agentRole, !agentRole.isEmpty {
+                                LabeledContent("Preset ID", value: agentRole)
+                            }
+                            if let triggerSource = latestRun.triggerSource, !triggerSource.isEmpty {
+                                LabeledContent("Trigger", value: triggerSource)
+                            }
+                            LabeledContent("Started", value: latestRun.startedAt.formatted(date: .abbreviated, time: .shortened))
+                            if let finishedAt = latestRun.finishedAt {
+                                LabeledContent("Finished", value: finishedAt.formatted(date: .abbreviated, time: .shortened))
+                            }
+                            if latestRun.artifactCount > 0 {
+                                LabeledContent("Artifacts", value: latestRun.artifactTypes.joined(separator: ", "))
+                            }
+                            if let sourceContext = latestRun.sourceContextText, !sourceContext.isEmpty {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("Source Context")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                    Text(sourceContext)
+                                        .font(.caption)
+                                        .textSelection(.enabled)
+                                }
+                            }
+                            if let summary = latestRun.summary, !summary.isEmpty {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("Run Summary")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                    Text(summary)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            if let error = latestRun.error, !error.isEmpty {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("Run Error")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.red)
+                                    Text(error)
+                                        .font(.caption)
+                                        .foregroundStyle(.red)
+                                }
                             }
                         }
                     }

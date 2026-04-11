@@ -276,6 +276,26 @@ final class APIClient {
         )
     }
 
+    func ensureManagedAgentPresets() async throws -> [ManagedAgentPresetSummary] {
+        try await request("/tasks/managed-agent-presets/ensure-defaults", method: "POST")
+    }
+
+    func fetchManagedAgentPresets() async throws -> [ManagedAgentPresetSummary] {
+        try await request("/tasks/managed-agent-presets")
+    }
+
+    func updateManagedAgentPreset(_ presetID: String, patch: ManagedAgentPresetUpdateRequest) async throws -> ManagedAgentPresetSummary {
+        try await request("/tasks/managed-agent-presets/\(presetID)", method: "PATCH", body: patch)
+    }
+
+    func reconcileManagedAgentPreset(_ presetID: String, recreateMissing: Bool = true) async throws -> ManagedAgentPresetSummary {
+        try await request(
+            "/tasks/managed-agent-presets/\(presetID)/reconcile",
+            method: "POST",
+            body: ManagedAgentPresetReconcileRequest(recreateMissing: recreateMissing)
+        )
+    }
+
     // MARK: - Memories (Phase 4)
 
     func fetchMemories(type: String? = nil) async throws -> [MemorySummary] {
