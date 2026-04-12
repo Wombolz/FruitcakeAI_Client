@@ -276,24 +276,32 @@ final class APIClient {
         )
     }
 
-    func ensureManagedAgentPresets() async throws -> [ManagedAgentPresetSummary] {
-        try await request("/tasks/managed-agent-presets/ensure-defaults", method: "POST")
+    func ensureAgentInstances() async throws -> [AgentInstanceSummary] {
+        try await request("/tasks/agent-instances/ensure-defaults", method: "POST")
     }
 
-    func fetchManagedAgentPresets() async throws -> [ManagedAgentPresetSummary] {
-        try await request("/tasks/managed-agent-presets")
+    func fetchAgentInstances() async throws -> [AgentInstanceSummary] {
+        try await request("/tasks/agent-instances")
     }
 
-    func updateManagedAgentPreset(_ presetID: String, patch: ManagedAgentPresetUpdateRequest) async throws -> ManagedAgentPresetSummary {
-        try await request("/tasks/managed-agent-presets/\(presetID)", method: "PATCH", body: patch)
+    func createAgentInstance(_ requestBody: AgentInstanceCreateRequest) async throws -> AgentInstanceSummary {
+        try await request("/tasks/agent-instances", method: "POST", body: requestBody)
     }
 
-    func reconcileManagedAgentPreset(_ presetID: String, recreateMissing: Bool = true) async throws -> ManagedAgentPresetSummary {
+    func updateAgentInstance(_ instanceID: Int, patch: AgentInstanceUpdateRequest) async throws -> AgentInstanceSummary {
+        try await request("/tasks/agent-instances/\(instanceID)", method: "PATCH", body: patch)
+    }
+
+    func reconcileAgentInstance(_ instanceID: Int, recreateMissing: Bool = true) async throws -> AgentInstanceSummary {
         try await request(
-            "/tasks/managed-agent-presets/\(presetID)/reconcile",
+            "/tasks/agent-instances/\(instanceID)/reconcile",
             method: "POST",
-            body: ManagedAgentPresetReconcileRequest(recreateMissing: recreateMissing)
+            body: AgentInstanceReconcileRequest(recreateMissing: recreateMissing)
         )
+    }
+
+    func fetchAgentPresetCategories() async throws -> AgentPresetCategoryResponse {
+        try await request("/chat/agents")
     }
 
     // MARK: - Memories (Phase 4)

@@ -1,6 +1,6 @@
 import Foundation
 
-struct ManagedAgentPresetTaskSummary: Codable, Hashable {
+struct AgentInstanceTaskSummary: Codable, Hashable {
     let id: Int
     let title: String
     let status: String
@@ -9,7 +9,7 @@ struct ManagedAgentPresetTaskSummary: Codable, Hashable {
     let nextRunAt: Date?
 }
 
-struct ManagedAgentPresetLatestRunSummary: Codable, Hashable {
+struct AgentInstanceLatestRunSummary: Codable, Hashable {
     let id: Int
     let status: String
     let runKind: String
@@ -23,7 +23,8 @@ struct ManagedAgentPresetLatestRunSummary: Codable, Hashable {
     }
 }
 
-struct ManagedAgentPresetSummary: Codable, Identifiable, Hashable {
+struct AgentInstanceSummary: Codable, Identifiable, Hashable {
+    let id: Int
     let presetId: String
     let displayName: String
     let category: String
@@ -37,12 +38,11 @@ struct ManagedAgentPresetSummary: Codable, Identifiable, Hashable {
     let activeHoursStart: String?
     let activeHoursEnd: String?
     let activeHoursTz: String?
+    let llmModelOverride: String?
     let contextPaths: [String]
     let params: [String: JSONValue]
-    let linkedTask: ManagedAgentPresetTaskSummary?
-    let latestRun: ManagedAgentPresetLatestRunSummary?
-
-    var id: String { presetId }
+    let linkedTask: AgentInstanceTaskSummary?
+    let latestRun: AgentInstanceLatestRunSummary?
 
     var categoryLabel: String {
         if !categoryDisplayName.isEmpty { return categoryDisplayName }
@@ -64,35 +64,64 @@ struct ManagedAgentPresetSummary: Codable, Identifiable, Hashable {
     }
 }
 
-struct ManagedAgentPresetUpdateRequest: Encodable {
+struct AgentInstanceUpdateRequest: Encodable {
+    let displayName: String?
     let enabled: Bool?
     let autoMaintainTask: Bool?
     let schedule: String?
     let activeHoursStart: String?
     let activeHoursEnd: String?
     let activeHoursTz: String?
+    let llmModelOverride: String?
     let contextPaths: [String]?
     let params: [String: StringCodable]?
-
-    private enum CodingKeys: String, CodingKey {
-        case enabled, autoMaintainTask, schedule, activeHoursStart, activeHoursEnd, activeHoursTz, contextPaths, params
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        if let enabled { try container.encode(enabled, forKey: .enabled) }
-        if let autoMaintainTask { try container.encode(autoMaintainTask, forKey: .autoMaintainTask) }
-        if let schedule { try container.encode(schedule, forKey: .schedule) }
-        if let activeHoursStart { try container.encode(activeHoursStart, forKey: .activeHoursStart) }
-        if let activeHoursEnd { try container.encode(activeHoursEnd, forKey: .activeHoursEnd) }
-        if let activeHoursTz { try container.encode(activeHoursTz, forKey: .activeHoursTz) }
-        if let contextPaths { try container.encode(contextPaths, forKey: .contextPaths) }
-        if let params { try container.encode(params, forKey: .params) }
-    }
 }
 
-struct ManagedAgentPresetReconcileRequest: Encodable {
+struct AgentInstanceCreateRequest: Encodable {
+    let presetId: String
+    let displayName: String
+    let enabled: Bool
+    let autoMaintainTask: Bool
+    let schedule: String?
+    let activeHoursStart: String?
+    let activeHoursEnd: String?
+    let activeHoursTz: String?
+    let llmModelOverride: String?
+    let contextPaths: [String]?
+    let params: [String: StringCodable]?
+}
+
+struct AgentInstanceReconcileRequest: Encodable {
     let recreateMissing: Bool
+}
+
+struct AgentPresetCategoryResponse: Codable {
+    let categories: [AgentPresetCategoryGroup]
+}
+
+struct AgentPresetCategoryGroup: Codable, Identifiable, Hashable {
+    let id: String
+    let displayName: String
+    let whenToUse: String
+    let presets: [AgentPresetOption]
+}
+
+struct AgentPresetOption: Codable, Identifiable, Hashable {
+    let id: String
+    let displayName: String
+    let category: String
+    let categoryDisplayName: String
+    let whenToUse: String
+    let executionMode: String
+    let background: Bool
+    let memoryScope: String
+    let personaCompatibility: String
+    let requiredContextSources: [String]
+    let outputContract: [String]
+
+    var backgroundLabel: String {
+        background ? "Background-capable" : executionMode.replacingOccurrences(of: "_", with: " ").capitalized
+    }
 }
 
 extension JSONValue {
@@ -106,18 +135,10 @@ extension JSONValue {
 
     var stringArrayValue: [String] {
         switch self {
-        case .array(let values):
-            return values.compactMap { $0.stringValue }
-        case .string(let value):
-            return [value]
-        default:
-            return []
+        case .array(let values): return values.compactMap { $0.stringValue }
+        case .string(let value): return [value]
+        default: return []
         }
-    }
-
-    var objectValue: [String: JSONValue]? {
-        if case .object(let value) = self { return value }
-        return nil
     }
 
     var stringCodableValue: StringCodable {
