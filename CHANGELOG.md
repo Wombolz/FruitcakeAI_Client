@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.2.1
+
+- fix chat model selector so the chosen model updates immediately without requiring a refresh
+- keep per-session model display state aligned with optimistic updates and backend-confirmed session state
+- avoid stale selector labels when switching between sessions or revisiting an existing chat
+
 ## v0.2.0
 
 - alpha client release candidate
