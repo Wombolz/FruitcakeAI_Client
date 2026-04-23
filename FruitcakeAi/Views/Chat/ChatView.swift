@@ -170,6 +170,7 @@ struct ChatView: View {
     @State private var availablePersonaInfo: [String: ChatPersonaInfo] = [:]
     @State private var availableTools: [String] = []
     @State private var availableModels: [ChatModelOption] = []
+    @State private var sessionModelOverrides: [Int: String] = [:]
     @State private var sessionToolOverrides: [Int: SessionToolOverrides] = [:]
     @State private var profilePersona: String = "family_assistant"
     @State private var profileAllowedCSV: String = ""
@@ -190,6 +191,11 @@ struct ChatView: View {
         sessions.firstIndex(where: { $0.id == session.id })
     }
 
+    private var currentSelectedSession: SessionSummary? {
+        guard let selectedId = selectedSession?.id else { return nil }
+        return sessions.first(where: { $0.id == selectedId }) ?? selectedSession
+    }
+
     // MARK: - Body
 
     var body: some View {
@@ -198,7 +204,7 @@ struct ChatView: View {
                 .navigationTitle("FruitcakeAI")
                 .toolbar { sidebarToolbar }
         } detail: {
-            if let session = selectedSession {
+            if let session = currentSelectedSession {
                 detailView(session: session)
             } else {
                 ContentUnavailableView(
@@ -219,9 +225,13 @@ struct ChatView: View {
                 await loadChatCapabilities()
             }
         }
-        .onChange(of: selectedSession?.id) { _, newId in
-            trace("selected_session_changed new_id=\(newId.map(String.init) ?? "nil") ws_state=\(wsManager.stateLabel)")
+        .onChange(of: selectedSession?.id) { oldId, newId in
+            trace("selected_session_changed old_id=\(oldId.map(String.init) ?? "nil") new_id=\(newId.map(String.init) ?? "nil") ws_state=\(wsManager.stateLabel)")
             guard let newId else { return }
+            guard oldId != newId else {
+                trace("selected_session_change_ignored_same_id session=\(newId)")
+                return
+            }
             Task { await switchSession(sessionId: newId) }
         }
         .onChange(of: isSending) { _, newValue in
@@ -479,7 +489,7 @@ struct ChatView: View {
 
             Divider()
 
-            inputBar(sessionId: session.id)
+            inputBar(sessionId: session.id, currentModelID: session.llmModel)
         }
         .navigationTitle(session.displayTitle)
         #if os(macOS)
@@ -508,7 +518,7 @@ struct ChatView: View {
     // MARK: - Input bar
 
     @ViewBuilder
-    private func inputBar(sessionId: Int) -> some View {
+    private func inputBar(sessionId: Int, currentModelID: String?) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             TextField("Message…", text: $inputText, axis: .vertical)
                 .lineLimit(1...6)
@@ -518,7 +528,7 @@ struct ChatView: View {
 
             HStack(alignment: .center, spacing: 10) {
                 HStack(spacing: 8) {
-                    modelMenu(sessionId: sessionId)
+                    modelMenu(sessionId: sessionId, fallbackModelID: currentModelID)
                     reasoningMenu()
                 }
 
@@ -540,22 +550,31 @@ struct ChatView: View {
     }
 
     @ViewBuilder
-    private func modelMenu(sessionId: Int) -> some View {
+    private func modelMenu(sessionId: Int, fallbackModelID: String?) -> some View {
+        let resolvedID = resolvedSessionModelID(sessionId: sessionId, fallbackModelID: fallbackModelID)
         Menu {
             ForEach(availableModels) { model in
                 Button {
+                    guard model.id != resolvedID else { return }
                     Task { await updateSessionModel(sessionId: sessionId, modelID: model.id) }
                 } label: {
-                    if currentSessionModelID == model.id {
-                        Label("\(model.displayLabel) · \(model.providerLabel)", systemImage: "checkmark")
+                    if resolvedID == model.id {
+                        Label(model.displayLabel, systemImage: "checkmark")
                     } else {
-                        Text("\(model.displayLabel) · \(model.providerLabel)")
+                        Text(model.displayLabel)
                     }
                 }
             }
         } label: {
-            composerMenuLabel(title: "Model", value: currentSessionModelLabel)
+            Text(currentSessionModelLabel(sessionId: sessionId, fallbackModelID: fallbackModelID))
+                .font(.caption.weight(.medium))
+                .lineLimit(1)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.secondary.opacity(0.12))
+                .clipShape(Capsule())
         }
+        .id(resolvedID)
         .disabled(isSending || availableModels.isEmpty)
     }
 
@@ -580,30 +599,39 @@ struct ChatView: View {
     }
 
     private func composerMenuLabel(title: String, value: String) -> some View {
-        HStack(spacing: 6) {
-            Text(title)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.caption.weight(.medium))
-                .lineLimit(1)
+        Text(value)
+            .font(.caption.weight(.medium))
+            .lineLimit(1)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color.secondary.opacity(0.12))
+            .clipShape(Capsule())
+    }
+
+    private func resolvedSessionModelID(sessionId: Int, fallbackModelID: String?) -> String {
+        let overrideValue = sessionModelOverrides[sessionId]
+        let sessionValue = sessions.first(where: { $0.id == sessionId })?.llmModel
+        let defaultChat = availableModels.first(where: { $0.isDefaultChat })?.id
+        let firstAvailable = availableModels.first?.id
+        return overrideValue
+            ?? sessionValue
+            ?? fallbackModelID
+            ?? defaultChat
+            ?? firstAvailable
+            ?? ""
+    }
+
+    private func reconcileSessionModelOverride(sessionId: Int, serverModelID: String?) {
+        guard let overrideValue = sessionModelOverrides[sessionId] else { return }
+        if overrideValue == (serverModelID ?? "") || (overrideValue.isEmpty && serverModelID == nil) {
+            sessionModelOverrides.removeValue(forKey: sessionId)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(Color.secondary.opacity(0.12))
-        .clipShape(Capsule())
     }
 
-    private var currentSessionModelID: String {
-        selectedSession?.llmModel
-        ?? availableModels.first(where: { $0.isDefaultChat })?.id
-        ?? availableModels.first?.id
-        ?? ""
-    }
-
-    private var currentSessionModelLabel: String {
-        availableModels.first(where: { $0.id == currentSessionModelID })?.displayLabel
-        ?? (currentSessionModelID.isEmpty ? "Model" : currentSessionModelID)
+    private func currentSessionModelLabel(sessionId: Int, fallbackModelID: String?) -> String {
+        let resolved = resolvedSessionModelID(sessionId: sessionId, fallbackModelID: fallbackModelID)
+        return availableModels.first(where: { $0.id == resolved })?.displayLabel
+            ?? (resolved.isEmpty ? "Model" : resolved)
     }
 
     private var currentReasoningPreference: String {
@@ -698,6 +726,9 @@ struct ChatView: View {
 
     private func applySessionList(_ newSessions: [SessionSummary]) {
         sessions = newSessions
+        for session in newSessions {
+            reconcileSessionModelOverride(sessionId: session.id, serverModelID: session.llmModel)
+        }
         if let selectedId = selectedSession?.id,
            let updated = newSessions.first(where: { $0.id == selectedId }) {
             selectedSession = updated
@@ -745,7 +776,7 @@ struct ChatView: View {
     }
 
     private func prepareProfileEditor() {
-        guard let selected = selectedSession else { return }
+        guard let selected = currentSelectedSession else { return }
         profilePersona = selected.persona
         let overrides = sessionToolOverrides[selected.id] ?? SessionToolOverrides()
         profileAllowedCSV = overrides.allowedTools.joined(separator: ", ")
@@ -755,7 +786,7 @@ struct ChatView: View {
 
     @MainActor
     private func saveProfileSettings() async {
-        guard let selected = selectedSession else { return }
+        guard let selected = currentSelectedSession else { return }
         guard connectivity.isBackendReachable else {
             profileError = "Backend is not reachable."
             return
@@ -796,6 +827,15 @@ struct ChatView: View {
             return
         }
 
+        let previousSession = sessions.first(where: { $0.id == sessionId })
+        sessionModelOverrides[sessionId] = modelID
+
+        // Optimistic local update — keep the visible control in sync immediately.
+        if let idx = sessions.firstIndex(where: { $0.id == sessionId }) {
+            let old = sessions[idx]
+            sessions[idx] = SessionSummary(id: old.id, title: old.title, persona: old.persona, llmModel: modelID, sortOrder: old.sortOrder)
+        }
+
         struct ModelBody: Encodable { let llmModel: String }
         let api = APIClient(authManager: authManager)
         do {
@@ -804,9 +844,21 @@ struct ChatView: View {
                 method: "PATCH",
                 body: ModelBody(llmModel: modelID)
             )
-            if let idx = sessions.firstIndex(where: { $0.id == sessionId }) { sessions[idx] = updated }
-            if selectedSession?.id == sessionId { selectedSession = updated }
+            if let idx = sessions.firstIndex(where: { $0.id == sessionId }) {
+                sessions[idx] = updated
+                if selectedSession?.id == sessionId {
+                    selectedSession = updated
+                }
+            }
+            reconcileSessionModelOverride(sessionId: sessionId, serverModelID: updated.llmModel)
         } catch {
+            if let previousSession, let idx = sessions.firstIndex(where: { $0.id == sessionId }) {
+                sessions[idx] = previousSession
+                if selectedSession?.id == sessionId {
+                    selectedSession = previousSession
+                }
+            }
+            sessionModelOverrides.removeValue(forKey: sessionId)
             loadingError = "Could not save model selection."
         }
     }
@@ -949,6 +1001,17 @@ struct ChatView: View {
     @MainActor
     private func switchSession(sessionId: Int) async {
         trace("switch_session_start session=\(sessionId) active_send=\(activeSendTask != nil) isSending=\(isSending) ws_state=\(wsManager.stateLabel)")
+
+        // Skip full reconnect if we're already connected/connecting to this session
+        switch wsManager.connectionState {
+        case .connected(let sid, _) where sid == sessionId,
+             .connecting(let sid, _) where sid == sessionId:
+            trace("switch_session_skip_already_connected session=\(sessionId)")
+            return
+        default:
+            break
+        }
+
         sessionStatusTask?.cancel()
         sessionStatusTask = nil
         wsManager.disconnect()
@@ -1003,6 +1066,7 @@ struct ChatView: View {
                 sortOrder: existing.sortOrder
             )
             sessions[idx] = updated
+            reconcileSessionModelOverride(sessionId: sessionId, serverModelID: history.llmModel)
             if selectedSession?.id == sessionId {
                 selectedSession = updated
             }
