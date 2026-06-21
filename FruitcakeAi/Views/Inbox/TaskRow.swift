@@ -38,19 +38,27 @@ struct StatusDot: View {
     var body: some View {
         ZStack {
             if isRunning {
+                // onAppear/onDisappear here (not on the outer ZStack) so the
+                // false→true transition re-triggers every time a task starts
+                // running, not just once whenever StatusDot itself first
+                // mounts. A status that starts "pending" and only becomes
+                // "running" later would otherwise insert this ring after
+                // `pulse` was already true, with nothing left to animate —
+                // it'd mount frozen in its fully-faded end state, invisible.
                 Circle()
                     .stroke(dotColor, lineWidth: 1.5)
                     .frame(width: 8, height: 8)
                     .scaleEffect(pulse ? 2.4 : 1)
                     .opacity(pulse ? 0 : 0.6)
                     .animation(.easeOut(duration: 1.3).repeatForever(autoreverses: false), value: pulse)
+                    .onAppear { pulse = true }
+                    .onDisappear { pulse = false }
             }
             Circle()
                 .fill(dotColor)
                 .frame(width: 8, height: 8)
         }
         .frame(width: 16, height: 16)
-        .onAppear { pulse = true }
     }
 }
 
