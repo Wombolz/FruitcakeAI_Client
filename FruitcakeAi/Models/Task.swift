@@ -259,6 +259,32 @@ struct TaskDraft: Identifiable, Codable, Hashable {
         case taskType, schedule, deliver, requiresApproval
         case activeHoursStart, activeHoursEnd, activeHoursTz, effectiveTimezone, nextRunAt
     }
+
+    var detailSummary: String {
+        let summary = taskSummary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return summary.isEmpty ? instruction : summary
+    }
+
+    var scheduleLabel: String? {
+        guard let schedule, !schedule.isEmpty else {
+            return taskType == "one_shot" ? "One time" : nil
+        }
+        switch schedule {
+        case "every:30m": return "Every 30 min"
+        case "every:1h": return "Every hour"
+        case "every:6h": return "Every 6 hours"
+        case "every:12h": return "Every 12 hours"
+        case "every:1d": return "Daily"
+        default: return schedule
+        }
+    }
+
+    var dueSummary: String? {
+        if let nextRunAt {
+            return nextRunAt.formatted(date: .abbreviated, time: .shortened)
+        }
+        return scheduleLabel
+    }
 }
 
 struct CreateTaskRequest: Encodable {

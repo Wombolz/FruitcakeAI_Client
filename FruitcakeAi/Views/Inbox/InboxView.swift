@@ -67,9 +67,9 @@ struct InboxView: View {
                 }
             }
             .sheet(isPresented: $showCreate) {
-                TaskCreateSheet {
+                TaskCreateSheet(onCreated: { _ in
                     Task { await loadTasks() }
-                }
+                })
                 .environment(authManager)
                 #if os(iOS)
                 .presentationDetents([.medium, .large])

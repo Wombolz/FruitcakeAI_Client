@@ -99,7 +99,7 @@ struct TaskCreateSheet: View {
 
     let initialDraft: TaskDraft?
     let initialTask: TaskSummary?
-    var onCreated: () -> Void = {}
+    var onCreated: (TaskSummary) -> Void = { _ in }
     var onSaved: ((TaskSummary) -> Void)? = nil
 
     @State private var title = ""
@@ -152,7 +152,7 @@ struct TaskCreateSheet: View {
         ("maintenance", "Maintenance")
     ]
 
-    init(initialDraft: TaskDraft? = nil, initialTask: TaskSummary? = nil, onCreated: @escaping () -> Void = {}, onSaved: ((TaskSummary) -> Void)? = nil) {
+    init(initialDraft: TaskDraft? = nil, initialTask: TaskSummary? = nil, onCreated: @escaping (TaskSummary) -> Void = { _ in }, onSaved: ((TaskSummary) -> Void)? = nil) {
         self.initialDraft = initialDraft
         self.initialTask = initialTask
         self.onCreated = onCreated
@@ -833,7 +833,7 @@ private var familySpecificSection: some View {
                 if resolvedTaskType == "one_shot" && runNow {
                     try await api.runTask(created.id)
                 }
-                onCreated()
+                onCreated(created)
             }
             dismiss()
         } catch {

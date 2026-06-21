@@ -173,12 +173,22 @@ struct ChatView: View {
     @State private var sessionModelOverrides: [Int: String] = [:]
     @State private var sessionToolOverrides: [Int: SessionToolOverrides] = [:]
     @State private var profilePersona: String = "family_assistant"
-    @State private var profileAllowedCSV: String = ""
-    @State private var profileBlockedCSV: String = ""
+    @State private var profileBlockedTools: Set<String> = []
     @State private var profileError: String?
 
     @State private var wsManager = WebSocketManager()
-    @State private var pendingTaskDraft: TaskDraft?
+
+    /// Live task drafts keyed by the assistant message that proposed them.
+    /// Rendered as an inline card in the thread instead of an auto-presented
+    /// sheet. Keying by message id (rather than a single pending value)
+    /// means the same lookup can later be fed from backend-persisted
+    /// per-message draft metadata without changing the render path.
+    @State private var liveDraftsByMessageId: [UUID: TaskDraft] = [:]
+    @State private var draftCreatingMessageIds: Set<UUID> = []
+    @State private var createdTaskIdByMessageId: [UUID: Int] = [:]
+    @State private var draftErrorByMessageId: [UUID: String] = [:]
+    @State private var editingTaskDraft: TaskDraft?
+    @State private var editingDraftSourceMessageId: UUID?
 
     private func personaDisplayName(_ key: String) -> String {
         if let info = availablePersonaInfo[key], let displayName = info.displayName, !displayName.isEmpty {
@@ -212,8 +222,10 @@ struct ChatView: View {
                     systemImage: "bubble.left.and.bubble.right",
                     description: Text("Choose a conversation from the sidebar or start a new one.")
                 )
+                .background(Theme.bg)
             }
         }
+        .preferredColorScheme(.dark)
         .task {
             await loadSessions()
             await loadChatCapabilities()
@@ -297,8 +309,12 @@ struct ChatView: View {
                 }
             }
         }
-        .sheet(item: $pendingTaskDraft) { draft in
-            TaskCreateSheet(initialDraft: draft)
+        .sheet(item: $editingTaskDraft) { draft in
+            TaskCreateSheet(initialDraft: draft, onCreated: { created in
+                if let editingDraftSourceMessageId {
+                    createdTaskIdByMessageId[editingDraftSourceMessageId] = created.id
+                }
+            })
                 .environment(authManager)
                 #if os(iOS)
                 .presentationDetents([.medium, .large])
@@ -306,27 +322,40 @@ struct ChatView: View {
                 #endif
         }
         .sheet(isPresented: $showProfileSheet) {
-            NavigationStack {
+            VStack(spacing: 0) {
+                HStack {
+                    Button("Cancel") {
+                        profileError = nil
+                        showProfileSheet = false
+                    }
+                    .keyboardShortcut(.cancelAction)
+                    Spacer()
+                    Text("Chat Profile")
+                        .font(.headline)
+                    Spacer()
+                    Button("Save") {
+                        Task { await saveProfileSettings() }
+                    }
+                    .keyboardShortcut(.defaultAction)
+                }
+                .padding()
+
+                Divider()
+
                 Form {
                     Section("Persona") {
-                        Picker("Persona", selection: $profilePersona) {
-                            ForEach(availablePersonas, id: \.self) { persona in
-                                Text(personaDisplayName(persona)).tag(persona)
-                            }
+                        ForEach(availablePersonas, id: \.self) { persona in
+                            personaCard(persona)
+                                .listRowInsets(EdgeInsets())
+                                .listRowBackground(Color.clear)
+                                .padding(.vertical, 3)
                         }
-                        .pickerStyle(.menu)
-                    }
-                    Section("Allowed Tools (comma separated)") {
-                        TextField("search_library, web_search", text: $profileAllowedCSV)
-                    }
-                    Section("Blocked Tools (comma separated)") {
-                        TextField("fetch_page", text: $profileBlockedCSV)
                     }
                     if !availableTools.isEmpty {
-                        Section("Available Tools") {
-                            Text(availableTools.joined(separator: ", "))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                        Section("Tools") {
+                            ForEach(availableTools, id: \.self) { tool in
+                                toolToggleRow(tool)
+                            }
                         }
                     }
                     if let profileError {
@@ -337,35 +366,38 @@ struct ChatView: View {
                         }
                     }
                 }
-                .navigationTitle("Chat Profile")
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Cancel") {
-                            profileError = nil
-                            showProfileSheet = false
-                        }
-                    }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Save") {
-                            Task { await saveProfileSettings() }
-                        }
-                    }
-                }
+                .formStyle(.grouped)
             }
+            #if os(macOS)
+            .frame(width: 480, height: 600)
+            #else
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+            #endif
         }
     }
 
     // MARK: - Sidebar
 
     private var sidebar: some View {
-        List(selection: $selectedSession) {
+        // Plain List (no `selection:` binding) — macOS paints its own
+        // system-blue highlight for List(selection:) selected rows, which
+        // overrides .listRowBackground entirely and stomps the persona-tint
+        // design. Driving `selectedSession` manually via tap keeps the List
+        // (so .onDelete/swipe stays intact) while letting our own
+        // accent-tinted background be the only thing rendered as "selected".
+        List {
             ForEach(sessions) { session in
                 sessionRow(session)
+                    .listRowBackground(sidebarRowBackground(for: session))
+                    .listRowSeparator(.hidden)
             }
             .onDelete { offsets in
                 Task { await deleteSessions(sessions, at: offsets) }
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(Theme.sidebar)
         .overlay {
             if sessions.isEmpty && connectivity.isBackendReachable {
                 ContentUnavailableView(
@@ -378,25 +410,51 @@ struct ChatView: View {
     }
 
     @ViewBuilder
+    private func sidebarRowBackground(for session: SessionSummary) -> some View {
+        let isSelected = currentSelectedSession?.id == session.id
+        if isSelected {
+            let accent = PersonaAccent.color(for: session.persona)
+            // Composite the tint + leading bar together, then clip — clipping
+            // first would leave the bar as a flat rectangle poking past the
+            // rounded corners instead of following the curve.
+            ZStack(alignment: .leading) {
+                accent.opacity(0.13)
+                Rectangle().fill(accent).frame(width: 2)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+        } else {
+            Theme.sidebar
+        }
+    }
+
+    @ViewBuilder
     private func sessionRow(_ session: SessionSummary) -> some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(PersonaAccent.color(for: session.persona))
+                .frame(width: 7, height: 7)
+
             VStack(alignment: .leading, spacing: 2) {
                 Text(session.displayTitle)
-                    .font(.body)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Theme.textMid)
                     .lineLimit(1)
                 Text(personaDisplayName(session.persona))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(Theme.mono(10.5))
+                    .foregroundStyle(Theme.textFaint)
             }
 
             Spacer(minLength: 8)
 
             if let index = sessionIndex(for: session) {
-                HStack(spacing: 2) {
+                VStack(spacing: 1) {
                     Button {
                         moveSession(session, by: -1)
                     } label: {
                         Image(systemName: "chevron.up")
+                            .font(.system(size: 9, weight: .semibold))
                     }
                     .buttonStyle(.borderless)
                     .disabled(index == 0)
@@ -405,14 +463,19 @@ struct ChatView: View {
                         moveSession(session, by: 1)
                     } label: {
                         Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
                     }
                     .buttonStyle(.borderless)
                     .disabled(index == sessions.count - 1)
                 }
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Theme.textFaint)
             }
         }
-        .tag(session)
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            selectedSession = session
+        }
         .contextMenu {
             Button("Rename") {
                 renameInput = session.displayTitle
@@ -453,6 +516,15 @@ struct ChatView: View {
     @ViewBuilder
     private func detailView(session: SessionSummary) -> some View {
         VStack(spacing: 0) {
+            ChatHeaderBar(
+                personaKey: session.persona,
+                personaDisplayName: personaDisplayName(session.persona),
+                personaTone: availablePersonaInfo[session.persona]?.tone,
+                modelLabel: currentSessionModelLabel(sessionId: session.id, fallbackModelID: session.llmModel),
+                reasoningLabel: currentReasoningLabel,
+                isConnected: connectivity.isBackendReachable
+            )
+
             ConnectionStatus()
 
             // Message thread
@@ -460,13 +532,37 @@ struct ChatView: View {
                 ScrollView {
                     LazyVStack(spacing: 2) {
                         ForEach(messages) { msg in
-                            MessageBubble(message: msg, persona: personaDisplayName(session.persona))
-                                .id(msg.id)
+                            MessageBubble(
+                                message: msg,
+                                personaKey: session.persona,
+                                personaDisplayName: personaDisplayName(session.persona)
+                            )
+                            .id(msg.id)
+
+                            if let draft = liveDraftsByMessageId[msg.id] {
+                                InlineTaskDraftCard(
+                                    draft: draft,
+                                    personaKey: session.persona,
+                                    personaDisplayName: personaDisplayName(session.persona),
+                                    isCreating: draftCreatingMessageIds.contains(msg.id),
+                                    createdTaskId: createdTaskIdByMessageId[msg.id],
+                                    errorMessage: draftErrorByMessageId[msg.id],
+                                    onEdit: {
+                                        editingDraftSourceMessageId = msg.id
+                                        editingTaskDraft = draft
+                                    },
+                                    onCreate: { Task { await acceptDraft(draft, sourceMessageId: msg.id) } }
+                                )
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal)
+                                .padding(.top, 2)
+                                .padding(.bottom, 6)
+                            }
                         }
 
                         // Streaming in-progress
                         if showToolIndicator && streamingContent.isEmpty {
-                            ToolCallIndicator()
+                            ToolCallIndicator(accent: PersonaAccent.color(for: session.persona))
                                 .id("indicator")
                         }
                         if !streamingContent.isEmpty {
@@ -487,28 +583,34 @@ struct ChatView: View {
                 }
             }
 
-            Divider()
-
-            inputBar(sessionId: session.id, currentModelID: session.llmModel)
+            inputBar(
+                sessionId: session.id,
+                currentModelID: session.llmModel,
+                personaKey: session.persona,
+                personaDisplayName: personaDisplayName(session.persona)
+            )
         }
+        .background(Theme.bg)
+        .tint(PersonaAccent.color(for: session.persona))
         .navigationTitle(session.displayTitle)
-        #if os(macOS)
-        .navigationSubtitle(personaDisplayName(session.persona))
-        #endif
     }
 
     private var streamingBubble: some View {
-        HStack(alignment: .bottom) {
+        let accent = PersonaAccent.color(for: currentSelectedSession?.persona ?? "")
+        return HStack(alignment: .bottom) {
             Text(streamingContent)
+                .font(.system(size: 13.5))
+                .foregroundStyle(Theme.textMid)
+                .lineSpacing(4)
                 .textSelection(.enabled)
-                .padding(.vertical, 10)
-                .padding(.horizontal, 14)
-                .background(Color.secondary.opacity(0.12))
-                .clipShape(UnevenRoundedRectangle(
-                    topLeadingRadius: 18, bottomLeadingRadius: 4,
-                    bottomTrailingRadius: 18, topTrailingRadius: 18
-                ))
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 15)
+                .padding(.vertical, 12)
+                .background(Theme.bubble)
+                .overlay(alignment: .leading) { accent.opacity(0.55).frame(width: 2) }
+                .clipShape(.rect(topLeadingRadius: 14, bottomLeadingRadius: 4,
+                                  bottomTrailingRadius: 14, topTrailingRadius: 14))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.stroke, lineWidth: 1))
+                .frame(maxWidth: 540, alignment: .leading)
                 .padding(.horizontal)
 
             Spacer(minLength: 48)
@@ -518,35 +620,47 @@ struct ChatView: View {
     // MARK: - Input bar
 
     @ViewBuilder
-    private func inputBar(sessionId: Int, currentModelID: String?) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            TextField("Message…", text: $inputText, axis: .vertical)
+    private func inputBar(sessionId: Int, currentModelID: String?, personaKey: String, personaDisplayName: String) -> some View {
+        let accent = PersonaAccent.color(for: personaKey)
+        VStack(alignment: .leading, spacing: 10) {
+            TextField("Message \(personaDisplayName)…", text: $inputText, axis: .vertical)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13.5))
+                .foregroundStyle(Theme.text)
                 .lineLimit(1...6)
-                .textFieldStyle(.roundedBorder)
+                .padding(.horizontal, 13)
+                .padding(.vertical, 11)
+                .background(Theme.field)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.strokeUp, lineWidth: 1))
                 .disabled(isSending)
                 .onSubmit { sendIfReady(sessionId: sessionId) }
 
-            HStack(alignment: .center, spacing: 10) {
-                HStack(spacing: 8) {
-                    modelMenu(sessionId: sessionId, fallbackModelID: currentModelID)
-                    reasoningMenu()
-                }
+            HStack(spacing: 8) {
+                ConsoleChip(text: personaDisplayName, accentDot: accent, mono: false)
+                modelMenu(sessionId: sessionId, fallbackModelID: currentModelID)
+                reasoningMenu()
 
                 Spacer(minLength: 0)
 
                 Button {
                     sendIfReady(sessionId: sessionId)
                 } label: {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.title2)
-                        .foregroundStyle(canSend ? Color.accentColor : Color.secondary)
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(Theme.bg)
+                        .frame(width: 32, height: 32)
+                        .background(canSend ? accent : Theme.textFaint, in: Circle())
+                        .shadow(color: canSend ? accent.opacity(0.45) : .clear, radius: 8)
                 }
+                .buttonStyle(.plain)
                 .disabled(!canSend)
             }
         }
-        .padding(.horizontal)
-        .padding(.vertical, 10)
-        .background(.bar)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(Theme.composer)
+        .overlay(Rectangle().fill(Theme.stroke).frame(height: 1), alignment: .top)
     }
 
     @ViewBuilder
@@ -566,13 +680,7 @@ struct ChatView: View {
                 }
             }
         } label: {
-            Text(currentSessionModelLabel(sessionId: sessionId, fallbackModelID: fallbackModelID))
-                .font(.caption.weight(.medium))
-                .lineLimit(1)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(Color.secondary.opacity(0.12))
-                .clipShape(Capsule())
+            ConsoleChip(text: currentSessionModelLabel(sessionId: sessionId, fallbackModelID: fallbackModelID))
         }
         .id(resolvedID)
         .disabled(isSending || availableModels.isEmpty)
@@ -593,19 +701,9 @@ struct ChatView: View {
                 }
             }
         } label: {
-            composerMenuLabel(title: "Reasoning", value: currentReasoningLabel)
+            ConsoleChip(text: "◇ \(currentReasoningLabel)")
         }
         .disabled(isSending)
-    }
-
-    private func composerMenuLabel(title: String, value: String) -> some View {
-        Text(value)
-            .font(.caption.weight(.medium))
-            .lineLimit(1)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Color.secondary.opacity(0.12))
-            .clipShape(Capsule())
     }
 
     private func resolvedSessionModelID(sessionId: Int, fallbackModelID: String?) -> String {
@@ -779,9 +877,64 @@ struct ChatView: View {
         guard let selected = currentSelectedSession else { return }
         profilePersona = selected.persona
         let overrides = sessionToolOverrides[selected.id] ?? SessionToolOverrides()
-        profileAllowedCSV = overrides.allowedTools.joined(separator: ", ")
-        profileBlockedCSV = overrides.blockedTools.joined(separator: ", ")
+        profileBlockedTools = Set(overrides.blockedTools)
         profileError = nil
+    }
+
+    @ViewBuilder
+    private func personaCard(_ key: String) -> some View {
+        let info = availablePersonaInfo[key]
+        let isSelected = profilePersona == key
+        let accent = PersonaAccent.color(for: key)
+        Button {
+            profilePersona = key
+        } label: {
+            HStack(spacing: 12) {
+                PersonaAvatar(personaKey: key, displayName: personaDisplayName(key), size: 40)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(personaDisplayName(key))
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Theme.text)
+                    if let description = info?.description, !description.isEmpty {
+                        Text(description)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Theme.textDim)
+                            .lineLimit(2)
+                    }
+                }
+                Spacer(minLength: 8)
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(accent)
+                }
+            }
+            .padding(12)
+            .background(isSelected ? accent.opacity(0.09) : Theme.field)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(isSelected ? accent.opacity(0.5) : Theme.stroke, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func toolToggleRow(_ tool: String) -> some View {
+        Toggle(isOn: Binding(
+            get: { !profileBlockedTools.contains(tool) },
+            set: { enabled in
+                if enabled {
+                    profileBlockedTools.remove(tool)
+                } else {
+                    profileBlockedTools.insert(tool)
+                }
+            }
+        )) {
+            Text(tool)
+                .font(Theme.mono(12.5))
+                .foregroundStyle(Theme.textMid)
+        }
+        .tint(PersonaAccent.color(for: profilePersona))
     }
 
     @MainActor
@@ -792,11 +945,9 @@ struct ChatView: View {
             return
         }
 
-        let parsedAllowed = parseCSV(profileAllowedCSV)
-        let parsedBlocked = parseCSV(profileBlockedCSV)
         sessionToolOverrides[selected.id] = SessionToolOverrides(
-            allowedTools: parsedAllowed,
-            blockedTools: parsedBlocked
+            allowedTools: [],
+            blockedTools: Array(profileBlockedTools).sorted()
         )
 
         struct PersonaBody: Encodable { let persona: String }
@@ -817,6 +968,47 @@ struct ChatView: View {
             showProfileSheet = false
         } catch {
             profileError = "Could not save chat profile."
+        }
+    }
+
+    /// One-click "Create task" from an inline draft card. Maps TaskDraft
+    /// fields straight into the existing POST /tasks call — this is the
+    /// seam a future chat-message-scoped accept-draft endpoint can replace
+    /// without changing the card's view code.
+    @MainActor
+    private func acceptDraft(_ draft: TaskDraft, sourceMessageId: UUID) async {
+        guard connectivity.isBackendReachable else {
+            draftErrorByMessageId[sourceMessageId] = "Backend is not reachable."
+            return
+        }
+        draftCreatingMessageIds.insert(sourceMessageId)
+        draftErrorByMessageId.removeValue(forKey: sourceMessageId)
+        defer { draftCreatingMessageIds.remove(sourceMessageId) }
+
+        let api = APIClient(authManager: authManager)
+        do {
+            let created = try await api.createTask(
+                CreateTaskRequest(
+                    title: draft.title,
+                    instruction: draft.instruction,
+                    llmModelOverride: draft.llmModelOverride,
+                    taskType: draft.taskType,
+                    schedule: draft.schedule,
+                    deliver: draft.deliver,
+                    requiresApproval: draft.requiresApproval,
+                    activeHoursStart: draft.activeHoursStart,
+                    activeHoursEnd: draft.activeHoursEnd,
+                    activeHoursTz: draft.activeHoursTz,
+                    recipeFamily: draft.taskRecipe?.family,
+                    recipeParams: draft.taskRecipe?.params
+                )
+            )
+            if draft.taskType == "one_shot" {
+                try? await api.runTask(created.id)
+            }
+            createdTaskIdByMessageId[sourceMessageId] = created.id
+        } catch {
+            draftErrorByMessageId[sourceMessageId] = "Could not create task."
         }
     }
 
@@ -877,17 +1069,6 @@ struct ChatView: View {
         } catch {
             loadingError = "Could not save reasoning preference."
         }
-    }
-
-    private func parseCSV(_ value: String) -> [String] {
-        Array(
-            Set(
-                value
-                    .split(separator: ",")
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty }
-            )
-        ).sorted()
     }
 
     @MainActor
@@ -1217,7 +1398,7 @@ struct ChatView: View {
                 selectedConversation?.messages.append(assistantMsg)
                 selectedConversation?.lastActivity = .now
                 if let taskDraft {
-                    pendingTaskDraft = taskDraft
+                    liveDraftsByMessageId[assistantMsg.id] = taskDraft
                 }
 
                 break eventLoop
@@ -1305,7 +1486,7 @@ struct ChatView: View {
             selectedConversation?.messages.append(msg)
             selectedConversation?.lastActivity = .now
             if let draft = resp.metadata?.taskDraft {
-                pendingTaskDraft = draft
+                liveDraftsByMessageId[msg.id] = draft
             }
         } catch {
             trace("rest_send_error session=\(sessionId) client_send_id=\(clientSendID) error=\(error.localizedDescription)")
