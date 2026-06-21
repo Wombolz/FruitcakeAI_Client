@@ -51,14 +51,18 @@ struct TaskRow: View {
 
             if let exportStatusMessage, !exportStatusMessage.isEmpty {
                 Text(exportStatusMessage)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(Theme.mono(10))
+                    .foregroundStyle(Theme.textFaint)
             }
 
             if task.result != nil {
                 replyButton
             }
         }
+        .padding(14)
+        .background(Theme.card)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.stroke, lineWidth: 1))
         .padding(.vertical, 4)
         .swipeActions(edge: .trailing) {
             Button(role: .destructive) {
@@ -81,14 +85,15 @@ struct TaskRow: View {
 
             Text(task.title)
                 .font(.headline)
+                .foregroundStyle(Theme.text)
                 .lineLimit(1)
 
             Spacer()
 
             if let next = task.nextRunAt {
                 Text(next.formatted(.relative(presentation: .named)))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(Theme.mono(10.5))
+                    .foregroundStyle(Theme.textFaint)
             }
 
             if task.result != nil || task.isPendingApproval || task.canRun || task.canStop || task.canReset {
@@ -113,7 +118,7 @@ struct TaskRow: View {
                     .frame(width: 8, height: 8)
             }
             Text(task.statusLabel)
-                .font(.caption.weight(.medium))
+                .font(Theme.mono(11, weight: .medium))
                 .foregroundStyle(task.statusColor)
         }
         .padding(.horizontal, 8)
@@ -131,20 +136,20 @@ struct TaskRow: View {
                     metadataBadge(agentRole, tint: .orange)
                 }
                 if let schedule = task.scheduleLabel {
-                    metadataBadge(schedule, tint: .secondary)
+                    metadataBadge(schedule, tint: Theme.textDim)
                 }
             }
 
             Text(task.instruction)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Theme.textDim)
                 .lineLimit(2)
         }
     }
 
     private func metadataBadge(_ text: String, tint: Color) -> some View {
         Text(text)
-            .font(.caption2.weight(.medium))
+            .font(Theme.mono(10, weight: .medium))
             .foregroundStyle(tint)
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
@@ -158,8 +163,8 @@ struct TaskRow: View {
                 .foregroundStyle(.orange)
             if let tool = task.waitingApprovalTool, !tool.isEmpty {
                 Text("Tool: \(tool)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(Theme.mono(10.5))
+                    .foregroundStyle(Theme.textDim)
             }
             Button("Review Details") {
                 showDetail = true
@@ -209,12 +214,12 @@ struct TaskRow: View {
                     HStack(spacing: 4) {
                         Image(systemName: showResult ? "chevron.up" : "chevron.down")
                             .font(.caption2)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Theme.textFaint)
                             .frame(width: 12)
 
                         Text(showResult ? "Hide result" : "Show result")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .font(Theme.mono(11))
+                            .foregroundStyle(Theme.textDim)
 
                         Spacer()
                     }
@@ -224,7 +229,7 @@ struct TaskRow: View {
                 if !showResult {
                     Text(collapsedPreview)
                         .font(.caption)
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(Theme.textMid)
                         .lineLimit(2)
                 }
 
@@ -245,7 +250,7 @@ struct TaskRow: View {
                             if !section.heading.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                                 Text(section.heading)
                                     .font(.caption.weight(.semibold))
-                                    .foregroundStyle(section.isEmptyState ? .secondary : .primary)
+                                    .foregroundStyle(section.isEmptyState ? Theme.textFaint : Theme.text)
                             }
                             sectionBodyView(section.body, isEmptyState: section.isEmptyState)
                         }
@@ -257,7 +262,7 @@ struct TaskRow: View {
             }
             .frame(maxHeight: 400)
             .padding(10)
-            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+            .background(Theme.field, in: RoundedRectangle(cornerRadius: 10))
         } else if let markdown = task.resultMarkdown {
             flatResultScroll(text: markdown)
         } else if let result = task.result {
@@ -271,7 +276,7 @@ struct TaskRow: View {
                 Text(linkifiedAttributedString(text))
                     .font(.callout)
                     .lineSpacing(4)
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(Theme.textMid)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
@@ -280,7 +285,7 @@ struct TaskRow: View {
         }
         .frame(maxHeight: 200)
         .padding(10)
-        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+        .background(Theme.field, in: RoundedRectangle(cornerRadius: 10))
     }
 
     @ViewBuilder
@@ -295,7 +300,7 @@ struct TaskRow: View {
                         .font(.caption)
                         .lineSpacing(3)
                         .italic(isEmptyState)
-                        .foregroundStyle(isEmptyState ? .secondary : .primary)
+                        .foregroundStyle(isEmptyState ? Theme.textFaint : Theme.textMid)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .textSelection(.enabled)
                 }
