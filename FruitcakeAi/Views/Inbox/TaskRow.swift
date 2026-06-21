@@ -312,6 +312,7 @@ struct TaskRow: View {
                 ],
                 center: .center
             )
+            .frame(width: 24, height: 24)
             .clipShape(RoundedRectangle(cornerRadius: 6))
             ColorPicker("", selection: Binding(
                 get: { accent },
@@ -320,7 +321,14 @@ struct TaskRow: View {
             .labelsHidden()
             .opacity(0.02)
         }
+        // The native ColorPicker control reports its own minimum size
+        // (larger than 24x24 on macOS), which otherwise forces the whole
+        // ZStack — including the AngularGradient sibling — to that bigger
+        // size before .clipShape ever runs, making the gradient spill past
+        // the other swatches. .clipped() hard-cuts anything beyond the
+        // declared frame regardless of what the native control demands.
         .frame(width: 24, height: 24)
+        .clipped()
         .overlay(
             RoundedRectangle(cornerRadius: 6)
                 .stroke(isCustom ? Theme.text : Theme.strokeUp, lineWidth: isCustom ? 2 : 1)
