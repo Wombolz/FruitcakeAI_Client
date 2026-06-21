@@ -180,6 +180,7 @@ struct ChatView: View {
     /// reload/relaunch) — these dictionaries hold only ephemeral UI state
     /// that has no business being persisted.
     @State private var draftCreatingMessageIds: Set<UUID> = []
+    @State private var draftDenyingMessageIds: Set<UUID> = []
     @State private var draftErrorByMessageId: [UUID: String] = [:]
     @State private var editingTaskDraft: TaskDraft?
     @State private var editingDraftSourceMessageId: UUID?
@@ -306,10 +307,7 @@ struct ChatView: View {
         .sheet(item: $editingTaskDraft) { draft in
             TaskCreateSheet(initialDraft: draft, onCreated: { created in
                 if let editingDraftSourceMessageId {
-                    updateMessage(id: editingDraftSourceMessageId) { msg in
-                        msg.createdTaskId = created.id
-                        msg.taskDraftStatus = "created"
-                    }
+                    Task { await reconcileEditedDraftCreation(messageID: editingDraftSourceMessageId, createdTaskID: created.id) }
                 }
             })
                 .environment(authManager)
@@ -541,14 +539,18 @@ struct ChatView: View {
                                     draft: draft,
                                     personaKey: session.persona,
                                     personaDisplayName: personaDisplayName(session.persona),
+                                    taskDraftStatus: msg.taskDraftStatus,
                                     isCreating: draftCreatingMessageIds.contains(msg.id),
+                                    isDenying: draftDenyingMessageIds.contains(msg.id),
+                                    canResolve: msg.serverMessageId != nil,
                                     createdTaskId: msg.createdTaskId,
                                     errorMessage: draftErrorByMessageId[msg.id],
                                     onEdit: {
                                         editingDraftSourceMessageId = msg.id
                                         editingTaskDraft = draft
                                     },
-                                    onCreate: { Task { await acceptDraft(message: msg) } }
+                                    onCreate: { Task { await acceptDraft(message: msg) } },
+                                    onDeny: { Task { await denyDraft(message: msg) } }
                                 )
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.horizontal)
@@ -968,10 +970,6 @@ struct ChatView: View {
         }
     }
 
-    /// One-click "Create task" from an inline draft card. Maps TaskDraft
-    /// fields straight into the existing POST /tasks call — this is the
-    /// seam a future chat-message-scoped accept-draft endpoint can replace
-    /// without changing the card's view code.
     @MainActor
     private func updateMessage(id: UUID, _ mutate: (CachedMessage) -> Void) {
         guard let msg = messages.first(where: { $0.id == id }) else { return }
@@ -979,18 +977,15 @@ struct ChatView: View {
         try? modelContext.save()
     }
 
-    /// One-click "Create task" from an inline draft card. Prefers the
-    /// chat-message-scoped accept endpoint (idempotent — the backend is the
-    /// single source of truth for what the draft becomes) whenever the
-    /// message has a real server id. Live responses don't get a server id
-    /// back from the WS/REST send paths yet, so those fall back to building
-    /// the request from the draft directly until the message round-trips
-    /// through a history reload.
     @MainActor
     private func acceptDraft(message: CachedMessage) async {
-        guard let draft = message.taskDraft else { return }
+        guard message.taskDraft != nil else { return }
         guard connectivity.isBackendReachable else {
             draftErrorByMessageId[message.id] = "Backend is not reachable."
+            return
+        }
+        guard let serverMessageId = message.serverMessageId else {
+            draftErrorByMessageId[message.id] = "Syncing draft…"
             return
         }
         draftCreatingMessageIds.insert(message.id)
@@ -999,37 +994,79 @@ struct ChatView: View {
 
         let api = APIClient(authManager: authManager)
         do {
-            if let serverMessageId = message.serverMessageId {
-                let response = try await api.acceptTaskDraft(messageId: serverMessageId)
-                message.createdTaskId = response.taskId
-                message.taskDraftStatus = response.metadata.taskDraftStatus
-            } else {
-                let created = try await api.createTask(
-                    CreateTaskRequest(
-                        title: draft.title,
-                        instruction: draft.instruction,
-                        llmModelOverride: draft.llmModelOverride,
-                        taskType: draft.taskType,
-                        schedule: draft.schedule,
-                        deliver: draft.deliver,
-                        requiresApproval: draft.requiresApproval,
-                        activeHoursStart: draft.activeHoursStart,
-                        activeHoursEnd: draft.activeHoursEnd,
-                        activeHoursTz: draft.activeHoursTz,
-                        recipeFamily: draft.taskRecipe?.family,
-                        recipeParams: draft.taskRecipe?.params
-                    )
-                )
-                if draft.taskType == "one_shot" {
-                    try? await api.runTask(created.id)
-                }
-                message.createdTaskId = created.id
-                message.taskDraftStatus = "created"
-            }
+            let response = try await api.acceptTaskDraft(messageId: serverMessageId)
+            message.createdTaskId = response.taskId
+            message.taskDraftStatus = response.metadata.taskDraftStatus
             try? modelContext.save()
         } catch {
             trace("accept_draft_error message_id=\(message.serverMessageId.map(String.init) ?? "nil") error=\(error)")
             draftErrorByMessageId[message.id] = "Could not create task."
+        }
+    }
+
+    @MainActor
+    private func denyDraft(message: CachedMessage) async {
+        guard message.taskDraft != nil else { return }
+        guard connectivity.isBackendReachable else {
+            draftErrorByMessageId[message.id] = "Backend is not reachable."
+            return
+        }
+        guard let serverMessageId = message.serverMessageId else {
+            draftErrorByMessageId[message.id] = "Syncing draft…"
+            return
+        }
+
+        draftDenyingMessageIds.insert(message.id)
+        draftErrorByMessageId.removeValue(forKey: message.id)
+        defer { draftDenyingMessageIds.remove(message.id) }
+
+        let api = APIClient(authManager: authManager)
+        do {
+            let response = try await api.denyTaskDraft(messageId: serverMessageId)
+            message.createdTaskId = response.metadata.createdTaskId
+            message.taskDraftStatus = response.metadata.taskDraftStatus
+            try? modelContext.save()
+        } catch {
+            trace("deny_draft_error message_id=\(message.serverMessageId.map(String.init) ?? "nil") error=\(error)")
+            draftErrorByMessageId[message.id] = "Could not deny task."
+        }
+    }
+
+    @MainActor
+    private func reconcileEditedDraftCreation(messageID: UUID, createdTaskID: Int) async {
+        guard connectivity.isBackendReachable else {
+            updateMessage(id: messageID) { msg in
+                msg.createdTaskId = createdTaskID
+                msg.taskDraftStatus = "accepted"
+            }
+            draftErrorByMessageId[messageID] = "Task created, but chat draft could not sync while offline."
+            return
+        }
+        guard let message = messages.first(where: { $0.id == messageID }) else { return }
+        guard let serverMessageId = message.serverMessageId else {
+            updateMessage(id: messageID) { msg in
+                msg.createdTaskId = createdTaskID
+                msg.taskDraftStatus = "accepted"
+            }
+            draftErrorByMessageId[messageID] = "Task created, but chat draft is still syncing."
+            return
+        }
+
+        let api = APIClient(authManager: authManager)
+        do {
+            let response = try await api.acceptTaskDraft(messageId: serverMessageId, existingTaskId: createdTaskID)
+            updateMessage(id: messageID) { msg in
+                msg.createdTaskId = response.taskId
+                msg.taskDraftStatus = response.metadata.taskDraftStatus
+            }
+            draftErrorByMessageId.removeValue(forKey: messageID)
+        } catch {
+            updateMessage(id: messageID) { msg in
+                msg.createdTaskId = createdTaskID
+                msg.taskDraftStatus = "accepted"
+            }
+            trace("accept_existing_draft_error message_id=\(serverMessageId) task_id=\(createdTaskID) error=\(error)")
+            draftErrorByMessageId[messageID] = "Task created, but chat draft could not be linked."
         }
     }
 
@@ -1411,7 +1448,7 @@ struct ChatView: View {
                 streamingContent += chunk
                 fullResponse += chunk
 
-            case .done(let complete, let metadata):
+            case .done(let complete, let messageId, let metadata):
                 trace("send_message_event seq=\(sendSequence) session=\(sessionId) client_send_id=\(clientSendID) type=done chars=\(complete.count)")
                 let finalResponse = complete.isEmpty ? fullResponse : complete
                 fullResponse = finalResponse
@@ -1419,6 +1456,7 @@ struct ChatView: View {
                 showToolIndicator = false
 
                 let assistantMsg = CachedMessage(
+                    serverMessageId: messageId,
                     role: "assistant",
                     content: finalResponse,
                     toolCalls: metadata?.toolCalls,
@@ -1491,6 +1529,7 @@ struct ChatView: View {
             let blockedTools: [String]?
         }
         struct SendResponse: Decodable {
+            let messageId: Int?
             let role: String
             let content: String
             let metadata: ChatMessageMetadata?
@@ -1511,6 +1550,7 @@ struct ChatView: View {
             )
             trace("rest_send_done session=\(sessionId) client_send_id=\(clientSendID) response_chars=\(resp.content.count)")
             let msg = CachedMessage(
+                serverMessageId: resp.messageId,
                 role: resp.role,
                 content: resp.content,
                 toolCalls: resp.metadata?.toolCalls,

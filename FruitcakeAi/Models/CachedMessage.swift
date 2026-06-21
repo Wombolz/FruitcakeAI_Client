@@ -32,7 +32,7 @@ final class CachedMessage {
     // Encoding/decoding it ourselves with a plain JSONEncoder/JSONDecoder
     // sidesteps SwiftData's native Codable-attribute path entirely.
     private var taskDraftData: Data?
-    var taskDraftStatus: String?       // "draft" | "created"
+    var taskDraftStatus: String?       // "draft" | "accepted" | "denied"
     var createdTaskId: Int?
 
     var taskDraft: TaskDraft? {

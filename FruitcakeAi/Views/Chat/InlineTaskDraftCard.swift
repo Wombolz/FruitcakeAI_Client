@@ -6,11 +6,8 @@
 //  thread alongside the assistant message that proposed it. Replaces the
 //  old auto-presented .sheet(item: $pendingTaskDraft) flow.
 //
-//  Today the draft is tracked client-side, keyed by the source assistant
-//  message id (live drafts only — backend doesn't persist taskDraft
-//  metadata on chat history yet). When it does, the same keyed-lookup
-//  rendering path can be fed from persisted history instead of the
-//  in-memory dictionary without changing this view.
+//  The card now renders directly from persisted assistant-message metadata,
+//  including draft resolution states such as accepted and denied.
 //
 
 import SwiftUI
@@ -19,13 +16,27 @@ struct InlineTaskDraftCard: View {
     let draft: TaskDraft
     let personaKey: String
     let personaDisplayName: String
+    var taskDraftStatus: String? = nil
     var isCreating: Bool = false
+    var isDenying: Bool = false
+    var canResolve: Bool = true
     var createdTaskId: Int? = nil
     var errorMessage: String? = nil
     var onEdit: () -> Void
     var onCreate: () -> Void
+    var onDeny: () -> Void
 
     private var accent: Color { PersonaAccent.color(for: personaKey) }
+    private var normalizedStatus: String {
+        switch (taskDraftStatus ?? "").lowercased() {
+        case "accepted", "denied", "draft":
+            return (taskDraftStatus ?? "").lowercased()
+        case "created":
+            return "accepted"
+        default:
+            return createdTaskId != nil ? "accepted" : "draft"
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -89,11 +100,23 @@ struct InlineTaskDraftCard: View {
 
     @ViewBuilder
     private var footer: some View {
-        if let createdTaskId {
+        if normalizedStatus == "denied" {
+            HStack(spacing: 6) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(Theme.textMid)
+                Text("Denied")
+                    .font(Theme.mono(11))
+                    .foregroundStyle(Theme.textDim)
+                Spacer()
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .overlay(Rectangle().fill(Theme.stroke).frame(height: 1), alignment: .top)
+        } else if normalizedStatus == "accepted", let createdTaskId {
             HStack(spacing: 6) {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(accent)
-                Text("Task created · #\(createdTaskId)")
+                Text("Accepted · Task #\(createdTaskId)")
                     .font(Theme.mono(11))
                     .foregroundStyle(Theme.textDim)
                 Spacer()
@@ -102,31 +125,55 @@ struct InlineTaskDraftCard: View {
             .padding(.vertical, 10)
             .overlay(Rectangle().fill(Theme.stroke).frame(height: 1), alignment: .top)
         } else {
-            HStack(spacing: 9) {
-                Spacer()
-                Button("Edit", action: onEdit)
+            VStack(alignment: .leading, spacing: 10) {
+                if !canResolve {
+                    Text("Syncing draft…")
+                        .font(Theme.mono(11))
+                        .foregroundStyle(Theme.textDim)
+                }
+
+                HStack(spacing: 9) {
+                    Spacer()
+                    Button("Edit", action: onEdit)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Theme.textMid)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 7)
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.strokeUp, lineWidth: 1))
+                        .disabled(isCreating || isDenying)
+
+                    Button(action: onDeny) {
+                        if isDenying {
+                            ProgressView()
+                                .controlSize(.small)
+                                .frame(width: 44)
+                        } else {
+                            Text("Deny")
+                                .padding(.horizontal, 12)
+                        }
+                    }
                     .buttonStyle(.plain)
                     .foregroundStyle(Theme.textMid)
-                    .padding(.horizontal, 14)
                     .padding(.vertical, 7)
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.strokeUp, lineWidth: 1))
-                    .disabled(isCreating)
+                    .disabled(!canResolve || isCreating || isDenying)
 
-                Button(action: onCreate) {
-                    if isCreating {
-                        ProgressView()
-                            .controlSize(.small)
-                            .frame(width: 60)
-                    } else {
-                        Text("Create task")
-                            .padding(.horizontal, 16)
+                    Button(action: onCreate) {
+                        if isCreating {
+                            ProgressView()
+                                .controlSize(.small)
+                                .frame(width: 60)
+                        } else {
+                            Text("Create task")
+                                .padding(.horizontal, 16)
+                        }
                     }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Theme.bg)
+                    .padding(.vertical, 7)
+                    .background(accent, in: RoundedRectangle(cornerRadius: 8))
+                    .disabled(!canResolve || isCreating || isDenying)
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(Theme.bg)
-                .padding(.vertical, 7)
-                .background(accent, in: RoundedRectangle(cornerRadius: 8))
-                .disabled(isCreating)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
@@ -145,7 +192,19 @@ struct InlineTaskDraftCard: View {
                 personaKey: "family_assistant",
                 personaDisplayName: "Family Assistant",
                 onEdit: {},
-                onCreate: {}
+                onCreate: {},
+                onDeny: {}
+            )
+            InlineTaskDraftCard(
+                draft: try! JSONDecoder.fruitcakeDecoder().decode(TaskDraft.self, from: Data("""
+                {"title":"Skip duplicate research","instruction":"Do not create this task.","taskType":"one_shot","deliver":true,"requiresApproval":true}
+                """.utf8)),
+                personaKey: "family_assistant",
+                personaDisplayName: "Family Assistant",
+                taskDraftStatus: "denied",
+                onEdit: {},
+                onCreate: {},
+                onDeny: {}
             )
             InlineTaskDraftCard(
                 draft: try! JSONDecoder.fruitcakeDecoder().decode(TaskDraft.self, from: Data("""
@@ -153,9 +212,11 @@ struct InlineTaskDraftCard: View {
                 """.utf8)),
                 personaKey: "news_researcher",
                 personaDisplayName: "News Researcher",
+                taskDraftStatus: "accepted",
                 createdTaskId: 42,
                 onEdit: {},
-                onCreate: {}
+                onCreate: {},
+                onDeny: {}
             )
         }
         .padding()

@@ -328,6 +328,11 @@ struct AcceptTaskDraftResponse: Decodable {
     let metadata: ChatMessageMetadata
 }
 
+struct DenyTaskDraftResponse: Decodable {
+    let denied: Bool
+    let metadata: ChatMessageMetadata
+}
+
 struct CreateTaskRequest: Encodable {
     let title: String
     let instruction: String
