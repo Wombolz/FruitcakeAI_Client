@@ -263,6 +263,10 @@ final class APIClient {
         try await requestVoid("/tasks/\(id)/reset", method: "POST")
     }
 
+    func duplicateTaskDraft(_ id: Int) async throws -> DuplicateTaskDraftResponse {
+        try await request("/tasks/\(id)/duplicate-draft", method: "POST")
+    }
+
     func acceptTaskDraft(messageId: Int, existingTaskId: Int? = nil) async throws -> AcceptTaskDraftResponse {
         struct AcceptDraftBody: Encodable {
             let existingTaskId: Int?

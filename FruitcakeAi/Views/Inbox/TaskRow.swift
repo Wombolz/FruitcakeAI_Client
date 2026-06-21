@@ -90,6 +90,9 @@ struct TaskRow: View {
     @State private var draftSchedule = "every:1d"
     @State private var isSavingEdit = false
     @State private var editError: String?
+    @State private var isDuplicating = false
+    @State private var duplicateDraft: TaskDraft?
+    @State private var duplicateError: String?
 
     private var accent: Color {
         if let localAccentOverride, let color = Color(taskAccentHex: localAccentOverride) {
@@ -126,6 +129,16 @@ struct TaskRow: View {
         .sheet(isPresented: $showDetail) {
             TaskDetailSheet(task: task, onApprove: onApprove, onReject: onReject, onStop: onStop, onRun: onRun, onReset: onReset, onUpdated: onUpdated)
                 .environment(authManager)
+        }
+        .sheet(item: $duplicateDraft) { draft in
+            // Prefilled editor only — backend explicitly does not create the
+            // duplicate immediately, the user still has to submit.
+            TaskCreateSheet(initialDraft: draft, onCreated: { _ in onUpdated?() })
+                .environment(authManager)
+                #if os(iOS)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                #endif
         }
     }
 
@@ -244,11 +257,19 @@ struct TaskRow: View {
 
             Divider()
 
+            kebabRow("Task details", systemImage: "list.bullet.rectangle") {
+                showKebabMenu = false
+                showDetail = true
+            }
             kebabRow("Rename", systemImage: "pencil") {
                 startRename()
             }
             kebabRow("Edit schedule", systemImage: "clock") {
                 startScheduleEdit()
+            }
+            kebabRow("Duplicate", systemImage: "doc.on.doc") {
+                showKebabMenu = false
+                Task { await duplicateTask() }
             }
 
             Divider()
@@ -259,7 +280,7 @@ struct TaskRow: View {
             }
             .padding(.bottom, 6)
         }
-        .frame(width: 230)
+        .frame(width: 250)
         .background(Theme.card)
     }
 
@@ -307,9 +328,34 @@ struct TaskRow: View {
         )
     }
 
+    /// Optimistic: the local override + UI update happen immediately so the
+    /// swatch tap feels instant, then the choice is PATCHed to the backend
+    /// (now that presentation.accentHex is persisted there) so it survives
+    /// reload/relaunch/cross-device. The local override stays in place
+    /// either way as a latency mask — onUpdated?() refreshes `task` itself
+    /// from the server on success.
     private func setAccent(_ hex: String) {
         TaskAccentStore.shared.setAccentHex(hex, for: task.id)
         localAccentOverride = hex
+        Task {
+            let api = APIClient(authManager: authManager)
+            do {
+                _ = try await api.updateTask(
+                    task.id,
+                    updateRequest(
+                        title: task.title,
+                        taskType: task.taskType,
+                        schedule: task.schedule,
+                        presentationOverride: TaskPresentationMetadata(accentHex: hex)
+                    )
+                )
+                onUpdated?()
+            } catch {
+                // Local override is already showing; a failed sync here just
+                // means the color won't survive reload yet, not worth its
+                // own error UI for a non-destructive cosmetic action.
+            }
+        }
     }
 
     private func kebabRow(_ title: String, systemImage: String, role: ButtonRole? = nil, action: @escaping () -> Void) -> some View {
@@ -383,6 +429,12 @@ struct TaskRow: View {
                 Text(exportStatusMessage)
                     .font(Theme.mono(10))
                     .foregroundStyle(Theme.textFaint)
+            }
+
+            if let duplicateError {
+                Text(duplicateError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
             }
         }
         .padding(14)
@@ -693,7 +745,12 @@ struct TaskRow: View {
         }
     }
 
-    private func updateRequest(title: String, taskType: String, schedule: String?) -> TaskUpdateRequest {
+    private func updateRequest(
+        title: String,
+        taskType: String,
+        schedule: String?,
+        presentationOverride: TaskPresentationMetadata? = nil
+    ) -> TaskUpdateRequest {
         TaskUpdateRequest(
             title: title,
             instruction: task.instruction,
@@ -706,7 +763,8 @@ struct TaskRow: View {
             activeHoursEnd: task.activeHoursEnd,
             activeHoursTz: task.activeHoursTz,
             recipeFamily: task.taskRecipe?.family,
-            recipeParams: task.taskRecipe?.params
+            recipeParams: task.taskRecipe?.params,
+            presentation: presentationOverride ?? task.presentation
         )
     }
 
@@ -739,6 +797,24 @@ struct TaskRow: View {
             onUpdated?()
         } catch {
             editError = "Could not save schedule."
+        }
+    }
+
+    @MainActor
+    private func duplicateTask() async {
+        isDuplicating = true
+        duplicateError = nil
+        defer { isDuplicating = false }
+        do {
+            let api = APIClient(authManager: authManager)
+            let response = try await api.duplicateTaskDraft(task.id)
+            guard let draft = response.asTaskDraft() else {
+                duplicateError = "Could not duplicate task."
+                return
+            }
+            duplicateDraft = draft
+        } catch {
+            duplicateError = "Could not duplicate task."
         }
     }
 
