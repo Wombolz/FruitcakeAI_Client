@@ -263,6 +263,10 @@ final class APIClient {
         try await requestVoid("/tasks/\(id)/reset", method: "POST")
     }
 
+    func acceptTaskDraft(messageId: Int) async throws -> AcceptTaskDraftResponse {
+        try await request("/messages/\(messageId)/task-draft/accept", method: "POST")
+    }
+
     func exportTaskResult(
         _ id: Int,
         path: String,

@@ -287,6 +287,47 @@ struct TaskDraft: Identifiable, Codable, Hashable {
     }
 }
 
+/// Shared shape for the `metadata` object attached to assistant chat messages —
+/// decoded identically from chat history, the REST send response, and the
+/// WebSocket `done` event so an inline task-draft card behaves the same
+/// regardless of which path produced the message.
+///
+/// `taskDraft` decodes defensively: the WebSocket path silently drops the
+/// entire incoming frame (losing the whole response) if WSPayload decoding
+/// throws anywhere, so a malformed/evolving draft shape must not take the
+/// rest of the metadata down with it.
+struct ChatMessageMetadata: Decodable {
+    let taskDraft: TaskDraft?
+    let taskDraftStatus: String?
+    let createdTaskId: Int?
+    let toolCalls: [String]?
+
+    private enum CodingKeys: String, CodingKey {
+        case taskDraft, taskDraftStatus, createdTaskId, toolCalls
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        do {
+            taskDraft = try container.decodeIfPresent(TaskDraft.self, forKey: .taskDraft)
+        } catch {
+            print("[ChatTrace] task_draft_decode_error: \(error)")
+            taskDraft = nil
+        }
+        taskDraftStatus = try container.decodeIfPresent(String.self, forKey: .taskDraftStatus)
+        createdTaskId = try container.decodeIfPresent(Int.self, forKey: .createdTaskId)
+        toolCalls = try container.decodeIfPresent([String].self, forKey: .toolCalls)
+    }
+}
+
+struct AcceptTaskDraftResponse: Decodable {
+    let created: Bool
+    let reusedExisting: Bool
+    let taskId: Int
+    let title: String
+    let metadata: ChatMessageMetadata
+}
+
 struct CreateTaskRequest: Encodable {
     let title: String
     let instruction: String
