@@ -101,11 +101,11 @@ struct TaskRow: View {
             }
         }
         .background(Theme.card)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.stroke, lineWidth: 1))
         .overlay(alignment: .leading) {
             Rectangle().fill(accent).frame(width: 3)
         }
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.stroke, lineWidth: 1))
         .padding(.vertical, 4)
         .onAppear { localAccentOverride = TaskAccentStore.shared.accentHex(for: task.id) }
         .swipeActions(edge: .trailing) {
