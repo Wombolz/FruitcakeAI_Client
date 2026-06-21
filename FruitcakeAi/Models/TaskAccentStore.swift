@@ -2,13 +2,13 @@
 //  TaskAccentStore.swift
 //  FruitcakeAi
 //
-//  Local-only per-task accent color override. The backend doesn't persist
-//  presentation.accentHex yet (see tasks_redesign_coordination_note.md), so
-//  a user's color choice is stored device-local here until that lands —
-//  it won't sync across devices or survive a backend refresh in the
-//  meantime. Once the backend field exists, TaskSummary.accent already
-//  prefers it over this store, so this whole file can be deleted without
-//  touching call sites.
+//  Local-only per-task accent color cache. The backend now persists
+//  presentation.accentHex (see tasks_redesign_coordination_note.md) and
+//  TaskRow PATCHes it on every color pick, so this is no longer the
+//  primary persistence path — it's an optimistic latency mask: the swatch
+//  tap shows the new color instantly via this store while the network
+//  round-trip confirms it server-side, and a failed PATCH still leaves the
+//  picked color showing locally rather than snapping back.
 //
 
 import Foundation
