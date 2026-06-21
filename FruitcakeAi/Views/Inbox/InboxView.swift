@@ -8,6 +8,24 @@
 
 import SwiftUI
 
+private struct InboxSectionHeader: View {
+    let title: String
+    var tint: Color = Theme.textFaint
+    var systemImage: String? = nil
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if let systemImage {
+                Image(systemName: systemImage)
+            }
+            Text(title)
+        }
+        .font(Theme.mono(10.5, weight: .semibold))
+        .kerning(1.4)
+        .foregroundStyle(tint)
+    }
+}
+
 struct InboxView: View {
 
     @Environment(AuthManager.self) private var authManager
@@ -50,6 +68,7 @@ struct InboxView: View {
                 if isLoading && tasks.isEmpty {
                     ProgressView()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Theme.bg)
                 } else if tasks.isEmpty {
                     emptyState
                 } else {
@@ -103,6 +122,7 @@ struct InboxView: View {
                 }
             }
         }
+        .preferredColorScheme(.dark)
     }
 
     // MARK: - Task list
@@ -122,14 +142,15 @@ struct InboxView: View {
                             onDelete:  { Task { await delete(task) } },
                             onUpdated: { Task { await loadTasks() } }
                         )
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
                     }
                 } header: {
-                    Label("Needs Approval", systemImage: "exclamationmark.circle.fill")
-                        .foregroundStyle(.orange)
+                    InboxSectionHeader(title: "NEEDS APPROVAL", tint: .orange, systemImage: "exclamationmark.circle.fill")
                 }
             }
 
-            Section("Recent") {
+            Section {
                 ForEach(recentTasks) { task in
                     TaskRow(
                         task: task,
@@ -140,9 +161,15 @@ struct InboxView: View {
                         onReplyInChat: { Task { await replyInChat(task) } },
                         onUpdated:     { Task { await loadTasks() } }
                     )
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
                 }
+            } header: {
+                InboxSectionHeader(title: "RECENT")
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(Theme.bg)
     }
 
     // MARK: - Empty state
@@ -153,14 +180,15 @@ struct InboxView: View {
 
             Image(systemName: "tray")
                 .font(.system(size: 56))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Theme.textFaint)
 
             Text("No tasks yet")
                 .font(.title2.weight(.semibold))
+                .foregroundStyle(Theme.text)
 
             Text("Create a task and FruitcakeAI will run it on schedule and deliver results here.")
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Theme.textDim)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 40)
 
@@ -174,6 +202,8 @@ struct InboxView: View {
 
             Spacer()
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.bg)
     }
 
     // MARK: - Data loading
