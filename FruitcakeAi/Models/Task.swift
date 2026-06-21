@@ -79,9 +79,25 @@ struct TaskSummary: Identifiable, Codable {
     let nextRunAt: Date?
     let currentStepTitle: String?
     let waitingApprovalTool: String?
+    var presentation: TaskPresentationMetadata? = nil
 
     var hasRichResult: Bool {
         !(resultSections?.isEmpty ?? true) || resultMarkdown != nil
+    }
+
+    /// Per-task accent driving the card's left rail, Run button, agent label,
+    /// and result prompt. Backend-persisted (`presentation.accentHex`) takes
+    /// priority once set; falls back to a local-only override (see
+    /// TaskAccentStore) and finally to the same deterministic hash used for
+    /// chat persona accents — one color system, not a second one.
+    var accent: Color {
+        if let hex = presentation?.accentHex, let color = Color(taskAccentHex: hex) {
+            return color
+        }
+        if let overrideHex = TaskAccentStore.shared.accentHex(for: id), let color = Color(taskAccentHex: overrideHex) {
+            return color
+        }
+        return PersonaAccent.color(for: persona ?? agentRoleLabel ?? title)
     }
 
     var statusColor: Color {
@@ -331,6 +347,49 @@ struct AcceptTaskDraftResponse: Decodable {
 struct DenyTaskDraftResponse: Decodable {
     let denied: Bool
     let metadata: ChatMessageMetadata
+}
+
+/// Additive task presentation metadata. Absent entirely on tasks created
+/// before the backend supported it — always optional, never assumed present.
+struct TaskPresentationMetadata: Codable, Hashable {
+    let accentHex: String?
+}
+
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
+
+extension Color {
+    /// Parses a "#RRGGBB" or "RRGGBB" task accent hex string. Returns nil for
+    /// anything malformed rather than guessing — callers fall through to the
+    /// next accent source.
+    init?(taskAccentHex hex: String) {
+        let trimmed = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+        guard trimmed.count == 6, let value = UInt(trimmed, radix: 16) else { return nil }
+        self = Color(hex: value)
+    }
+
+    /// Exports as "#RRGGBB" — used to persist a custom color picked via the
+    /// task accent hue-wheel swatch.
+    func taskAccentHexString() -> String {
+        #if os(macOS)
+        let resolved = NSColor(self).usingColorSpace(.deviceRGB) ?? NSColor(self)
+        let r = Int((resolved.redComponent * 255).rounded())
+        let g = Int((resolved.greenComponent * 255).rounded())
+        let b = Int((resolved.blueComponent * 255).rounded())
+        #else
+        let resolved = UIColor(self)
+        var rf: CGFloat = 0, gf: CGFloat = 0, bf: CGFloat = 0, af: CGFloat = 0
+        resolved.getRed(&rf, green: &gf, blue: &bf, alpha: &af)
+        let r = Int((rf * 255).rounded())
+        let g = Int((gf * 255).rounded())
+        let b = Int((bf * 255).rounded())
+        #endif
+        return String(format: "#%02X%02X%02X", r, g, b)
+    }
 }
 
 struct CreateTaskRequest: Encodable {

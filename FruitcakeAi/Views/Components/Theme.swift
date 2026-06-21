@@ -57,13 +57,15 @@ enum Theme {
 /// any persona key gets a stable color/monogram without a frontend change when the
 /// backend adds or renames personas.
 enum PersonaAccent {
-    private static let palette: [Color] = [
+    /// Shared with the task-accent preset swatches (Views/Inbox) — one
+    /// palette for the whole app, not a per-surface color system.
+    static let palette: [Color] = [
         Color(hex: 0x4FB6D9), // cyan
         Color(hex: 0x4FC98C), // green
         Color(hex: 0xE2A94B), // amber
-        Color(hex: 0xC98DE0), // violet
-        Color(hex: 0xE0708D), // rose
-        Color(hex: 0x7FA8E0), // blue
+        Color(hex: 0xB98AE0), // violet
+        Color(hex: 0xE07A7A), // rose
+        Color(hex: 0x6E8BFF), // blue
     ]
 
     static func color(for personaKey: String) -> Color {
