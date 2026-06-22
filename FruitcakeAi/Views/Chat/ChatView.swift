@@ -222,6 +222,12 @@ struct ChatView: View {
             }
         }
         .preferredColorScheme(.dark)
+        // The sidebar's title/toolbar strip renders as native macOS sidebar
+        // material (translucent system gray) above the SwiftUI view
+        // hierarchy — .background() on the list itself can't reach it.
+        // toolbarBackground is the actual override point.
+        .toolbarBackground(Theme.bg, for: .windowToolbar)
+        .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
         .task {
             await loadSessions()
             await loadChatCapabilities()
