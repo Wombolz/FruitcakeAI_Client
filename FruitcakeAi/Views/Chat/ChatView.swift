@@ -217,6 +217,7 @@ struct ChatView: View {
                     systemImage: "bubble.left.and.bubble.right",
                     description: Text("Choose a conversation from the sidebar or start a new one.")
                 )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Theme.bg)
             }
         }
@@ -500,9 +501,6 @@ struct ChatView: View {
                 Label("Profile", systemImage: "slider.horizontal.3")
             }
             .disabled(selectedSession == nil)
-        }
-        ToolbarItem(placement: .navigation) {
-            Button("Sign out") { authManager.logout() }
         }
     }
 
