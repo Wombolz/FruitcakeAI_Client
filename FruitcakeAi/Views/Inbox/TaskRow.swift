@@ -81,6 +81,7 @@ struct TaskRow: View {
     @State private var showResult = false
     @State private var showDetail = false
     @State private var showKebabMenu = false
+    @State private var showCustomColorPicker = false
     @State private var isExporting = false
     @State private var exportStatusMessage: String?
 
@@ -304,7 +305,9 @@ struct TaskRow: View {
 
     private var hueWheelSwatch: some View {
         let isCustom = localAccentOverride != nil && !PersonaAccent.palette.contains { $0.taskAccentHexString().uppercased() == localAccentOverride?.uppercased() }
-        return ZStack {
+        return Button {
+            showCustomColorPicker = true
+        } label: {
             AngularGradient(
                 colors: [
                     Color(hex: 0xFF4D4D), Color(hex: 0xFFD24D), Color(hex: 0x4DFF88),
@@ -314,26 +317,27 @@ struct TaskRow: View {
             )
             .frame(width: 24, height: 24)
             .clipShape(RoundedRectangle(cornerRadius: 6))
-            ColorPicker("", selection: Binding(
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(isCustom ? Theme.text : Theme.strokeUp, lineWidth: isCustom ? 2 : 1)
+                    .padding(isCustom ? -2 : 0)
+            )
+        }
+        .buttonStyle(.plain)
+        // A ColorPicker stacked directly on the swatch (stretched to 24x24
+        // via .clipped()) visually behaved, but its real NSColorWell kept
+        // its native minimum hit-test size offset from the visible bounds,
+        // so taps on the swatch never landed on it. Routing the tap through
+        // a plain Button into its own popover gives the ColorPicker room to
+        // size itself natively, so clicks land where they're drawn.
+        .popover(isPresented: $showCustomColorPicker, arrowEdge: .top) {
+            ColorPicker("Custom color", selection: Binding(
                 get: { accent },
                 set: { setAccent($0.taskAccentHexString()) }
             ), supportsOpacity: false)
             .labelsHidden()
-            .opacity(0.02)
+            .padding(16)
         }
-        // The native ColorPicker control reports its own minimum size
-        // (larger than 24x24 on macOS), which otherwise forces the whole
-        // ZStack — including the AngularGradient sibling — to that bigger
-        // size before .clipShape ever runs, making the gradient spill past
-        // the other swatches. .clipped() hard-cuts anything beyond the
-        // declared frame regardless of what the native control demands.
-        .frame(width: 24, height: 24)
-        .clipped()
-        .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(isCustom ? Theme.text : Theme.strokeUp, lineWidth: isCustom ? 2 : 1)
-                .padding(isCustom ? -2 : 0)
-        )
     }
 
     /// Optimistic: the local override + UI update happen immediately so the
@@ -524,6 +528,12 @@ struct TaskRow: View {
         return text.count > 80 ? truncated + "…" : truncated
     }
 
+    private static let lastRunTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
+
     @ViewBuilder
     private var resultRow: some View {
         if hasAnyResult {
@@ -534,9 +544,13 @@ struct TaskRow: View {
                     }
                 } label: {
                     HStack(spacing: 7) {
+                        Image(systemName: showResult ? "chevron.up" : "chevron.down")
+                            .font(.caption2)
+                            .foregroundStyle(Theme.textFaint)
+
                         Text(")_")
                             .font(Theme.mono(11, weight: .semibold))
-                            .foregroundStyle(Theme.textFaint)
+                            .foregroundStyle(accent)
 
                         Text("LAST RESULT")
                             .font(Theme.mono(10, weight: .semibold))
@@ -555,9 +569,11 @@ struct TaskRow: View {
 
                         Spacer()
 
-                        Image(systemName: showResult ? "chevron.up" : "chevron.down")
-                            .font(.caption2)
-                            .foregroundStyle(Theme.textFaint)
+                        if let lastRunAt = task.lastRunAt {
+                            Text("\(Self.lastRunTimeFormatter.string(from: lastRunAt)) \(TimeZone.current.abbreviation() ?? "")")
+                                .font(Theme.mono(10))
+                                .foregroundStyle(Theme.textFaint)
+                        }
                     }
                 }
                 .buttonStyle(.borderless)
@@ -573,6 +589,8 @@ struct TaskRow: View {
                     expandedResult
                 }
             }
+            .padding(10)
+            .background(Theme.bg, in: RoundedRectangle(cornerRadius: 8))
         }
     }
 
