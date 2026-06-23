@@ -123,6 +123,9 @@ struct InboxView: View {
             }
         }
         .preferredColorScheme(.dark)
+        .overlay(alignment: .top) {
+            Rectangle().fill(Theme.strokeUp).frame(height: 1)
+        }
     }
 
     // MARK: - Task list
@@ -164,8 +167,6 @@ struct InboxView: View {
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                 }
-            } header: {
-                InboxSectionHeader(title: "RECENT")
             }
         }
         .scrollContentBackground(.hidden)

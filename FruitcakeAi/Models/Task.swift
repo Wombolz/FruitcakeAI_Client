@@ -79,9 +79,25 @@ struct TaskSummary: Identifiable, Codable {
     let nextRunAt: Date?
     let currentStepTitle: String?
     let waitingApprovalTool: String?
+    var presentation: TaskPresentationMetadata? = nil
 
     var hasRichResult: Bool {
         !(resultSections?.isEmpty ?? true) || resultMarkdown != nil
+    }
+
+    /// Per-task accent driving the card's left rail, Run button, agent label,
+    /// and result prompt. Backend-persisted (`presentation.accentHex`) takes
+    /// priority once set; falls back to a local-only override (see
+    /// TaskAccentStore) and finally to the same deterministic hash used for
+    /// chat persona accents — one color system, not a second one.
+    var accent: Color {
+        if let hex = presentation?.accentHex, let color = Color(taskAccentHex: hex) {
+            return color
+        }
+        if let overrideHex = TaskAccentStore.shared.accentHex(for: id), let color = Color(taskAccentHex: overrideHex) {
+            return color
+        }
+        return PersonaAccent.color(for: persona ?? agentRoleLabel ?? title)
     }
 
     var statusColor: Color {
@@ -333,6 +349,132 @@ struct DenyTaskDraftResponse: Decodable {
     let metadata: ChatMessageMetadata
 }
 
+/// Additive task presentation metadata. Absent entirely on tasks created
+/// before the backend supported it — always optional, never assumed present.
+struct TaskPresentationMetadata: Codable, Hashable {
+    let accentHex: String?
+}
+
+/// Response shape for POST /tasks/{id}/duplicate-draft — editor-safe fields
+/// only, no runtime/run-state. Note the backend returns recipeFamily/
+/// recipeParams as flat siblings here, not nested under a recipe object
+/// like TaskSummary/TaskDraft's taskRecipe — match the wire shape exactly
+/// rather than assuming it mirrors those types.
+struct DuplicateTaskDraftResponse: Decodable {
+    let sourceTaskId: Int
+    let title: String
+    let instruction: String
+    let persona: String?
+    let profile: String?
+    let llmModelOverride: String?
+    let taskType: String
+    let schedule: String?
+    let deliver: Bool
+    let requiresApproval: Bool
+    let activeHoursStart: String?
+    let activeHoursEnd: String?
+    let activeHoursTz: String?
+    let effectiveTimezone: String?
+    let recipeFamily: String?
+    let recipeParams: [String: StringCodable]?
+    let presentation: TaskPresentationMetadata?
+}
+
+extension DuplicateTaskDraftResponse {
+    /// TaskDraft has no memberwise init — its Decodable conformance is
+    /// hand-rolled (try?-everywhere defensive decoding), which suppresses
+    /// Swift's synthesized initializer. Round-trip through JSON using a
+    /// mirror that matches TaskDraft's own wire shape (camelCase, nested
+    /// taskRecipe) instead of fighting that restriction.
+    func asTaskDraft() -> TaskDraft? {
+        struct TaskDraftMirror: Encodable {
+            let proposed: Bool
+            let title: String
+            let instruction: String
+            let persona: String?
+            let profile: String?
+            let taskRecipe: TaskRecipeMetadata?
+            let llmModelOverride: String?
+            let taskType: String
+            let schedule: String?
+            let deliver: Bool
+            let requiresApproval: Bool
+            let activeHoursStart: String?
+            let activeHoursEnd: String?
+            let activeHoursTz: String?
+            let effectiveTimezone: String?
+        }
+
+        let recipe = recipeFamily.map {
+            TaskRecipeMetadata(
+                family: $0,
+                confidence: nil,
+                params: recipeParams,
+                assumptions: nil,
+                selectedProfile: nil,
+                selectedExecutorKind: nil,
+                instructionStyle: nil
+            )
+        }
+        let mirror = TaskDraftMirror(
+            proposed: true,
+            title: title,
+            instruction: instruction,
+            persona: persona,
+            profile: profile,
+            taskRecipe: recipe,
+            llmModelOverride: llmModelOverride,
+            taskType: taskType,
+            schedule: schedule,
+            deliver: deliver,
+            requiresApproval: requiresApproval,
+            activeHoursStart: activeHoursStart,
+            activeHoursEnd: activeHoursEnd,
+            activeHoursTz: activeHoursTz,
+            effectiveTimezone: effectiveTimezone
+        )
+        guard let data = try? JSONEncoder().encode(mirror) else { return nil }
+        return try? JSONDecoder().decode(TaskDraft.self, from: data)
+    }
+}
+
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
+
+extension Color {
+    /// Parses a "#RRGGBB" or "RRGGBB" task accent hex string. Returns nil for
+    /// anything malformed rather than guessing — callers fall through to the
+    /// next accent source.
+    init?(taskAccentHex hex: String) {
+        let trimmed = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+        guard trimmed.count == 6, let value = UInt(trimmed, radix: 16) else { return nil }
+        self = Color(hex: value)
+    }
+
+    /// Exports as "#RRGGBB" — used to persist a custom color picked via the
+    /// task accent hue-wheel swatch.
+    func taskAccentHexString() -> String {
+        #if os(macOS)
+        let resolved = NSColor(self).usingColorSpace(.deviceRGB) ?? NSColor(self)
+        let r = Int((resolved.redComponent * 255).rounded())
+        let g = Int((resolved.greenComponent * 255).rounded())
+        let b = Int((resolved.blueComponent * 255).rounded())
+        #else
+        let resolved = UIColor(self)
+        var rf: CGFloat = 0, gf: CGFloat = 0, bf: CGFloat = 0, af: CGFloat = 0
+        resolved.getRed(&rf, green: &gf, blue: &bf, alpha: &af)
+        let r = Int((rf * 255).rounded())
+        let g = Int((gf * 255).rounded())
+        let b = Int((bf * 255).rounded())
+        #endif
+        return String(format: "#%02X%02X%02X", r, g, b)
+    }
+}
+
 struct CreateTaskRequest: Encodable {
     let title: String
     let instruction: String
@@ -346,11 +488,12 @@ struct CreateTaskRequest: Encodable {
     let activeHoursTz: String?
     let recipeFamily: String?
     let recipeParams: [String: StringCodable]?
+    var presentation: TaskPresentationMetadata? = nil
 }
 
 struct TaskUpdateRequest: Encodable {
     private enum CodingKeys: String, CodingKey {
-        case title, instruction, taskType, llmModelOverride, schedule, deliver, requiresApproval, activeHoursStart, activeHoursEnd, activeHoursTz, recipeFamily, recipeParams
+        case title, instruction, taskType, llmModelOverride, schedule, deliver, requiresApproval, activeHoursStart, activeHoursEnd, activeHoursTz, recipeFamily, recipeParams, presentation
     }
 
     let title: String
@@ -365,6 +508,7 @@ struct TaskUpdateRequest: Encodable {
     let activeHoursTz: String?
     let recipeFamily: String?
     let recipeParams: [String: StringCodable]?
+    var presentation: TaskPresentationMetadata? = nil
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
@@ -407,6 +551,11 @@ struct TaskUpdateRequest: Encodable {
             try container.encode(recipeParams, forKey: .recipeParams)
         } else {
             try container.encodeNil(forKey: .recipeParams)
+        }
+        if let presentation {
+            try container.encode(presentation, forKey: .presentation)
+        } else {
+            try container.encodeNil(forKey: .presentation)
         }
     }
 }

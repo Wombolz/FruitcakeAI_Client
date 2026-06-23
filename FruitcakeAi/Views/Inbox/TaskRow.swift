@@ -2,11 +2,65 @@
 //  TaskRow.swift
 //  FruitcakeAi
 //
-//  A single row in InboxView showing task status, result, and action buttons.
-//  No network dependency — preview-testable with static data.
+//  A single task as a collapsible three-zone console card: header (status,
+//  identity, next-run, kebab menu), body (description/result, or an inline
+//  rename/schedule editor), footer (run/stop/export/reply actions).
 //
 
 import SwiftUI
+
+private enum TaskRowEditMode: Equatable {
+    case none
+    case rename
+    case schedule
+}
+
+private let taskCadenceOptions: [(key: String, label: String)] = [
+    ("every:30m", "Every 30 min"),
+    ("every:1h", "Every hour"),
+    ("every:6h", "Every 6 hours"),
+    ("every:12h", "Every 12 hours"),
+    ("every:1d", "Daily"),
+]
+
+struct StatusDot: View {
+    let status: String
+    var color: Color = .gray
+
+    @State private var pulse = false
+
+    private var isRunning: Bool { status == "running" }
+    private var isPending: Bool { status == "pending" || status == "waiting_approval" }
+    private var dotColor: Color {
+        isPending ? Theme.onDevice : color
+    }
+
+    var body: some View {
+        ZStack {
+            if isRunning {
+                // onAppear/onDisappear here (not on the outer ZStack) so the
+                // false→true transition re-triggers every time a task starts
+                // running, not just once whenever StatusDot itself first
+                // mounts. A status that starts "pending" and only becomes
+                // "running" later would otherwise insert this ring after
+                // `pulse` was already true, with nothing left to animate —
+                // it'd mount frozen in its fully-faded end state, invisible.
+                Circle()
+                    .stroke(dotColor, lineWidth: 1.5)
+                    .frame(width: 8, height: 8)
+                    .scaleEffect(pulse ? 2.4 : 1)
+                    .opacity(pulse ? 0 : 0.6)
+                    .animation(.easeOut(duration: 1.3).repeatForever(autoreverses: false), value: pulse)
+                    .onAppear { pulse = true }
+                    .onDisappear { pulse = false }
+            }
+            Circle()
+                .fill(dotColor)
+                .frame(width: 8, height: 8)
+        }
+        .frame(width: 16, height: 16)
+    }
+}
 
 struct TaskRow: View {
 
@@ -22,14 +76,350 @@ struct TaskRow: View {
     var onReplyInChat: (() -> Void)? = nil
     var onUpdated:     (() -> Void)? = nil
 
+    @State private var collapsed = false
+    @State private var editing: TaskRowEditMode = .none
     @State private var showResult = false
     @State private var showDetail = false
+    @State private var showKebabMenu = false
+    @State private var showCustomColorPicker = false
     @State private var isExporting = false
     @State private var exportStatusMessage: String?
 
+    @State private var localAccentOverride: String?
+    @State private var draftTitle = ""
+    @State private var draftTaskType = "recurring"
+    @State private var draftSchedule = "every:1d"
+    @State private var isSavingEdit = false
+    @State private var editError: String?
+    @State private var isDuplicating = false
+    @State private var duplicateDraft: TaskDraft?
+    @State private var duplicateError: String?
+
+    private var accent: Color {
+        if let localAccentOverride, let color = Color(taskAccentHex: localAccentOverride) {
+            return color
+        }
+        return task.accent
+    }
+
     var body: some View {
+        VStack(spacing: 0) {
+            header
+            if !collapsed {
+                body_
+                if editing == .none {
+                    footer
+                }
+            }
+        }
+        .background(Theme.card)
+        .overlay(alignment: .leading) {
+            Rectangle().fill(accent).frame(width: 3)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.stroke, lineWidth: 1))
+        .padding(.vertical, 4)
+        .onAppear { localAccentOverride = TaskAccentStore.shared.accentHex(for: task.id) }
+        .swipeActions(edge: .trailing) {
+            Button(role: .destructive) {
+                onDelete?()
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
+        .sheet(isPresented: $showDetail) {
+            TaskDetailSheet(task: task, onApprove: onApprove, onReject: onReject, onStop: onStop, onRun: onRun, onReset: onReset, onUpdated: onUpdated)
+                .environment(authManager)
+        }
+        .sheet(item: $duplicateDraft) { draft in
+            // Prefilled editor only — backend explicitly does not create the
+            // duplicate immediately, the user still has to submit.
+            TaskCreateSheet(initialDraft: draft, onCreated: { _ in onUpdated?() })
+                .environment(authManager)
+                #if os(iOS)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                #endif
+        }
+    }
+
+    // MARK: - Header
+
+    private var header: some View {
+        Button {
+            guard editing == .none else { return }
+            withAnimation(.easeInOut(duration: 0.18)) { collapsed.toggle() }
+        } label: {
+            HStack(spacing: 11) {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(Theme.textFaint)
+                    .rotationEffect(.degrees(collapsed ? -90 : 0))
+
+                StatusDot(status: task.status, color: task.statusColor)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 9) {
+                        Text(task.title)
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(Theme.text)
+                            .lineLimit(1)
+                        statusBadge
+                    }
+                    HStack(spacing: 7) {
+                        if let agentRole = task.agentRoleLabel {
+                            Text("Agent · \(agentRole)")
+                                .font(Theme.mono(10.5))
+                                .foregroundStyle(accent)
+                            Circle().fill(Theme.textFaint).frame(width: 3, height: 3)
+                        }
+                        Text(task.scheduleLabel ?? "Manual")
+                            .font(Theme.mono(10.5))
+                            .foregroundStyle(Theme.textDim)
+                    }
+                }
+
+                Spacer(minLength: 8)
+
+                if let next = task.nextRunAt {
+                    VStack(alignment: .trailing, spacing: 4) {
+                        Text(next.formatted(.relative(presentation: .named)))
+                            .font(Theme.mono(11))
+                            .foregroundStyle(Theme.textMid)
+                        Text("NEXT RUN")
+                            .font(Theme.mono(9.5, weight: .semibold))
+                            .kerning(0.6)
+                            .foregroundStyle(Theme.textFaint)
+                    }
+                }
+
+                kebabButton
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 13)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(editing != .none)
+        .background(accent.opacity(0.08))
+        .overlay(alignment: .bottom) {
+            if !collapsed {
+                Rectangle().fill(Theme.stroke).frame(height: 1)
+            }
+        }
+    }
+
+    private var statusBadge: some View {
+        Text(task.statusLabel)
+            .font(Theme.mono(10, weight: .medium))
+            .foregroundStyle(task.statusColor)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(task.statusColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    // MARK: - Kebab menu
+
+    private var kebabButton: some View {
+        Button {
+            showKebabMenu = true
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Theme.textDim)
+                .rotationEffect(.degrees(90))
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $showKebabMenu, arrowEdge: .top) {
+            kebabMenuContent
+        }
+    }
+
+    private var kebabMenuContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("COLOR")
+                .font(Theme.mono(9.5, weight: .semibold))
+                .kerning(1.0)
+                .foregroundStyle(Theme.textFaint)
+                .padding(.horizontal, 12)
+                .padding(.top, 10)
+                .padding(.bottom, 8)
+
+            HStack(spacing: 8) {
+                ForEach(Array(PersonaAccent.palette.enumerated()), id: \.offset) { _, swatch in
+                    colorSwatch(swatch)
+                }
+                hueWheelSwatch
+            }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 10)
+
+            Divider()
+
+            kebabRow("Task details", systemImage: "list.bullet.rectangle") {
+                showKebabMenu = false
+                showDetail = true
+            }
+            kebabRow("Rename", systemImage: "pencil") {
+                startRename()
+            }
+            kebabRow("Edit schedule", systemImage: "clock") {
+                startScheduleEdit()
+            }
+            kebabRow("Duplicate", systemImage: "doc.on.doc") {
+                showKebabMenu = false
+                Task { await duplicateTask() }
+            }
+
+            Divider()
+
+            kebabRow("Delete task", systemImage: "trash", role: .destructive) {
+                showKebabMenu = false
+                onDelete?()
+            }
+            .padding(.bottom, 6)
+        }
+        .frame(width: 250)
+        .background(Theme.card)
+    }
+
+    private func colorSwatch(_ color: Color) -> some View {
+        let hex = color.taskAccentHexString()
+        let isActive = localAccentOverride?.uppercased() == hex.uppercased()
+        return Button {
+            setAccent(hex)
+        } label: {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(color)
+                .frame(width: 24, height: 24)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(isActive ? Theme.text : .clear, lineWidth: 2)
+                        .padding(-2)
+                )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var hueWheelSwatch: some View {
+        let isCustom = localAccentOverride != nil && !PersonaAccent.palette.contains { $0.taskAccentHexString().uppercased() == localAccentOverride?.uppercased() }
+        return Button {
+            showCustomColorPicker = true
+        } label: {
+            AngularGradient(
+                colors: [
+                    Color(hex: 0xFF4D4D), Color(hex: 0xFFD24D), Color(hex: 0x4DFF88),
+                    Color(hex: 0x4DD2FF), Color(hex: 0x4D4DFF), Color(hex: 0xFF4DF0), Color(hex: 0xFF4D4D)
+                ],
+                center: .center
+            )
+            .frame(width: 24, height: 24)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(isCustom ? Theme.text : Theme.strokeUp, lineWidth: isCustom ? 2 : 1)
+                    .padding(isCustom ? -2 : 0)
+            )
+        }
+        .buttonStyle(.plain)
+        // A ColorPicker stacked directly on the swatch (stretched to 24x24
+        // via .clipped()) visually behaved, but its real NSColorWell kept
+        // its native minimum hit-test size offset from the visible bounds,
+        // so taps on the swatch never landed on it. Routing the tap through
+        // a plain Button into its own popover gives the ColorPicker room to
+        // size itself natively, so clicks land where they're drawn.
+        .popover(isPresented: $showCustomColorPicker, arrowEdge: .top) {
+            ColorPicker("Custom color", selection: Binding(
+                get: { accent },
+                set: { setAccent($0.taskAccentHexString()) }
+            ), supportsOpacity: false)
+            .labelsHidden()
+            .padding(16)
+        }
+    }
+
+    /// Optimistic: the local override + UI update happen immediately so the
+    /// swatch tap feels instant, then the choice is PATCHed to the backend
+    /// (now that presentation.accentHex is persisted there) so it survives
+    /// reload/relaunch/cross-device. The local override stays in place
+    /// either way as a latency mask — onUpdated?() refreshes `task` itself
+    /// from the server on success.
+    private func setAccent(_ hex: String) {
+        TaskAccentStore.shared.setAccentHex(hex, for: task.id)
+        localAccentOverride = hex
+        Task {
+            let api = APIClient(authManager: authManager)
+            do {
+                _ = try await api.updateTask(
+                    task.id,
+                    updateRequest(
+                        title: task.title,
+                        taskType: task.taskType,
+                        schedule: task.schedule,
+                        presentationOverride: TaskPresentationMetadata(accentHex: hex)
+                    )
+                )
+                onUpdated?()
+            } catch {
+                // Local override is already showing; a failed sync here just
+                // means the color won't survive reload yet, not worth its
+                // own error UI for a non-destructive cosmetic action.
+            }
+        }
+    }
+
+    private func kebabRow(_ title: String, systemImage: String, role: ButtonRole? = nil, action: @escaping () -> Void) -> some View {
+        Button(role: role, action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: systemImage)
+                    .frame(width: 16)
+                Text(title)
+                Spacer()
+            }
+            .font(.system(size: 12.5))
+            .foregroundStyle(role == .destructive ? Color(hex: 0xE07A7A) : Theme.textMid)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func startRename() {
+        showKebabMenu = false
+        draftTitle = task.title
+        editError = nil
+        collapsed = false
+        editing = .rename
+    }
+
+    private func startScheduleEdit() {
+        showKebabMenu = false
+        draftTaskType = task.taskType
+        draftSchedule = task.schedule ?? "every:1d"
+        editError = nil
+        collapsed = false
+        editing = .schedule
+    }
+
+    // MARK: - Body
+
+    @ViewBuilder
+    private var body_: some View {
+        switch editing {
+        case .rename:
+            renameEditor
+        case .schedule:
+            scheduleEditor
+        case .none:
+            normalBody
+        }
+    }
+
+    private var normalBody: some View {
         VStack(alignment: .leading, spacing: 6) {
-            headerRow
             instructionPreview
 
             if task.result != nil {
@@ -47,99 +437,26 @@ struct TaskRow: View {
                 approvalButtons
             }
 
-            actionButtons
-
             if let exportStatusMessage, !exportStatusMessage.isEmpty {
                 Text(exportStatusMessage)
                     .font(Theme.mono(10))
                     .foregroundStyle(Theme.textFaint)
             }
 
-            if task.result != nil {
-                replyButton
+            if let duplicateError {
+                Text(duplicateError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
             }
         }
         .padding(14)
-        .background(Theme.card)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.stroke, lineWidth: 1))
-        .padding(.vertical, 4)
-        .swipeActions(edge: .trailing) {
-            Button(role: .destructive) {
-                onDelete?()
-            } label: {
-                Label("Delete", systemImage: "trash")
-            }
-        }
-        .sheet(isPresented: $showDetail) {
-            TaskDetailSheet(task: task, onApprove: onApprove, onReject: onReject, onStop: onStop, onRun: onRun, onReset: onReset, onUpdated: onUpdated)
-                .environment(authManager)
-        }
-    }
-
-    // MARK: - Sub-views
-
-    private var headerRow: some View {
-        HStack(alignment: .center, spacing: 8) {
-            statusBadge
-
-            Text(task.title)
-                .font(.headline)
-                .foregroundStyle(Theme.text)
-                .lineLimit(1)
-
-            Spacer()
-
-            if let next = task.nextRunAt {
-                Text(next.formatted(.relative(presentation: .named)))
-                    .font(Theme.mono(10.5))
-                    .foregroundStyle(Theme.textFaint)
-            }
-
-            if task.result != nil || task.isPendingApproval || task.canRun || task.canStop || task.canReset {
-                Button { showDetail = true } label: {
-                    Image(systemName: "list.bullet.rectangle")
-                        .imageScale(.small)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.mini)
-            }
-        }
-    }
-
-    private var statusBadge: some View {
-        HStack(spacing: 4) {
-            if task.isRunning {
-                ProgressView()
-                    .controlSize(.mini)
-            } else {
-                Circle()
-                    .fill(task.statusColor)
-                    .frame(width: 8, height: 8)
-            }
-            Text(task.statusLabel)
-                .font(Theme.mono(11, weight: .medium))
-                .foregroundStyle(task.statusColor)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-        .background(task.statusColor.opacity(0.12), in: Capsule())
     }
 
     private var instructionPreview: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                if let family = task.recipeFamilyLabel {
-                    metadataBadge(family, tint: .blue)
-                }
-                if let agentRole = task.agentRoleLabel {
-                    metadataBadge(agentRole, tint: .orange)
-                }
-                if let schedule = task.scheduleLabel {
-                    metadataBadge(schedule, tint: Theme.textDim)
-                }
+            if let family = task.recipeFamilyLabel {
+                metadataBadge(family, tint: .blue)
             }
-
             Text(task.instruction)
                 .font(.caption)
                 .foregroundStyle(Theme.textDim)
@@ -153,7 +470,7 @@ struct TaskRow: View {
             .foregroundStyle(tint)
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
-            .background(tint.opacity(0.12), in: Capsule())
+            .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
     }
 
     private var approvalCallout: some View {
@@ -181,6 +498,15 @@ struct TaskRow: View {
         task.hasRichResult || task.result != nil
     }
 
+    /// Derived from data already on hand (error, empty-state sections,
+    /// failed status) — no backend field for this exists, so this is a
+    /// best-effort signal, not an authoritative health check.
+    private var resultNeedsReview: Bool {
+        task.status == "failed"
+            || task.error != nil
+            || (task.resultSections?.contains { $0.isEmptyState } ?? false)
+    }
+
     private var collapsedPreview: String {
         if let sections = task.resultSections, !sections.isEmpty {
             let headings = sections
@@ -202,6 +528,12 @@ struct TaskRow: View {
         return text.count > 80 ? truncated + "…" : truncated
     }
 
+    private static let lastRunTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
+
     @ViewBuilder
     private var resultRow: some View {
         if hasAnyResult {
@@ -211,17 +543,37 @@ struct TaskRow: View {
                         showResult.toggle()
                     }
                 } label: {
-                    HStack(spacing: 4) {
+                    HStack(spacing: 7) {
                         Image(systemName: showResult ? "chevron.up" : "chevron.down")
                             .font(.caption2)
                             .foregroundStyle(Theme.textFaint)
-                            .frame(width: 12)
 
-                        Text(showResult ? "Hide result" : "Show result")
-                            .font(Theme.mono(11))
+                        Text(")_")
+                            .font(Theme.mono(11, weight: .semibold))
+                            .foregroundStyle(accent)
+
+                        Text("LAST RESULT")
+                            .font(Theme.mono(10, weight: .semibold))
+                            .kerning(0.6)
                             .foregroundStyle(Theme.textDim)
 
+                        Text(resultNeedsReview ? "NEEDS REVIEW" : "OK")
+                            .font(Theme.mono(9.5, weight: .semibold))
+                            .foregroundStyle(resultNeedsReview ? Color(hex: 0xE2A94B) : Color(hex: 0x4FC98C))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(
+                                (resultNeedsReview ? Color(hex: 0xE2A94B) : Color(hex: 0x4FC98C)).opacity(0.12),
+                                in: RoundedRectangle(cornerRadius: 6)
+                            )
+
                         Spacer()
+
+                        if let lastRunAt = task.lastRunAt {
+                            Text("\(Self.lastRunTimeFormatter.string(from: lastRunAt)) \(TimeZone.current.abbreviation() ?? "")")
+                                .font(Theme.mono(10))
+                                .foregroundStyle(Theme.textFaint)
+                        }
                     }
                 }
                 .buttonStyle(.borderless)
@@ -237,6 +589,8 @@ struct TaskRow: View {
                     expandedResult
                 }
             }
+            .padding(10)
+            .background(Theme.bg, in: RoundedRectangle(cornerRadius: 8))
         }
     }
 
@@ -280,7 +634,7 @@ struct TaskRow: View {
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
-                    .tint(.accentColor)
+                    .tint(accent)
             }
         }
         .frame(maxHeight: 200)
@@ -313,64 +667,248 @@ struct TaskRow: View {
             .components(separatedBy: "\n")
     }
 
+    private func linkifiedAttributedString(_ text: String) -> AttributedString {
+        MarkdownText.attributedString(from: text)
+    }
+
+    // MARK: - Inline editors
+
+    private var editorFieldBackground: some View {
+        RoundedRectangle(cornerRadius: 8).fill(Theme.bg)
+    }
+
+    private var renameEditor: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("TASK NAME")
+                .font(Theme.mono(9.5, weight: .semibold))
+                .kerning(1.0)
+                .foregroundStyle(Theme.textFaint)
+
+            TextField("Task name", text: $draftTitle)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13.5))
+                .foregroundStyle(Theme.text)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(editorFieldBackground)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(accent.opacity(0.45), lineWidth: 1))
+
+            if let editError {
+                Text(editError).font(.caption).foregroundStyle(.red)
+            }
+
+            editorActions(
+                saveLabel: "Save name",
+                canSave: !draftTitle.trimmingCharacters(in: .whitespaces).isEmpty,
+                onSave: { await saveRename() }
+            )
+        }
+        .padding(14)
+    }
+
+    private var schedulePreviewLabel: String {
+        taskCadenceOptions.first { $0.key == draftSchedule }?.label ?? draftSchedule
+    }
+
+    private var scheduleEditor: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("FREQUENCY")
+                .font(Theme.mono(9.5, weight: .semibold))
+                .kerning(1.0)
+                .foregroundStyle(Theme.textFaint)
+
+            FlowChips(items: taskCadenceOptions, selectedKey: draftSchedule, accent: accent) { key in
+                draftSchedule = key
+                draftTaskType = "recurring"
+            }
+
+            HStack(spacing: 6) {
+                Text("PREVIEW").font(Theme.mono(9.5, weight: .semibold)).kerning(1.0).foregroundStyle(Theme.textFaint)
+                Text(schedulePreviewLabel).font(Theme.mono(11)).foregroundStyle(accent)
+            }
+
+            if let editError {
+                Text(editError).font(.caption).foregroundStyle(.red)
+            }
+
+            editorActions(
+                saveLabel: "Save schedule",
+                canSave: true,
+                onSave: { await saveSchedule() }
+            )
+        }
+        .padding(14)
+    }
+
+    private func editorActions(saveLabel: String, canSave: Bool, onSave: @escaping () async -> Void) -> some View {
+        HStack(spacing: 9) {
+            Spacer()
+            Button("Cancel") {
+                editing = .none
+                editError = nil
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Theme.textMid)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.strokeUp, lineWidth: 1))
+            .disabled(isSavingEdit)
+
+            Button {
+                Task { await onSave() }
+            } label: {
+                if isSavingEdit {
+                    ProgressView().controlSize(.small).frame(width: 70)
+                } else {
+                    Text(saveLabel).padding(.horizontal, 14)
+                }
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Theme.bg)
+            .padding(.vertical, 7)
+            .background(accent, in: RoundedRectangle(cornerRadius: 8))
+            .disabled(!canSave || isSavingEdit)
+        }
+    }
+
+    private func updateRequest(
+        title: String,
+        taskType: String,
+        schedule: String?,
+        presentationOverride: TaskPresentationMetadata? = nil
+    ) -> TaskUpdateRequest {
+        TaskUpdateRequest(
+            title: title,
+            instruction: task.instruction,
+            taskType: taskType,
+            llmModelOverride: task.llmModelOverride,
+            schedule: schedule,
+            deliver: task.deliver,
+            requiresApproval: task.requiresApproval,
+            activeHoursStart: task.activeHoursStart,
+            activeHoursEnd: task.activeHoursEnd,
+            activeHoursTz: task.activeHoursTz,
+            recipeFamily: task.taskRecipe?.family,
+            recipeParams: task.taskRecipe?.params,
+            presentation: presentationOverride ?? task.presentation
+        )
+    }
+
+    @MainActor
+    private func saveRename() async {
+        let trimmed = draftTitle.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        isSavingEdit = true
+        editError = nil
+        defer { isSavingEdit = false }
+        do {
+            let api = APIClient(authManager: authManager)
+            _ = try await api.updateTask(task.id, updateRequest(title: trimmed, taskType: task.taskType, schedule: task.schedule))
+            editing = .none
+            onUpdated?()
+        } catch {
+            editError = "Could not save name."
+        }
+    }
+
+    @MainActor
+    private func saveSchedule() async {
+        isSavingEdit = true
+        editError = nil
+        defer { isSavingEdit = false }
+        do {
+            let api = APIClient(authManager: authManager)
+            _ = try await api.updateTask(task.id, updateRequest(title: task.title, taskType: draftTaskType, schedule: draftSchedule))
+            editing = .none
+            onUpdated?()
+        } catch {
+            editError = "Could not save schedule."
+        }
+    }
+
+    @MainActor
+    private func duplicateTask() async {
+        isDuplicating = true
+        duplicateError = nil
+        defer { isDuplicating = false }
+        do {
+            let api = APIClient(authManager: authManager)
+            let response = try await api.duplicateTaskDraft(task.id)
+            guard let draft = response.asTaskDraft() else {
+                duplicateError = "Could not duplicate task."
+                return
+            }
+            duplicateDraft = draft
+        } catch {
+            duplicateError = "Could not duplicate task."
+        }
+    }
+
+    // MARK: - Footer
+
     private var replyButton: some View {
         Button {
             onReplyInChat?()
         } label: {
             Label("Reply in Chat", systemImage: "bubble.left.and.text.bubble.right")
         }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .padding(.top, 2)
+        .buttonStyle(.plain)
+        .foregroundStyle(Theme.textMid)
+        .font(.system(size: 12))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.strokeUp, lineWidth: 1))
     }
 
     @ViewBuilder
-    private var actionButtons: some View {
-        if task.canRun || task.canReset || task.canStop || (task.isAgentTask && hasAnyResult) {
-            HStack(spacing: 12) {
+    private var footer: some View {
+        if task.canRun || task.canReset || task.canStop || (task.isAgentTask && hasAnyResult) || task.result != nil {
+            HStack(spacing: 9) {
                 if task.canRun {
-                    Button {
-                        onRun?()
-                    } label: {
-                        Label("Run", systemImage: "play.circle")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.blue)
-                    .controlSize(.small)
+                    footerButton("Run", systemImage: "play.fill", filled: true) { onRun?() }
                 }
-
                 if task.canReset {
-                    Button {
-                        onReset?()
-                    } label: {
-                        Label("Reset", systemImage: "arrow.counterclockwise.circle")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    footerButton("Reset", systemImage: "arrow.counterclockwise") { onReset?() }
                 }
-
                 if task.canStop {
-                    Button(role: .destructive) {
-                        onStop?()
-                    } label: {
-                        Label(task.isRunning ? "Stop Task" : "Stop", systemImage: "stop.circle")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    footerButton(task.isRunning ? "Stop Task" : "Stop", systemImage: "stop.fill") { onStop?() }
                 }
-
                 if task.isAgentTask && hasAnyResult {
-                    Button {
+                    footerButton(isExporting ? "Exporting…" : "Export", systemImage: "square.and.arrow.down") {
                         Task { await exportFindings() }
-                    } label: {
-                        Label(isExporting ? "Exporting…" : "Export", systemImage: "square.and.arrow.down")
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
                     .disabled(isExporting)
                 }
+
+                Spacer(minLength: 8)
+
+                if task.result != nil {
+                    replyButton
+                }
             }
-            .padding(.top, 2)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Color.white.opacity(0.012))
+            .overlay(Rectangle().fill(Theme.stroke).frame(height: 1), alignment: .top)
+        }
+    }
+
+    private func footerButton(_ title: String, systemImage: String, filled: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(.system(size: 12, weight: .medium))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(filled ? Theme.bg : Theme.textMid)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background {
+            if filled {
+                RoundedRectangle(cornerRadius: 8).fill(accent)
+                    .shadow(color: accent.opacity(0.45), radius: 6)
+            } else {
+                RoundedRectangle(cornerRadius: 8).stroke(Theme.strokeUp, lineWidth: 1)
+            }
         }
     }
 
@@ -395,11 +933,7 @@ struct TaskRow: View {
             .buttonStyle(.bordered)
             .controlSize(.small)
         }
-        .padding(.top, 2)
-    }
-
-    private func linkifiedAttributedString(_ text: String) -> AttributedString {
-        MarkdownText.attributedString(from: text)
+        .padding(.top, 4)
     }
 
     private func exportFindings() async {
@@ -422,6 +956,42 @@ struct TaskRow: View {
             .trimmingCharacters(in: CharacterSet(charactersIn: "_"))
         let base = slug.isEmpty ? "agent_findings" : slug
         return "reports/\(base).md"
+    }
+}
+
+// MARK: - Cadence chip wrap
+
+private struct FlowChips: View {
+    let items: [(key: String, label: String)]
+    let selectedKey: String
+    let accent: Color
+    let onSelect: (String) -> Void
+
+    var body: some View {
+        // Cadence options are few and short — a simple HStack wraps acceptably
+        // at the card's fixed width without needing a custom flow layout.
+        HStack(spacing: 6) {
+            ForEach(items, id: \.key) { item in
+                let isSelected = item.key == selectedKey
+                Button {
+                    onSelect(item.key)
+                } label: {
+                    Text(item.label)
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(isSelected ? Theme.bg : Theme.textMid)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background {
+                            if isSelected {
+                                RoundedRectangle(cornerRadius: 6).fill(accent)
+                            } else {
+                                RoundedRectangle(cornerRadius: 6).stroke(Theme.strokeUp, lineWidth: 1)
+                            }
+                        }
+                }
+                .buttonStyle(.plain)
+            }
+        }
     }
 }
 
