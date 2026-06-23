@@ -208,26 +208,45 @@ struct ChatView: View {
             sidebar
                 .navigationTitle("FruitcakeAI")
                 .toolbar { sidebarToolbar }
+                // Tint just the sidebar's strip of the shared window toolbar
+                // to match the sidebar's own background, so the dark column
+                // reads as one continuous panel from the top controls down
+                // through the conversation list rather than breaking at a
+                // seam where the toolbar's color changes.
+                #if os(macOS)
+                .toolbarBackground(Theme.sidebar, for: .windowToolbar)
+                .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
+                #endif
         } detail: {
-            if let session = currentSelectedSession {
-                detailView(session: session)
-            } else {
-                ContentUnavailableView(
-                    "Select a conversation",
-                    systemImage: "bubble.left.and.bubble.right",
-                    description: Text("Choose a conversation from the sidebar or start a new one.")
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Theme.bg)
+            Group {
+                if let session = currentSelectedSession {
+                    detailView(session: session)
+                } else {
+                    ContentUnavailableView(
+                        "Select a conversation",
+                        systemImage: "bubble.left.and.bubble.right",
+                        description: Text("Choose a conversation from the sidebar or start a new one.")
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Theme.bg)
+                }
             }
+            // The detail side of the same toolbar gets its own tint so it
+            // stays continuous with the detail pane's background instead of
+            // inheriting the sidebar's lighter tone.
+            #if os(macOS)
+            .toolbarBackground(Theme.bg, for: .windowToolbar)
+            .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
+            #endif
         }
         .preferredColorScheme(.dark)
-        // The sidebar's title/toolbar strip renders as native macOS sidebar
-        // material (translucent system gray) above the SwiftUI view
-        // hierarchy — .background() on the list itself can't reach it.
-        // toolbarBackground is the actual override point.
-        .toolbarBackground(Theme.bg, for: .windowToolbar)
-        .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
+        // The system toolbar and our content meet at a hard color seam
+        // right behind the traffic lights that toolbarBackground alone
+        // can't smooth out — a deliberate hairline reads as a designed
+        // boundary instead of an accidental one.
+        .overlay(alignment: .top) {
+            Rectangle().fill(Theme.strokeUp).frame(height: 1)
+        }
         .task {
             await loadSessions()
             await loadChatCapabilities()
