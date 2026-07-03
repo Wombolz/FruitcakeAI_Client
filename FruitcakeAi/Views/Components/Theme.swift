@@ -40,8 +40,9 @@ enum Theme {
     static let textFaint = Color(hex: 0x5C636A)
 
     // Status
-    static let online   = Color(hex: 0x28C840)
-    static let onDevice = Color(hex: 0xE2A94B)
+    static let online    = Color(hex: 0x28C840)
+    static let onDevice  = Color(hex: 0xE2A94B)
+    static let incognito = Color(hex: 0xB98AE0)   // incognito session accents
 
     /// Mono label style — model names, tool names, section headers, timestamps.
     /// The mono/system font pairing is the core of the visual language.

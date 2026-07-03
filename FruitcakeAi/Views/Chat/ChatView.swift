@@ -21,8 +21,10 @@ private struct SessionSummary: Codable, Identifiable {
     let persona: String
     let llmModel: String?
     let sortOrder: Int?
+    var isIncognito: Bool? = nil
 
     var displayTitle: String { title ?? "Conversation \(id)" }
+    var incognito: Bool { isIncognito ?? false }
 }
 
 private struct CreateSessionResponse: Codable {
@@ -31,6 +33,11 @@ private struct CreateSessionResponse: Codable {
     let persona: String
     let llmModel: String?
     let sortOrder: Int?
+    var isIncognito: Bool? = nil
+}
+
+private struct CreateSessionBody: Encodable {
+    let isIncognito: Bool
 }
 
 private struct SessionHistoryResponse: Decodable {
@@ -458,13 +465,20 @@ struct ChatView: View {
                 .frame(width: 7, height: 7)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(session.displayTitle)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Theme.textMid)
-                    .lineLimit(1)
-                Text(personaDisplayName(session.persona))
+                HStack(spacing: 5) {
+                    if session.incognito {
+                        Image(systemName: "eyeglasses.slash")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Theme.incognito)
+                    }
+                    Text(session.displayTitle)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Theme.textMid)
+                        .lineLimit(1)
+                }
+                Text(session.incognito ? "Incognito · not saved locally" : personaDisplayName(session.persona))
                     .font(Theme.mono(10.5))
-                    .foregroundStyle(Theme.textFaint)
+                    .foregroundStyle(session.incognito ? Theme.incognito.opacity(0.75) : Theme.textFaint)
             }
 
             Spacer(minLength: 8)
@@ -512,10 +526,31 @@ struct ChatView: View {
     @ToolbarContentBuilder
     private var sidebarToolbar: some ToolbarContent {
         ToolbarItem(placement: .primaryAction) {
-            Button {
-                Task { await createSession() }
-            } label: {
-                Label("New Conversation", systemImage: "plus")
+            if authManager.currentUser?.isAdmin == true {
+                // Primary tap keeps the normal one-click new-conversation
+                // behavior; the menu carries the admin-only incognito option.
+                Menu {
+                    Button {
+                        Task { await createSession() }
+                    } label: {
+                        Label("New Conversation", systemImage: "plus")
+                    }
+                    Button {
+                        Task { await createSession(incognito: true) }
+                    } label: {
+                        Label("New Incognito Session", systemImage: "eyeglasses.slash")
+                    }
+                } label: {
+                    Label("New Conversation", systemImage: "plus")
+                } primaryAction: {
+                    Task { await createSession() }
+                }
+            } else {
+                Button {
+                    Task { await createSession() }
+                } label: {
+                    Label("New Conversation", systemImage: "plus")
+                }
             }
         }
         ToolbarItem(placement: .automatic) {
@@ -531,6 +566,29 @@ struct ChatView: View {
 
     // MARK: - Detail
 
+    /// Persistent strip under the header while an incognito session is open —
+    /// the operator should never have to wonder which mode they're in.
+    private var incognitoBanner: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "eyeglasses.slash")
+                .font(.system(size: 11, weight: .semibold))
+            Text("INCOGNITO")
+                .font(Theme.mono(10, weight: .semibold))
+                .kerning(1.2)
+            Text("· persistent actions disabled · deleting this session purges it immediately")
+                .font(Theme.mono(10))
+                .opacity(0.8)
+            Spacer()
+        }
+        .foregroundStyle(Theme.incognito)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+        .background(Theme.incognito.opacity(0.10))
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Theme.incognito.opacity(0.25)).frame(height: 1)
+        }
+    }
+
     @ViewBuilder
     private func detailView(session: SessionSummary) -> some View {
         VStack(spacing: 0) {
@@ -542,6 +600,10 @@ struct ChatView: View {
                 reasoningLabel: currentReasoningLabel,
                 isConnected: connectivity.isBackendReachable
             )
+
+            if session.incognito {
+                incognitoBanner
+            }
 
             ConnectionStatus()
 
@@ -1106,7 +1168,7 @@ struct ChatView: View {
         // Optimistic local update — keep the visible control in sync immediately.
         if let idx = sessions.firstIndex(where: { $0.id == sessionId }) {
             let old = sessions[idx]
-            sessions[idx] = SessionSummary(id: old.id, title: old.title, persona: old.persona, llmModel: modelID, sortOrder: old.sortOrder)
+            sessions[idx] = SessionSummary(id: old.id, title: old.title, persona: old.persona, llmModel: modelID, sortOrder: old.sortOrder, isIncognito: old.isIncognito)
         }
 
         struct ModelBody: Encodable { let llmModel: String }
@@ -1153,32 +1215,41 @@ struct ChatView: View {
     }
 
     @MainActor
-    private func createSession() async {
+    private func createSession(incognito: Bool = false) async {
         let api = APIClient(authManager: authManager)
         do {
             let created: CreateSessionResponse = try await api.request(
                 "/chat/sessions",
                 method: "POST",
-                body: EmptyBody()
+                body: CreateSessionBody(isIncognito: incognito)
             )
             let summary = SessionSummary(
                 id: created.id,
                 title: created.title,
                 persona: created.persona,
                 llmModel: created.llmModel,
-                sortOrder: created.sortOrder
+                sortOrder: created.sortOrder,
+                isIncognito: created.isIncognito
             )
             applySessionList([summary] + sessions.filter { $0.id != summary.id })
             selectedSession = sessions.first(where: { $0.id == summary.id }) ?? summary
 
-            // Mirror in SwiftData
-            let conv = CachedConversation(
-                serverSessionId: created.id,
-                title: created.title ?? "New conversation",
-                persona: created.persona
-            )
-            modelContext.insert(conv)
-            selectedConversation = conv
+            if created.isIncognito ?? false {
+                // Incognito sessions are never mirrored into the local
+                // SwiftData cache — a purge on the server must not leave a
+                // device-side transcript behind. The thread renders from the
+                // in-memory `messages` array, so nothing else is needed.
+                selectedConversation = nil
+            } else {
+                // Mirror in SwiftData
+                let conv = CachedConversation(
+                    serverSessionId: created.id,
+                    title: created.title ?? "New conversation",
+                    persona: created.persona
+                )
+                modelContext.insert(conv)
+                selectedConversation = conv
+            }
         } catch {
             loadingError = error.localizedDescription
         }
@@ -1283,14 +1354,25 @@ struct ChatView: View {
         isSending = false
         loadingError = nil
 
-        // Find or create SwiftData conversation
+        // Find or create SwiftData conversation. Incognito sessions never get
+        // a local cache mirror — server-side purge must not leave a
+        // device-side transcript. If a stale mirror exists (e.g. the session
+        // became incognito-known only after a reload), drop it now.
+        let sessionIsIncognito = sessions.first(where: { $0.id == sessionId })?.incognito ?? false
         if let existing = localConversations.first(where: { $0.serverSessionId == sessionId }) {
-            selectedConversation = existing
-            messages = existing.sortedMessages
-        } else if let session = sessions.first(where: { $0.id == sessionId }) {
+            if sessionIsIncognito {
+                modelContext.delete(existing)
+                selectedConversation = nil
+            } else {
+                selectedConversation = existing
+                messages = existing.sortedMessages
+            }
+        } else if let session = sessions.first(where: { $0.id == sessionId }), !session.incognito {
             let conv = CachedConversation(serverSessionId: sessionId, title: session.displayTitle, persona: session.persona)
             modelContext.insert(conv)
             selectedConversation = conv
+        } else if sessionIsIncognito {
+            selectedConversation = nil
         }
 
         do {
@@ -1325,7 +1407,8 @@ struct ChatView: View {
                 title: history.title ?? existing.title,
                 persona: history.persona,
                 llmModel: history.llmModel,
-                sortOrder: existing.sortOrder
+                sortOrder: existing.sortOrder,
+                isIncognito: existing.isIncognito
             )
             sessions[idx] = updated
             reconcileSessionModelOverride(sessionId: sessionId, serverModelID: history.llmModel)
@@ -1503,7 +1586,8 @@ struct ChatView: View {
                         title: old.title,
                         persona: name,
                         llmModel: old.llmModel,
-                        sortOrder: old.sortOrder
+                        sortOrder: old.sortOrder,
+                        isIncognito: old.isIncognito
                     )
                     if selectedSession?.id == sessionId {
                         selectedSession = sessions[idx]
