@@ -34,6 +34,7 @@ final class CachedMessage {
     private var taskDraftData: Data?
     var taskDraftStatus: String?       // "draft" | "accepted" | "denied"
     var createdTaskId: Int?
+    private var evidenceData: Data?
 
     var taskDraft: TaskDraft? {
         get {
@@ -42,6 +43,16 @@ final class CachedMessage {
         }
         set {
             taskDraftData = newValue.flatMap { try? Self.encoder.encode($0) }
+        }
+    }
+
+    var evidence: ChatEvidenceMetadata? {
+        get {
+            guard let evidenceData else { return nil }
+            return try? Self.decoder.decode(ChatEvidenceMetadata.self, from: evidenceData)
+        }
+        set {
+            evidenceData = newValue.flatMap { try? Self.encoder.encode($0) }
         }
     }
 
@@ -70,7 +81,8 @@ final class CachedMessage {
         isLocal: Bool = false,
         taskDraft: TaskDraft? = nil,
         taskDraftStatus: String? = nil,
-        createdTaskId: Int? = nil
+        createdTaskId: Int? = nil,
+        evidence: ChatEvidenceMetadata? = nil
     ) {
         self.id = id
         self.serverMessageId = serverMessageId
@@ -82,6 +94,7 @@ final class CachedMessage {
         self.taskDraftStatus = taskDraftStatus
         self.createdTaskId = createdTaskId
         self.taskDraft = taskDraft
+        self.evidence = evidence
     }
 
     var isUser: Bool { role == "user" }

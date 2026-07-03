@@ -317,9 +317,11 @@ struct ChatMessageMetadata: Decodable {
     let taskDraftStatus: String?
     let createdTaskId: Int?
     let toolCalls: [String]?
+    let evidence: ChatEvidenceMetadata?
+    let recalledMemoryIds: [Int]?
 
     private enum CodingKeys: String, CodingKey {
-        case taskDraft, taskDraftStatus, createdTaskId, toolCalls
+        case taskDraft, taskDraftStatus, createdTaskId, toolCalls, evidence, recalledMemoryIds
     }
 
     init(from decoder: Decoder) throws {
@@ -333,7 +335,55 @@ struct ChatMessageMetadata: Decodable {
         taskDraftStatus = try container.decodeIfPresent(String.self, forKey: .taskDraftStatus)
         createdTaskId = try container.decodeIfPresent(Int.self, forKey: .createdTaskId)
         toolCalls = try container.decodeIfPresent([String].self, forKey: .toolCalls)
+        evidence = try container.decodeIfPresent(ChatEvidenceMetadata.self, forKey: .evidence)
+        recalledMemoryIds = try container.decodeIfPresent([Int].self, forKey: .recalledMemoryIds)
     }
+}
+
+struct ChatEvidenceMetadata: Codable, Hashable {
+    let grounded: Bool
+    let toolNames: [String]
+    let sourceKinds: [String]
+    let sourceCounts: [String: Int]
+    let toolDetails: [ChatEvidenceToolDetail]
+
+    private enum CodingKeys: String, CodingKey {
+        case grounded, toolNames, sourceKinds, sourceCounts, toolDetails
+    }
+
+    init(
+        grounded: Bool = false,
+        toolNames: [String] = [],
+        sourceKinds: [String] = [],
+        sourceCounts: [String: Int] = [:],
+        toolDetails: [ChatEvidenceToolDetail] = []
+    ) {
+        self.grounded = grounded
+        self.toolNames = toolNames
+        self.sourceKinds = sourceKinds
+        self.sourceCounts = sourceCounts
+        self.toolDetails = toolDetails
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        grounded = try container.decodeIfPresent(Bool.self, forKey: .grounded) ?? false
+        toolNames = try container.decodeIfPresent([String].self, forKey: .toolNames) ?? []
+        sourceKinds = try container.decodeIfPresent([String].self, forKey: .sourceKinds) ?? []
+        sourceCounts = try container.decodeIfPresent([String: Int].self, forKey: .sourceCounts) ?? [:]
+        toolDetails = try container.decodeIfPresent([ChatEvidenceToolDetail].self, forKey: .toolDetails) ?? []
+    }
+
+    var isMeaningful: Bool {
+        grounded || !toolNames.isEmpty || !sourceKinds.isEmpty || !sourceCounts.isEmpty || !toolDetails.isEmpty
+    }
+}
+
+struct ChatEvidenceToolDetail: Codable, Hashable {
+    let toolName: String
+    let detailKind: String
+    let label: String
+    let value: String
 }
 
 struct AcceptTaskDraftResponse: Decodable {

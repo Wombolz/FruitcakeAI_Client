@@ -129,6 +129,13 @@ private struct RecentSendRecord {
     let sentAt: Date
 }
 
+private struct LiveIndicatorPresentation {
+    let label: String
+    let detail: String?
+    let chips: [String]
+    let accent: Color
+}
+
 private let recentSendGuardWindowSeconds: TimeInterval = 300
 
 // MARK: - ChatView
@@ -155,6 +162,9 @@ struct ChatView: View {
     @State private var messages: [CachedMessage] = []
     @State private var streamingContent: String = ""
     @State private var showToolIndicator: Bool = false
+    @State private var liveState: ChatLiveStatePayload?
+    @SceneStorage("chat.evidence.expanded.keys") private var storedEvidenceExpandedKeys: String = ""
+    @State private var evidenceExpandedKeys: Set<String> = []
 
     @State private var inputText: String = ""
     @State private var loadingError: String?
@@ -208,6 +218,120 @@ struct ChatView: View {
         return sessions.first(where: { $0.id == selectedId }) ?? selectedSession
     }
 
+    private func liveIndicatorPresentation(for session: SessionSummary) -> LiveIndicatorPresentation? {
+        let accent = PersonaAccent.color(for: session.persona)
+
+        if let liveState {
+            let toolNames = liveState.toolNames
+            switch liveState.state.lowercased() {
+            case "thinking":
+                return LiveIndicatorPresentation(
+                    label: "Thinking…",
+                    detail: "Planning the next response before any tools or final answer are emitted.",
+                    chips: [],
+                    accent: accent
+                )
+            case "tool_active":
+                return LiveIndicatorPresentation(
+                    label: "Using tools…",
+                    detail: toolNames.isEmpty ? "Gathering grounded context for the answer." : "Collecting grounded context before final synthesis.",
+                    chips: toolNames,
+                    accent: accent
+                )
+            case "validating":
+                return LiveIndicatorPresentation(
+                    label: "Validating answer…",
+                    detail: "Checking the drafted answer for grounding and cleanup before it is returned.",
+                    chips: toolNames,
+                    accent: accent
+                )
+            case "retrying":
+                let reason = retryReasonLabel(liveState.retryReason)
+                let attemptLabel = liveState.attempt.map { "Retry \($0)" }
+                return LiveIndicatorPresentation(
+                    label: "Retrying…",
+                    detail: [attemptLabel, reason].compactMap { $0 }.joined(separator: " · "),
+                    chips: toolNames,
+                    accent: accent
+                )
+            case "waiting_approval":
+                return LiveIndicatorPresentation(
+                    label: "Waiting on approval…",
+                    detail: "This turn paused before a protected action could continue.",
+                    chips: toolNames,
+                    accent: Theme.onDevice
+                )
+            case "completed":
+                return nil
+            default:
+                return LiveIndicatorPresentation(
+                    label: "Working…",
+                    detail: nil,
+                    chips: toolNames,
+                    accent: accent
+                )
+            }
+        }
+
+        if showToolIndicator && streamingContent.isEmpty {
+            return LiveIndicatorPresentation(
+                label: "Working…",
+                detail: "A previously active turn is still running for this session.",
+                chips: [],
+                accent: accent
+            )
+        }
+
+        return nil
+    }
+
+    private func retryReasonLabel(_ raw: String?) -> String? {
+        guard let raw, !raw.isEmpty else { return nil }
+        switch raw {
+        case "tool_call_leakage":
+            return "Retrying after internal tool text leaked into the answer"
+        case "thin_coverage":
+            return "Retrying to improve coverage"
+        case "timeline_conflict":
+            return "Retrying to resolve timeline conflicts"
+        default:
+            return raw.replacingOccurrences(of: "_", with: " ")
+        }
+    }
+
+    private func hydrateEvidenceExpandedStateIfNeeded() {
+        guard evidenceExpandedKeys.isEmpty, !storedEvidenceExpandedKeys.isEmpty else { return }
+        let keys = storedEvidenceExpandedKeys
+            .split(separator: "\n")
+            .map { String($0) }
+            .filter { !$0.isEmpty }
+        evidenceExpandedKeys = Set(keys)
+    }
+
+    private func persistEvidenceExpandedState() {
+        storedEvidenceExpandedKeys = evidenceExpandedKeys.sorted().joined(separator: "\n")
+    }
+
+    private func evidenceExpansionKey(for sessionId: Int, message: CachedMessage) -> String {
+        let messagePart = message.serverMessageId.map(String.init) ?? message.id.uuidString
+        return "\(sessionId):\(messagePart)"
+    }
+
+    private func evidenceExpandedBinding(for sessionId: Int, message: CachedMessage) -> Binding<Bool> {
+        let key = evidenceExpansionKey(for: sessionId, message: message)
+        return Binding(
+            get: { evidenceExpandedKeys.contains(key) },
+            set: { isExpanded in
+                if isExpanded {
+                    evidenceExpandedKeys.insert(key)
+                } else {
+                    evidenceExpandedKeys.remove(key)
+                }
+                persistEvidenceExpandedState()
+            }
+        )
+    }
+
     // MARK: - Body
 
     var body: some View {
@@ -255,6 +379,7 @@ struct ChatView: View {
             Rectangle().fill(Theme.strokeUp).frame(height: 1)
         }
         .task {
+            hydrateEvidenceExpandedStateIfNeeded()
             await loadSessions()
             await loadChatCapabilities()
         }
@@ -615,7 +740,8 @@ struct ChatView: View {
                             MessageBubble(
                                 message: msg,
                                 personaKey: session.persona,
-                                personaDisplayName: personaDisplayName(session.persona)
+                                personaDisplayName: personaDisplayName(session.persona),
+                                evidenceExpanded: evidenceExpandedBinding(for: session.id, message: msg)
                             )
                             .id(msg.id)
 
@@ -645,8 +771,13 @@ struct ChatView: View {
                         }
 
                         // Streaming in-progress
-                        if showToolIndicator && streamingContent.isEmpty {
-                            ToolCallIndicator(accent: PersonaAccent.color(for: session.persona))
+                        if let indicator = liveIndicatorPresentation(for: session), streamingContent.isEmpty {
+                            ToolCallIndicator(
+                                label: indicator.label,
+                                detail: indicator.detail,
+                                chips: indicator.chips,
+                                accent: indicator.accent
+                            )
                                 .id("indicator")
                         }
                         if !streamingContent.isEmpty {
@@ -1351,6 +1482,7 @@ struct ChatView: View {
         messages = []
         streamingContent = ""
         showToolIndicator = false
+        liveState = nil
         isSending = false
         loadingError = nil
 
@@ -1381,6 +1513,7 @@ struct ChatView: View {
             let hasDetachedRun = status.active && activeSendTask == nil
             isSending = hasDetachedRun
             showToolIndicator = hasDetachedRun && history.messages.last?.role != "assistant"
+            liveState = hasDetachedRun ? ChatLiveStatePayload(state: "thinking") : nil
             if hasDetachedRun {
                 startDetachedRunPolling(sessionId: sessionId)
             }
@@ -1425,7 +1558,8 @@ struct ChatView: View {
                 toolCalls: $0.metadata?.toolCalls,
                 taskDraft: $0.metadata?.taskDraft,
                 taskDraftStatus: $0.metadata?.taskDraftStatus,
-                createdTaskId: $0.metadata?.createdTaskId
+                createdTaskId: $0.metadata?.createdTaskId,
+                evidence: $0.metadata?.evidence
             )
         }
         if selectedSession?.id == sessionId {
@@ -1456,17 +1590,22 @@ struct ChatView: View {
                     if !status.active {
                         isSending = false
                         showToolIndicator = false
+                        liveState = nil
                         sessionStatusTask = nil
                         break
                     }
                     isSending = true
                     if messages.last?.role != "assistant" {
                         showToolIndicator = true
+                        if liveState == nil {
+                            liveState = ChatLiveStatePayload(state: "thinking")
+                        }
                     }
                 } catch {
                     loadingError = error.localizedDescription
                     isSending = false
                     showToolIndicator = false
+                    liveState = nil
                     sessionStatusTask = nil
                     break
                 }
@@ -1485,10 +1624,12 @@ struct ChatView: View {
             activeClientSendID = nil
             activeSendTask = nil
             streamingContent = ""
+            liveState = nil
         }
         isSending = true
         showToolIndicator = true
         streamingContent = ""
+        liveState = ChatLiveStatePayload(state: "thinking")
         loadingError = nil
         trace("send_message_enter seq=\(sendSequence) session=\(sessionId) client_send_id=\(clientSendID) ws_state=\(wsManager.stateLabel)")
         let overrides = sessionToolOverrides[sessionId] ?? SessionToolOverrides()
@@ -1548,6 +1689,13 @@ struct ChatView: View {
                 break eventLoop
             }
             switch event {
+            case .state(let payload):
+                trace("send_message_event seq=\(sendSequence) session=\(sessionId) client_send_id=\(clientSendID) type=state state=\(payload.state)")
+                liveState = payload
+                if payload.state.lowercased() == "tool_active" || payload.state.lowercased() == "waiting_approval" {
+                    showToolIndicator = true
+                }
+
             case .token(let chunk):
                 trace("send_message_event seq=\(sendSequence) session=\(sessionId) client_send_id=\(clientSendID) type=token chars=\(chunk.count)")
                 showToolIndicator = false
@@ -1568,7 +1716,8 @@ struct ChatView: View {
                     toolCalls: metadata?.toolCalls,
                     taskDraft: metadata?.taskDraft,
                     taskDraftStatus: metadata?.taskDraftStatus,
-                    createdTaskId: metadata?.createdTaskId
+                    createdTaskId: metadata?.createdTaskId,
+                    evidence: metadata?.evidence
                 )
                 messages.append(assistantMsg)
                 selectedConversation?.messages.append(assistantMsg)
@@ -1663,7 +1812,8 @@ struct ChatView: View {
                 toolCalls: resp.metadata?.toolCalls,
                 taskDraft: resp.metadata?.taskDraft,
                 taskDraftStatus: resp.metadata?.taskDraftStatus,
-                createdTaskId: resp.metadata?.createdTaskId
+                createdTaskId: resp.metadata?.createdTaskId,
+                evidence: resp.metadata?.evidence
             )
             messages.append(msg)
             selectedConversation?.messages.append(msg)

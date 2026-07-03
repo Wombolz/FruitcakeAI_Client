@@ -20,8 +20,40 @@ import Observation
 enum WSEvent {
     case token(String)                          // partial chunk — append to streaming buffer
     case done(String, Int?, ChatMessageMetadata?)     // full response — store in SwiftData
+    case state(ChatLiveStatePayload)
     case personaSwitched(name: String, message: String)
     case error(String)
+}
+
+struct ChatLiveStatePayload: Decodable, Equatable {
+    let state: String
+    let toolNames: [String]
+    let retryReason: String?
+    let attempt: Int?
+
+    private enum CodingKeys: String, CodingKey {
+        case state, toolNames, retryReason, attempt
+    }
+
+    init(
+        state: String,
+        toolNames: [String] = [],
+        retryReason: String? = nil,
+        attempt: Int? = nil
+    ) {
+        self.state = state
+        self.toolNames = toolNames
+        self.retryReason = retryReason
+        self.attempt = attempt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        state = (try? container.decode(String.self, forKey: .state)) ?? ""
+        toolNames = (try? container.decode([String].self, forKey: .toolNames)) ?? []
+        retryReason = try? container.decode(String.self, forKey: .retryReason)
+        attempt = try? container.decode(Int.self, forKey: .attempt)
+    }
 }
 
 enum WebSocketConnectionState: Equatable {
@@ -290,6 +322,11 @@ final class WebSocketManager: NSObject, URLSessionWebSocketDelegate {
         case "token":
             responseContinuation?.yield(.token(payload.content))
 
+        case "state":
+            if let statePayload = payload.statePayload {
+                responseContinuation?.yield(.state(statePayload))
+            }
+
         case "done":
             responseContinuation?.yield(.done(payload.content, payload.messageId, payload.metadata))
             responseContinuation?.finish()
@@ -362,4 +399,34 @@ private struct WSPayload: Decodable {
     let persona: String?
     let messageId: Int?
     let metadata: ChatMessageMetadata?
+    let statePayload: ChatLiveStatePayload?
+
+    private enum CodingKeys: String, CodingKey {
+        case type, content, persona, messageId, metadata
+        case state, toolNames, retryReason, attempt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        type = (try? container.decode(String.self, forKey: .type)) ?? ""
+        content = (try? container.decode(String.self, forKey: .content)) ?? ""
+        persona = try? container.decode(String.self, forKey: .persona)
+        messageId = try? container.decode(Int.self, forKey: .messageId)
+        metadata = try? container.decode(ChatMessageMetadata.self, forKey: .metadata)
+
+        if type == "state" {
+            let state = (try? container.decode(String.self, forKey: .state)) ?? ""
+            let toolNames = (try? container.decode([String].self, forKey: .toolNames)) ?? []
+            let retryReason = try? container.decode(String.self, forKey: .retryReason)
+            let attempt = try? container.decode(Int.self, forKey: .attempt)
+            statePayload = ChatLiveStatePayload(
+                state: state,
+                toolNames: toolNames,
+                retryReason: retryReason,
+                attempt: attempt
+            )
+        } else {
+            statePayload = nil
+        }
+    }
 }
