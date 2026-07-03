@@ -43,6 +43,7 @@ enum Theme {
     static let online    = Color(hex: 0x28C840)
     static let onDevice  = Color(hex: 0xE2A94B)
     static let incognito = Color(hex: 0xB98AE0)   // incognito session accents
+    static let ok        = Color(hex: 0x4FC98C)   // grounded/healthy — shared with Tasks' "OK" chip
 
     /// Mono label style — model names, tool names, section headers, timestamps.
     /// The mono/system font pairing is the core of the visual language.

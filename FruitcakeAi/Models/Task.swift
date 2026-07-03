@@ -384,6 +384,26 @@ struct ChatEvidenceToolDetail: Codable, Hashable {
     let detailKind: String
     let label: String
     let value: String
+    // Additive — only populated for fetch_page sources once the backend has
+    // a page title / URL-kind hint. Always optional, never assumed present.
+    let sourceTitle: String?
+    let sourceKind: String?
+
+    init(
+        toolName: String,
+        detailKind: String,
+        label: String,
+        value: String,
+        sourceTitle: String? = nil,
+        sourceKind: String? = nil
+    ) {
+        self.toolName = toolName
+        self.detailKind = detailKind
+        self.label = label
+        self.value = value
+        self.sourceTitle = sourceTitle
+        self.sourceKind = sourceKind
+    }
 }
 
 struct AcceptTaskDraftResponse: Decodable {
