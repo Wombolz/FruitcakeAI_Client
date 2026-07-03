@@ -1559,7 +1559,8 @@ struct ChatView: View {
                 taskDraft: $0.metadata?.taskDraft,
                 taskDraftStatus: $0.metadata?.taskDraftStatus,
                 createdTaskId: $0.metadata?.createdTaskId,
-                evidence: $0.metadata?.evidence
+                evidence: $0.metadata?.evidence,
+                recalledMemoryIds: $0.metadata?.recalledMemoryIds
             )
         }
         if selectedSession?.id == sessionId {
@@ -1717,7 +1718,8 @@ struct ChatView: View {
                     taskDraft: metadata?.taskDraft,
                     taskDraftStatus: metadata?.taskDraftStatus,
                     createdTaskId: metadata?.createdTaskId,
-                    evidence: metadata?.evidence
+                    evidence: metadata?.evidence,
+                    recalledMemoryIds: metadata?.recalledMemoryIds
                 )
                 messages.append(assistantMsg)
                 selectedConversation?.messages.append(assistantMsg)
@@ -1813,7 +1815,8 @@ struct ChatView: View {
                 taskDraft: resp.metadata?.taskDraft,
                 taskDraftStatus: resp.metadata?.taskDraftStatus,
                 createdTaskId: resp.metadata?.createdTaskId,
-                evidence: resp.metadata?.evidence
+                evidence: resp.metadata?.evidence,
+                recalledMemoryIds: resp.metadata?.recalledMemoryIds
             )
             messages.append(msg)
             selectedConversation?.messages.append(msg)

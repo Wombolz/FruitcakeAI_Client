@@ -118,13 +118,31 @@ struct MessageBubble: View {
     /// Muted source/tool line under assistant replies. Only renders when the
     /// backend attached tool-call metadata but nothing rose to the level of
     /// "meaningful" evidence (which would otherwise be fused onto the bubble).
+    /// Also carries the memory-recall chip: what the assistant remembered
+    /// going into this turn, kept at the same muted weight as tool names.
     @ViewBuilder
     private var metaLine: some View {
-        if !isUser, evidence == nil, let toolCalls = message.toolCalls, !toolCalls.isEmpty {
-            Text(toolCalls.joined(separator: " · "))
-                .font(Theme.mono(10.5))
-                .foregroundStyle(Theme.textFaint)
-                .padding(.leading, 4)
+        let recalledCount = (!isUser ? message.recalledMemoryIds?.count : nil) ?? 0
+        let showToolLine = !isUser && evidence == nil && !(message.toolCalls ?? []).isEmpty
+        if showToolLine || recalledCount > 0 {
+            HStack(spacing: 8) {
+                if recalledCount > 0 {
+                    HStack(spacing: 3) {
+                        Image(systemName: "brain.head.profile")
+                            .font(.system(size: 9))
+                        Text(recalledCount == 1 ? "1 memory" : "\(recalledCount) memories")
+                            .font(Theme.mono(10))
+                    }
+                    .foregroundStyle(Theme.textFaint)
+                    .help("Memories recalled into context for this reply")
+                }
+                if showToolLine, let toolCalls = message.toolCalls {
+                    Text(toolCalls.joined(separator: " · "))
+                        .font(Theme.mono(10.5))
+                        .foregroundStyle(Theme.textFaint)
+                }
+            }
+            .padding(.leading, 4)
         }
     }
 

@@ -19,6 +19,7 @@ final class CachedMessage {
     var timestamp: Date
     var toolCalls: [String]?           // tool names invoked during this response
     var isLocal: Bool                  // true when created in on-device fallback mode
+    var recalledMemoryIds: [Int]?      // memories injected into this turn's context
 
     // Inline task-draft card state — persisted so the card survives session
     // switch, history reload, and relaunch instead of only existing for the
@@ -82,7 +83,8 @@ final class CachedMessage {
         taskDraft: TaskDraft? = nil,
         taskDraftStatus: String? = nil,
         createdTaskId: Int? = nil,
-        evidence: ChatEvidenceMetadata? = nil
+        evidence: ChatEvidenceMetadata? = nil,
+        recalledMemoryIds: [Int]? = nil
     ) {
         self.id = id
         self.serverMessageId = serverMessageId
@@ -95,6 +97,7 @@ final class CachedMessage {
         self.createdTaskId = createdTaskId
         self.taskDraft = taskDraft
         self.evidence = evidence
+        self.recalledMemoryIds = recalledMemoryIds
     }
 
     var isUser: Bool { role == "user" }
