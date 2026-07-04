@@ -11,9 +11,42 @@
 
 import SwiftUI
 
+struct ChatThreadMessage: Identifiable, Hashable {
+    let id: UUID
+    var serverMessageId: Int?
+    var role: String
+    var content: String
+    var timestamp: Date
+    var toolCalls: [String]?
+    var isLocal: Bool
+    var recalledMemoryIds: [Int]?
+    var taskDraft: TaskDraft?
+    var taskDraftStatus: String?
+    var createdTaskId: Int?
+    var evidence: ChatEvidenceMetadata?
+
+    init(_ cached: CachedMessage) {
+        self.id = cached.id
+        self.serverMessageId = cached.serverMessageId
+        self.role = cached.role
+        self.content = cached.content
+        self.timestamp = cached.timestamp
+        self.toolCalls = cached.toolCalls
+        self.isLocal = cached.isLocal
+        self.recalledMemoryIds = cached.recalledMemoryIds
+        self.taskDraft = cached.taskDraft
+        self.taskDraftStatus = cached.taskDraftStatus
+        self.createdTaskId = cached.createdTaskId
+        self.evidence = cached.evidence
+    }
+
+    var isUser: Bool { role == "user" }
+    var isAssistant: Bool { role == "assistant" }
+}
+
 struct MessageBubble: View {
 
-    let message: CachedMessage
+    let message: ChatThreadMessage
     var personaKey: String = ""
     var personaDisplayName: String = ""    // shown as label above assistant messages
     @Binding var evidenceExpanded: Bool
@@ -461,9 +494,9 @@ private struct FlowChips: View {
     )
     return ScrollView {
         VStack(spacing: 4) {
-            MessageBubble(message: userMsg, personaKey: "family_assistant", evidenceExpanded: .constant(false))
-            MessageBubble(message: asstMsg, personaKey: "family_assistant", personaDisplayName: "Family Assistant", evidenceExpanded: .constant(false))
-            MessageBubble(message: groundedMsg, personaKey: "family_assistant", personaDisplayName: "Family Assistant", evidenceExpanded: .constant(true))
+            MessageBubble(message: ChatThreadMessage(userMsg), personaKey: "family_assistant", evidenceExpanded: .constant(false))
+            MessageBubble(message: ChatThreadMessage(asstMsg), personaKey: "family_assistant", personaDisplayName: "Family Assistant", evidenceExpanded: .constant(false))
+            MessageBubble(message: ChatThreadMessage(groundedMsg), personaKey: "family_assistant", personaDisplayName: "Family Assistant", evidenceExpanded: .constant(true))
         }
         .padding(.vertical)
     }

@@ -157,9 +157,8 @@ struct ChatView: View {
 
     @State private var sessions: [SessionSummary] = []
     @State private var selectedSession: SessionSummary?
-    @State private var selectedConversation: CachedConversation?
 
-    @State private var messages: [CachedMessage] = []
+    @State private var messages: [ChatThreadMessage] = []
     @State private var streamingContent: String = ""
     @State private var showToolIndicator: Bool = false
     @State private var liveState: ChatLiveStatePayload?
@@ -216,6 +215,54 @@ struct ChatView: View {
     private var currentSelectedSession: SessionSummary? {
         guard let selectedId = selectedSession?.id else { return nil }
         return sessions.first(where: { $0.id == selectedId }) ?? selectedSession
+    }
+
+    private func cachedConversation(for sessionId: Int) -> CachedConversation? {
+        localConversations.first(where: { $0.serverSessionId == sessionId })
+    }
+
+    private var selectedCachedConversation: CachedConversation? {
+        guard let sessionId = currentSelectedSession?.id ?? selectedSession?.id else { return nil }
+        return cachedConversation(for: sessionId)
+    }
+
+    private func persistModelContext() {
+        do {
+            try modelContext.save()
+        } catch {
+            trace("swiftdata_save_error error=\(error.localizedDescription)")
+        }
+    }
+
+    private func threadMessage(from cached: CachedMessage) -> ChatThreadMessage {
+        ChatThreadMessage(cached)
+    }
+
+    private func selectedCachedMessage(id: UUID) -> CachedMessage? {
+        selectedCachedConversation?.messages.first(where: { $0.id == id })
+    }
+
+    private func syncThreadMessageToCache(_ threadMessage: ChatThreadMessage, cached: CachedMessage) {
+        cached.serverMessageId = threadMessage.serverMessageId
+        cached.role = threadMessage.role
+        cached.content = threadMessage.content
+        cached.timestamp = threadMessage.timestamp
+        cached.toolCalls = threadMessage.toolCalls
+        cached.isLocal = threadMessage.isLocal
+        cached.recalledMemoryIds = threadMessage.recalledMemoryIds
+        cached.taskDraft = threadMessage.taskDraft
+        cached.taskDraftStatus = threadMessage.taskDraftStatus
+        cached.createdTaskId = threadMessage.createdTaskId
+        cached.evidence = threadMessage.evidence
+    }
+
+    private func appendMessage(_ cached: CachedMessage) {
+        messages.append(threadMessage(from: cached))
+        if let conversation = selectedCachedConversation {
+            conversation.messages.append(cached)
+            conversation.lastActivity = cached.timestamp
+            persistModelContext()
+        }
     }
 
     private func liveIndicatorPresentation(for session: SessionSummary) -> LiveIndicatorPresentation? {
@@ -312,12 +359,12 @@ struct ChatView: View {
         storedEvidenceExpandedKeys = evidenceExpandedKeys.sorted().joined(separator: "\n")
     }
 
-    private func evidenceExpansionKey(for sessionId: Int, message: CachedMessage) -> String {
+    private func evidenceExpansionKey(for sessionId: Int, message: ChatThreadMessage) -> String {
         let messagePart = message.serverMessageId.map(String.init) ?? message.id.uuidString
         return "\(sessionId):\(messagePart)"
     }
 
-    private func evidenceExpandedBinding(for sessionId: Int, message: CachedMessage) -> Binding<Bool> {
+    private func evidenceExpandedBinding(for sessionId: Int, message: ChatThreadMessage) -> Binding<Bool> {
         let key = evidenceExpansionKey(for: sessionId, message: message)
         return Binding(
             get: { evidenceExpandedKeys.contains(key) },
@@ -1175,9 +1222,9 @@ struct ChatView: View {
             )
             if let idx = sessions.firstIndex(where: { $0.id == selected.id }) { sessions[idx] = updated }
             if selectedSession?.id == selected.id { selectedSession = updated }
-            if selectedConversation?.serverSessionId == selected.id {
-                selectedConversation?.persona = updated.persona
-                try? modelContext.save()
+            if let cached = cachedConversation(for: selected.id) {
+                cached.persona = updated.persona
+                persistModelContext()
             }
             profileError = nil
             showProfileSheet = false
@@ -1187,14 +1234,17 @@ struct ChatView: View {
     }
 
     @MainActor
-    private func updateMessage(id: UUID, _ mutate: (CachedMessage) -> Void) {
-        guard let msg = messages.first(where: { $0.id == id }) else { return }
-        mutate(msg)
-        try? modelContext.save()
+    private func updateMessage(id: UUID, _ mutate: (inout ChatThreadMessage) -> Void) {
+        guard let index = messages.firstIndex(where: { $0.id == id }) else { return }
+        mutate(&messages[index])
+        if let cached = selectedCachedMessage(id: id) {
+            syncThreadMessageToCache(messages[index], cached: cached)
+            persistModelContext()
+        }
     }
 
     @MainActor
-    private func acceptDraft(message: CachedMessage) async {
+    private func acceptDraft(message: ChatThreadMessage) async {
         guard message.taskDraft != nil else { return }
         guard connectivity.isBackendReachable else {
             draftErrorByMessageId[message.id] = "Backend is not reachable."
@@ -1211,9 +1261,10 @@ struct ChatView: View {
         let api = APIClient(authManager: authManager)
         do {
             let response = try await api.acceptTaskDraft(messageId: serverMessageId)
-            message.createdTaskId = response.taskId
-            message.taskDraftStatus = response.metadata.taskDraftStatus
-            try? modelContext.save()
+            updateMessage(id: message.id) { msg in
+                msg.createdTaskId = response.taskId
+                msg.taskDraftStatus = response.metadata.taskDraftStatus
+            }
         } catch {
             trace("accept_draft_error message_id=\(message.serverMessageId.map(String.init) ?? "nil") error=\(error)")
             draftErrorByMessageId[message.id] = "Could not create task."
@@ -1221,7 +1272,7 @@ struct ChatView: View {
     }
 
     @MainActor
-    private func denyDraft(message: CachedMessage) async {
+    private func denyDraft(message: ChatThreadMessage) async {
         guard message.taskDraft != nil else { return }
         guard connectivity.isBackendReachable else {
             draftErrorByMessageId[message.id] = "Backend is not reachable."
@@ -1239,9 +1290,10 @@ struct ChatView: View {
         let api = APIClient(authManager: authManager)
         do {
             let response = try await api.denyTaskDraft(messageId: serverMessageId)
-            message.createdTaskId = response.metadata.createdTaskId
-            message.taskDraftStatus = response.metadata.taskDraftStatus
-            try? modelContext.save()
+            updateMessage(id: message.id) { msg in
+                msg.createdTaskId = response.metadata.createdTaskId
+                msg.taskDraftStatus = response.metadata.taskDraftStatus
+            }
         } catch {
             trace("deny_draft_error message_id=\(message.serverMessageId.map(String.init) ?? "nil") error=\(error)")
             draftErrorByMessageId[message.id] = "Could not deny task."
@@ -1365,21 +1417,18 @@ struct ChatView: View {
             applySessionList([summary] + sessions.filter { $0.id != summary.id })
             selectedSession = sessions.first(where: { $0.id == summary.id }) ?? summary
 
-            if created.isIncognito ?? false {
-                // Incognito sessions are never mirrored into the local
-                // SwiftData cache — a purge on the server must not leave a
-                // device-side transcript behind. The thread renders from the
-                // in-memory `messages` array, so nothing else is needed.
-                selectedConversation = nil
-            } else {
-                // Mirror in SwiftData
+            if !(created.isIncognito ?? false) {
+                // Mirror non-incognito sessions into SwiftData. We do not keep
+                // a live model object in view state; derive it from the active
+                // session id when needed so deletes cannot leave behind a stale
+                // faulting reference.
                 let conv = CachedConversation(
                     serverSessionId: created.id,
                     title: created.title ?? "New conversation",
                     persona: created.persona
                 )
                 modelContext.insert(conv)
-                selectedConversation = conv
+                persistModelContext()
             }
         } catch {
             loadingError = error.localizedDescription
@@ -1409,7 +1458,6 @@ struct ChatView: View {
         // Server confirmed deletion (or offline) — now remove locally
         if selectedSession?.id == session.id {
             selectedSession = nil
-            selectedConversation = nil
             messages = []
             wsManager.disconnect()
         }
@@ -1418,9 +1466,9 @@ struct ChatView: View {
             sessions.removeAll { $0.id == session.id }
         }
 
-        if let cached = localConversations.first(where: { $0.serverSessionId == session.id }) {
+        if let cached = cachedConversation(for: session.id) {
             modelContext.delete(cached)
-            try? modelContext.save()
+            persistModelContext()
         }
     }
 
@@ -1447,12 +1495,9 @@ struct ChatView: View {
 
             if let idx = sessions.firstIndex(where: { $0.id == session.id }) { sessions[idx] = updated }
             if selectedSession?.id == session.id { selectedSession = updated }
-            if let cached = localConversations.first(where: { $0.serverSessionId == session.id }) {
+            if let cached = cachedConversation(for: session.id) {
                 cached.title = updated.displayTitle
-                try? modelContext.save()
-            }
-            if selectedConversation?.serverSessionId == session.id {
-                selectedConversation?.title = updated.displayTitle
+                persistModelContext()
             }
 
             renameError = nil
@@ -1491,20 +1536,17 @@ struct ChatView: View {
         // device-side transcript. If a stale mirror exists (e.g. the session
         // became incognito-known only after a reload), drop it now.
         let sessionIsIncognito = sessions.first(where: { $0.id == sessionId })?.incognito ?? false
-        if let existing = localConversations.first(where: { $0.serverSessionId == sessionId }) {
+        if let existing = cachedConversation(for: sessionId) {
             if sessionIsIncognito {
                 modelContext.delete(existing)
-                selectedConversation = nil
+                persistModelContext()
             } else {
-                selectedConversation = existing
-                messages = existing.sortedMessages
+                messages = existing.sortedMessages.map(threadMessage(from:))
             }
         } else if let session = sessions.first(where: { $0.id == sessionId }), !session.incognito {
             let conv = CachedConversation(serverSessionId: sessionId, title: session.displayTitle, persona: session.persona)
             modelContext.insert(conv)
-            selectedConversation = conv
-        } else if sessionIsIncognito {
-            selectedConversation = nil
+            persistModelContext()
         }
 
         do {
@@ -1549,7 +1591,7 @@ struct ChatView: View {
                 selectedSession = updated
             }
         }
-        let mappedMessages = history.messages.map {
+        let mappedCachedMessages = history.messages.map {
             CachedMessage(
                 serverMessageId: $0.id,
                 role: $0.role,
@@ -1563,13 +1605,14 @@ struct ChatView: View {
                 recalledMemoryIds: $0.metadata?.recalledMemoryIds
             )
         }
+        let mappedMessages = mappedCachedMessages.map(threadMessage(from:))
         if selectedSession?.id == sessionId {
             messages = mappedMessages
         }
-        if selectedConversation?.serverSessionId == sessionId {
-            selectedConversation?.messages = mappedMessages
-            selectedConversation?.lastActivity = mappedMessages.last?.timestamp ?? selectedConversation?.lastActivity ?? .now
-            try? modelContext.save()
+        if let cached = selectedCachedConversation, cached.serverSessionId == sessionId {
+            cached.messages = mappedCachedMessages
+            cached.lastActivity = mappedMessages.last?.timestamp ?? cached.lastActivity
+            persistModelContext()
         }
         return history
     }
@@ -1637,9 +1680,7 @@ struct ChatView: View {
 
         // Optimistic user message
         let userMsg = CachedMessage(role: "user", content: text)
-        messages.append(userMsg)
-        selectedConversation?.messages.append(userMsg)
-        selectedConversation?.lastActivity = .now
+        appendMessage(userMsg)
 
         // Offline → on-device FoundationModels fallback
         guard connectivity.isBackendReachable else {
@@ -1721,9 +1762,7 @@ struct ChatView: View {
                     evidence: metadata?.evidence,
                     recalledMemoryIds: metadata?.recalledMemoryIds
                 )
-                messages.append(assistantMsg)
-                selectedConversation?.messages.append(assistantMsg)
-                selectedConversation?.lastActivity = .now
+                appendMessage(assistantMsg)
 
                 break eventLoop
 
@@ -1744,10 +1783,10 @@ struct ChatView: View {
                         selectedSession = sessions[idx]
                     }
                 }
-                selectedConversation?.persona = name
+                selectedCachedConversation?.persona = name
 
                 let sysMsg = CachedMessage(role: "assistant", content: message)
-                messages.append(sysMsg)
+                appendMessage(sysMsg)
                 break eventLoop
 
             case .error(let msg):
@@ -1773,9 +1812,7 @@ struct ChatView: View {
         showToolIndicator = false
 
         let assistantMsg = CachedMessage(role: "assistant", content: fullResponse, isLocal: true)
-        messages.append(assistantMsg)
-        selectedConversation?.messages.append(assistantMsg)
-        selectedConversation?.lastActivity = .now
+        appendMessage(assistantMsg)
     }
 
     @MainActor
@@ -1818,9 +1855,7 @@ struct ChatView: View {
                 evidence: resp.metadata?.evidence,
                 recalledMemoryIds: resp.metadata?.recalledMemoryIds
             )
-            messages.append(msg)
-            selectedConversation?.messages.append(msg)
-            selectedConversation?.lastActivity = .now
+            appendMessage(msg)
         } catch {
             trace("rest_send_error session=\(sessionId) client_send_id=\(clientSendID) error=\(error.localizedDescription)")
             loadingError = error.localizedDescription
