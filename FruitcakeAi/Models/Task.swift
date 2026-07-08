@@ -346,9 +346,10 @@ struct ChatEvidenceMetadata: Codable, Hashable {
     let sourceKinds: [String]
     let sourceCounts: [String: Int]
     let toolDetails: [ChatEvidenceToolDetail]
+    let imageArtifacts: [ChatImageArtifact]
 
     private enum CodingKeys: String, CodingKey {
-        case grounded, toolNames, sourceKinds, sourceCounts, toolDetails
+        case grounded, toolNames, sourceKinds, sourceCounts, toolDetails, imageArtifacts
     }
 
     init(
@@ -356,13 +357,15 @@ struct ChatEvidenceMetadata: Codable, Hashable {
         toolNames: [String] = [],
         sourceKinds: [String] = [],
         sourceCounts: [String: Int] = [:],
-        toolDetails: [ChatEvidenceToolDetail] = []
+        toolDetails: [ChatEvidenceToolDetail] = [],
+        imageArtifacts: [ChatImageArtifact] = []
     ) {
         self.grounded = grounded
         self.toolNames = toolNames
         self.sourceKinds = sourceKinds
         self.sourceCounts = sourceCounts
         self.toolDetails = toolDetails
+        self.imageArtifacts = imageArtifacts
     }
 
     init(from decoder: Decoder) throws {
@@ -372,11 +375,25 @@ struct ChatEvidenceMetadata: Codable, Hashable {
         sourceKinds = try container.decodeIfPresent([String].self, forKey: .sourceKinds) ?? []
         sourceCounts = try container.decodeIfPresent([String: Int].self, forKey: .sourceCounts) ?? [:]
         toolDetails = try container.decodeIfPresent([ChatEvidenceToolDetail].self, forKey: .toolDetails) ?? []
+        imageArtifacts = try container.decodeIfPresent([ChatImageArtifact].self, forKey: .imageArtifacts) ?? []
     }
 
     var isMeaningful: Bool {
-        grounded || !toolNames.isEmpty || !sourceKinds.isEmpty || !sourceCounts.isEmpty || !toolDetails.isEmpty
+        grounded || !toolNames.isEmpty || !sourceKinds.isEmpty || !sourceCounts.isEmpty || !toolDetails.isEmpty || !imageArtifacts.isEmpty
     }
+}
+
+struct ChatImageArtifact: Codable, Hashable, Identifiable {
+    let path: String
+    let title: String?
+    let prompt: String?
+    let workflow: String?
+    let seed: Int?
+    let width: Int?
+    let height: Int?
+    let sourceTool: String?
+
+    var id: String { path }
 }
 
 struct ChatEvidenceToolDetail: Codable, Hashable {

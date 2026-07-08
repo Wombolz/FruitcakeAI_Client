@@ -10,6 +10,7 @@
 //
 
 import SwiftUI
+import AppKit
 
 struct ChatThreadMessage: Identifiable, Hashable {
     let id: UUID
@@ -122,6 +123,9 @@ struct MessageBubble: View {
             // — reads as part of the response, not a separate debug card.
             VStack(alignment: .leading, spacing: 0) {
                 prose
+                if !imageArtifacts.isEmpty {
+                    ChatImageAttachmentSection(artifacts: imageArtifacts, accent: accent)
+                }
                 if let evidence {
                     Rectangle().fill(Theme.stroke).frame(height: 1)
                     EvidenceSection(evidence: evidence, expanded: $evidenceExpanded, accent: accent)
@@ -146,6 +150,10 @@ struct MessageBubble: View {
             .lineSpacing(4)
             .padding(.horizontal, 15)
             .padding(.vertical, 12)
+    }
+
+    private var imageArtifacts: [ChatImageArtifact] {
+        evidence?.imageArtifacts ?? []
     }
 
     /// Muted source/tool line under assistant replies. Only renders when the
@@ -191,6 +199,170 @@ struct MessageBubble: View {
             Text(message.content)
                 .textSelection(.enabled)
         }
+    }
+}
+
+
+// MARK: - Image attachments
+
+/// Reusable assistant image artifact zone. It is intentionally independent
+/// from ComfyUI: any tool that returns workspace-relative image artifacts can
+/// render through the same card once the backend emits `imageArtifacts`.
+private struct ChatImageAttachmentSection: View {
+    let artifacts: [ChatImageArtifact]
+    let accent: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(artifacts) { artifact in
+                ChatImageAttachmentCard(artifact: artifact, accent: accent)
+            }
+        }
+        .padding(.horizontal, 13)
+        .padding(.bottom, 12)
+    }
+}
+
+private struct ChatImageAttachmentCard: View {
+    let artifact: ChatImageArtifact
+    let accent: Color
+
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            AuthenticatedWorkspaceImageView(path: artifact.path)
+                .frame(maxWidth: .infinity)
+                .frame(height: 260)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                )
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(artifact.title ?? artifact.prompt ?? artifact.path)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(Theme.text)
+                    .lineLimit(2)
+                if let prompt = artifact.prompt, prompt != (artifact.title ?? "") {
+                    Text(prompt)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Theme.textDim)
+                        .lineLimit(2)
+                }
+                HStack(spacing: 7) {
+                    if let workflow = artifact.workflow, !workflow.isEmpty {
+                        metadataChip(workflow)
+                    }
+                    if let seed = artifact.seed {
+                        metadataChip("seed \(seed)")
+                    }
+                    if let width = artifact.width, let height = artifact.height {
+                        metadataChip("\(width)x\(height)")
+                    }
+                    Spacer(minLength: 8)
+                    Button(copied ? "Copied" : "Copy path") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(artifact.path, forType: .string)
+                        copied = true
+                    }
+                    .buttonStyle(.plain)
+                    .font(Theme.mono(10.5))
+                    .foregroundStyle(copied ? Theme.ok : accent)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.bottom, 10)
+        }
+        .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func metadataChip(_ value: String) -> some View {
+        Text(value)
+            .font(Theme.mono(10))
+            .foregroundStyle(Theme.textMid)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(Color.black.opacity(0.22), in: RoundedRectangle(cornerRadius: 5))
+    }
+}
+
+private struct AuthenticatedWorkspaceImageView: View {
+    let path: String
+
+    @Environment(AuthManager.self) private var authManager
+    @State private var image: NSImage?
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        ZStack {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.black.opacity(0.35))
+            } else if isLoading {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(Theme.textMid)
+            } else {
+                VStack(spacing: 7) {
+                    Image(systemName: "photo")
+                        .font(.system(size: 24))
+                    Text(errorMessage ?? "Image unavailable")
+                        .font(Theme.mono(10.5))
+                    Text(path)
+                        .font(Theme.mono(9.5))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(Theme.textFaint)
+                .padding(12)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.black.opacity(0.35))
+        .task(id: path) { await load() }
+    }
+
+    private func load() async {
+        guard image == nil else { return }
+        guard let request = imageRequest() else {
+            errorMessage = "Not connected"
+            return
+        }
+        isLoading = true
+        errorMessage = nil
+        defer { isLoading = false }
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                errorMessage = "Image load failed"
+                return
+            }
+            guard let loaded = NSImage(data: data) else {
+                errorMessage = "Invalid image"
+                return
+            }
+            image = loaded
+        } catch {
+            errorMessage = "Image load failed"
+        }
+    }
+
+    private func imageRequest() -> URLRequest? {
+        guard let baseURL = authManager.serverURL,
+              let token = try? authManager.token() else { return nil }
+        let url = baseURL.appendingPathComponent("workspace/images")
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "path", value: path)]
+        guard let finalURL = components?.url else { return nil }
+        var request = URLRequest(url: finalURL)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 30
+        return request
     }
 }
 
@@ -481,14 +653,17 @@ private struct FlowChips: View {
         toolCalls: ["web_search", "fetch_page"],
         evidence: ChatEvidenceMetadata(
             grounded: true,
-            toolNames: ["web_search", "fetch_page"],
-            sourceKinds: ["web"],
-            sourceCounts: ["web": 2],
+            toolNames: ["web_search", "fetch_page", "generate_image"],
+            sourceKinds: ["web", "image"],
+            sourceCounts: ["web": 2, "image": 1],
             toolDetails: [
                 ChatEvidenceToolDetail(toolName: "web_search", detailKind: "query", label: "Query", value: "September rate cut odds"),
                 ChatEvidenceToolDetail(toolName: "fetch_page", detailKind: "url", label: "Page", value: "https://www.cmegroup.com/markets/interest-rates/fed-funds.html", sourceTitle: "CME FedWatch Tool", sourceKind: "web"),
                 ChatEvidenceToolDetail(toolName: "fetch_page", detailKind: "url", label: "Page", value: "https://www.reuters.com/markets/rates-bonds/fed-cut-odds", sourceKind: "web"),
                 ChatEvidenceToolDetail(toolName: "fetch_page", detailKind: "url", label: "Page", value: "https://en.wikipedia.org/wiki/Federal_funds_rate", sourceTitle: "Federal funds rate", sourceKind: "wiki")
+            ],
+            imageArtifacts: [
+                ChatImageArtifact(path: "generated_images/example.png", title: "Generated image", prompt: "A tiny robot baking a cake", workflow: "sdxl_basic", seed: 123, width: 1024, height: 1024, sourceTool: "generate_image")
             ]
         )
     )
