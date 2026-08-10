@@ -71,6 +71,9 @@ enum PersonaAccent {
     ]
 
     static func color(for personaKey: String) -> Color {
+        if personaKey == "family_assistant" {
+            return Color(hex: 0x3F8C8F)
+        }
         guard !personaKey.isEmpty else { return palette[0] }
         let hash = personaKey.unicodeScalars.reduce(UInt64(5381)) { acc, scalar in
             acc &* 33 &+ UInt64(scalar.value)

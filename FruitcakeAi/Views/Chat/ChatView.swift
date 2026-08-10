@@ -12,6 +12,7 @@
 
 import SwiftUI
 import SwiftData
+import UniformTypeIdentifiers
 
 // MARK: - API response types
 
@@ -79,6 +80,15 @@ private struct ChatPersonaInfo: Decodable {
     let contentFilter: String?
 }
 
+private struct PendingChatAttachment: Identifiable, Hashable {
+    let id = UUID()
+    let filename: String
+    let path: String
+    let mediaType: String
+    let sizeBytes: Int
+    let isImage: Bool
+}
+
 private struct ChatModelOption: Decodable, Identifiable, Hashable {
     let id: String
     let provider: String
@@ -133,6 +143,7 @@ private struct LiveIndicatorPresentation {
     let label: String
     let detail: String?
     let chips: [String]
+    let activities: [String]
     let accent: Color
 }
 
@@ -166,6 +177,9 @@ struct ChatView: View {
     @State private var evidenceExpandedKeys: Set<String> = []
 
     @State private var inputText: String = ""
+    @State private var pendingAttachments: [PendingChatAttachment] = []
+    @State private var isAttachmentImporterPresented: Bool = false
+    @State private var isUploadingAttachment: Bool = false
     @State private var loadingError: String?
     @State private var deleteError: String?
     @State private var renameError: String?
@@ -270,26 +284,30 @@ struct ChatView: View {
 
         if let liveState {
             let toolNames = liveState.toolNames
+            let activities = liveToolActivityLabels(liveState.toolDetails)
             switch liveState.state.lowercased() {
             case "thinking":
                 return LiveIndicatorPresentation(
-                    label: "Thinking…",
-                    detail: "Planning the next response before any tools or final answer are emitted.",
-                    chips: [],
+                    label: "Thinking",
+                    detail: nil,
+                    chips: toolNames,
+                    activities: activities,
                     accent: accent
                 )
             case "tool_active":
                 return LiveIndicatorPresentation(
-                    label: "Using tools…",
-                    detail: toolNames.isEmpty ? "Gathering grounded context for the answer." : "Collecting grounded context before final synthesis.",
+                    label: "Thinking",
+                    detail: nil,
                     chips: toolNames,
+                    activities: activities,
                     accent: accent
                 )
             case "validating":
                 return LiveIndicatorPresentation(
-                    label: "Validating answer…",
-                    detail: "Checking the drafted answer for grounding and cleanup before it is returned.",
+                    label: "Checking answer",
+                    detail: nil,
                     chips: toolNames,
+                    activities: activities,
                     accent: accent
                 )
             case "retrying":
@@ -299,6 +317,7 @@ struct ChatView: View {
                     label: "Retrying…",
                     detail: [attemptLabel, reason].compactMap { $0 }.joined(separator: " · "),
                     chips: toolNames,
+                    activities: activities,
                     accent: accent
                 )
             case "waiting_approval":
@@ -306,6 +325,7 @@ struct ChatView: View {
                     label: "Waiting on approval…",
                     detail: "This turn paused before a protected action could continue.",
                     chips: toolNames,
+                    activities: activities,
                     accent: Theme.onDevice
                 )
             case "completed":
@@ -315,6 +335,7 @@ struct ChatView: View {
                     label: "Working…",
                     detail: nil,
                     chips: toolNames,
+                    activities: activities,
                     accent: accent
                 )
             }
@@ -325,11 +346,42 @@ struct ChatView: View {
                 label: "Working…",
                 detail: "A previously active turn is still running for this session.",
                 chips: [],
+                activities: [],
                 accent: accent
             )
         }
 
         return nil
+    }
+
+    private func mergeLiveState(_ payload: ChatLiveStatePayload) -> ChatLiveStatePayload {
+        var names = liveState?.toolNames ?? []
+        for name in payload.toolNames where !names.contains(name) {
+            names.append(name)
+        }
+        var details = liveState?.toolDetails ?? []
+        for detail in payload.toolDetails where !details.contains(detail) {
+            details.append(detail)
+        }
+        return ChatLiveStatePayload(
+            state: payload.state,
+            toolNames: names,
+            toolDetails: details,
+            retryReason: payload.retryReason,
+            attempt: payload.attempt
+        )
+    }
+
+    private func liveToolActivityLabels(_ details: [ChatLiveToolDetail]) -> [String] {
+        details.suffix(8).map { detail in
+            let preferredKeys = ["query", "url", "document", "section", "path", "pattern", "symbol", "task", "title", "location", "question"]
+            let key = preferredKeys.first(where: { !(detail.arguments[$0] ?? "").isEmpty })
+                ?? detail.arguments.keys.sorted().first
+            guard let key, let value = detail.arguments[key], !value.isEmpty else {
+                return detail.toolName
+            }
+            return "\(detail.toolName) · \(value)"
+        }
     }
 
     private func retryReasonLabel(_ raw: String?) -> String? {
@@ -575,6 +627,13 @@ struct ChatView: View {
             .presentationDragIndicator(.visible)
             #endif
         }
+        .fileImporter(
+            isPresented: $isAttachmentImporterPresented,
+            allowedContentTypes: [.item],
+            allowsMultipleSelection: true
+        ) { result in
+            handleAttachmentImport(result)
+        }
     }
 
     // MARK: - Sidebar
@@ -818,14 +877,23 @@ struct ChatView: View {
                         }
 
                         // Streaming in-progress
-                        if let indicator = liveIndicatorPresentation(for: session), streamingContent.isEmpty {
-                            ToolCallIndicator(
-                                label: indicator.label,
-                                detail: indicator.detail,
-                                chips: indicator.chips,
-                                accent: indicator.accent
-                            )
+                        if streamingContent.isEmpty {
+                            if let renderInfo = imageRenderInfo(from: liveState) {
+                                ImageRenderingCard(
+                                    info: renderInfo,
+                                    accent: PersonaAccent.color(for: session.persona)
+                                )
+                                .id("image-rendering")
+                            } else if let indicator = liveIndicatorPresentation(for: session) {
+                                ToolCallIndicator(
+                                    label: indicator.label,
+                                    detail: indicator.detail,
+                                    chips: indicator.chips,
+                                    activities: indicator.activities,
+                                    accent: indicator.accent
+                                )
                                 .id("indicator")
+                            }
                         }
                         if !streamingContent.isEmpty {
                             streamingBubble
@@ -879,6 +947,11 @@ struct ChatView: View {
         }
     }
 
+    private func imageRenderInfo(from liveState: ChatLiveStatePayload?) -> ImageRenderLiveInfo? {
+        guard let liveState, liveState.state.lowercased() == "image_rendering" else { return nil }
+        return ImageRenderLiveInfo(toolDetails: liveState.toolDetails)
+    }
+
     // MARK: - Input bar
 
     @ViewBuilder
@@ -898,12 +971,30 @@ struct ChatView: View {
                 .disabled(isSending)
                 .onSubmit { sendIfReady(sessionId: sessionId) }
 
+            if !pendingAttachments.isEmpty {
+                pendingAttachmentStrip
+            }
+
             HStack(spacing: 8) {
                 ConsoleChip(text: personaDisplayName, accentDot: accent, mono: false)
                 modelMenu(sessionId: sessionId, fallbackModelID: currentModelID)
                 reasoningMenu()
 
                 Spacer(minLength: 0)
+
+                Button {
+                    isAttachmentImporterPresented = true
+                } label: {
+                    Image(systemName: isUploadingAttachment ? "paperclip.badge.ellipsis" : "paperclip")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(isUploadingAttachment ? Theme.textFaint : Theme.textMid)
+                        .frame(width: 32, height: 32)
+                        .background(Theme.field, in: Circle())
+                        .overlay(Circle().stroke(Theme.strokeUp, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .disabled(isSending || isUploadingAttachment)
+                .help("Attach a file")
 
                 Button {
                     sendIfReady(sessionId: sessionId)
@@ -923,6 +1014,36 @@ struct ChatView: View {
         .padding(.vertical, 14)
         .background(Theme.composer)
         .overlay(Rectangle().fill(Theme.stroke).frame(height: 1), alignment: .top)
+    }
+
+    private var pendingAttachmentStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(pendingAttachments) { attachment in
+                    HStack(spacing: 6) {
+                        Image(systemName: attachment.isImage ? "photo" : "doc")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text(attachment.filename)
+                            .lineLimit(1)
+                        Text(attachmentSizeLabel(attachment.sizeBytes))
+                            .foregroundStyle(Theme.textFaint)
+                        Button {
+                            pendingAttachments.removeAll { $0.id == attachment.id }
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 9, weight: .bold))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Theme.textMid)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Theme.field, in: Capsule())
+                    .overlay(Capsule().stroke(Theme.strokeUp, lineWidth: 1))
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -1003,7 +1124,7 @@ struct ChatView: View {
     }
 
     private var canSend: Bool {
-        !inputText.trimmingCharacters(in: .whitespaces).isEmpty && !isSending && !sendClaimed
+        !inputText.trimmingCharacters(in: .whitespaces).isEmpty && !isSending && !sendClaimed && !isUploadingAttachment
     }
 
     private func trace(_ message: String) {
@@ -1022,7 +1143,10 @@ struct ChatView: View {
         guard canSend else { return }
         sendTraceSequence += 1
         let sendSeq = sendTraceSequence
-        let text = inputText.trimmingCharacters(in: .whitespaces)
+        let text = composedMessageText(
+            inputText.trimmingCharacters(in: .whitespaces),
+            attachments: pendingAttachments
+        )
         let fingerprint = normalizedPromptFingerprint(text)
         trace("send_if_ready_enter seq=\(sendSeq) session=\(sessionId) chars=\(text.count) fingerprint=\(fingerprint.prefix(24)) isSending=\(isSending) sendClaimed=\(sendClaimed) ws_state=\(wsManager.stateLabel)")
         if let recent = recentSendBySession[sessionId],
@@ -1043,11 +1167,97 @@ struct ChatView: View {
         let clientSendID = UUID().uuidString
         trace("send_if_ready_claimed seq=\(sendSeq) session=\(sessionId) client_send_id=\(clientSendID) chars=\(text.count) ws_state=\(wsManager.stateLabel)")
         inputText = ""
+        pendingAttachments = []
         activeClientSendID = clientSendID
         activeSendTask = Task {
             await sendMessage(text, sessionId: sessionId, clientSendID: clientSendID, sendSequence: sendSeq)
         }
         trace("active_send_task_assigned seq=\(sendSeq) session=\(sessionId) client_send_id=\(clientSendID)")
+    }
+
+    private func composedMessageText(_ text: String, attachments: [PendingChatAttachment]) -> String {
+        guard !attachments.isEmpty else { return text }
+        let attachmentLines = attachments.map { attachment in
+            "- \(attachment.filename) (`\(attachment.path)`, \(attachment.mediaType), \(attachmentSizeLabel(attachment.sizeBytes)))"
+        }.joined(separator: "\n")
+        return """
+        \(text)
+
+        Attached files in my workspace:
+        \(attachmentLines)
+
+        Use the workspace path(s) above with the appropriate tools when needed.
+        """
+    }
+
+    private func attachmentSizeLabel(_ bytes: Int) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+    }
+
+    private func handleAttachmentImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard !urls.isEmpty else { return }
+            Task {
+                await uploadAttachments(urls)
+            }
+        case .failure(let error):
+            loadingError = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func uploadAttachments(_ urls: [URL]) async {
+        isUploadingAttachment = true
+        defer { isUploadingAttachment = false }
+        for url in urls {
+            await uploadAttachment(url)
+        }
+    }
+
+    @MainActor
+    private func uploadAttachment(_ fileURL: URL) async {
+        guard connectivity.isBackendReachable else {
+            loadingError = "Backend is not reachable."
+            return
+        }
+
+        let accessed = fileURL.startAccessingSecurityScopedResource()
+        defer {
+            if accessed {
+                fileURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        do {
+            let data = try Data(contentsOf: fileURL)
+            let api = APIClient(authManager: authManager)
+            let uploaded = try await api.uploadWorkspaceFile(
+                fileData: data,
+                fileName: fileURL.lastPathComponent,
+                mimeType: mimeType(forAttachment: fileURL)
+            )
+            pendingAttachments.append(
+                PendingChatAttachment(
+                    filename: uploaded.filename,
+                    path: uploaded.path,
+                    mediaType: uploaded.mediaType,
+                    sizeBytes: uploaded.sizeBytes,
+                    isImage: uploaded.isImage
+                )
+            )
+            loadingError = nil
+        } catch {
+            loadingError = "Could not attach \(fileURL.lastPathComponent): \(error.localizedDescription)"
+        }
+    }
+
+    private func mimeType(forAttachment url: URL) -> String {
+        if let type = UTType(filenameExtension: url.pathExtension),
+           let mime = type.preferredMIMEType {
+            return mime
+        }
+        return "application/octet-stream"
     }
 
     // MARK: - Networking
@@ -1733,8 +1943,8 @@ struct ChatView: View {
             switch event {
             case .state(let payload):
                 trace("send_message_event seq=\(sendSequence) session=\(sessionId) client_send_id=\(clientSendID) type=state state=\(payload.state)")
-                liveState = payload
-                if payload.state.lowercased() == "tool_active" || payload.state.lowercased() == "waiting_approval" {
+                liveState = mergeLiveState(payload)
+                if ["tool_active", "image_rendering", "waiting_approval"].contains(payload.state.lowercased()) {
                     showToolIndicator = true
                 }
 

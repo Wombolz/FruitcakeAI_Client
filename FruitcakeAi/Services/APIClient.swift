@@ -9,6 +9,15 @@
 
 import Foundation
 
+struct WorkspaceUploadResponse: Decodable, Hashable {
+    let path: String
+    let filename: String
+    let storedFilename: String
+    let mediaType: String
+    let sizeBytes: Int
+    let isImage: Bool
+}
+
 @MainActor
 final class APIClient {
 
@@ -75,6 +84,22 @@ final class APIClient {
         let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response, data: data)
         return data
+    }
+
+    func uploadWorkspaceFile(
+        fileData: Data,
+        fileName: String,
+        mimeType: String,
+        targetDir: String = "uploads/chat"
+    ) async throws -> WorkspaceUploadResponse {
+        let data = try await upload(
+            "/workspace/uploads",
+            fileData: fileData,
+            fileName: fileName,
+            mimeType: mimeType,
+            fields: ["target_dir": targetDir]
+        )
+        return try decode(WorkspaceUploadResponse.self, from: data)
     }
 
     // MARK: - Private helpers

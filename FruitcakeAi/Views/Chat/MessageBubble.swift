@@ -45,6 +45,78 @@ struct ChatThreadMessage: Identifiable, Hashable {
     var isAssistant: Bool { role == "assistant" }
 }
 
+// Keeps assistant prose and generated workspace images in the order supplied
+// by the response. Unreferenced artifacts remain available as a fallback.
+private enum ChatRichContentBlock: Hashable {
+    case text(String)
+    case image(ChatImageArtifact)
+}
+
+private enum ChatRichContentParser {
+    static func blocks(content: String, artifacts: [ChatImageArtifact]) -> [ChatRichContentBlock] {
+        guard !artifacts.isEmpty else { return [.text(content)] }
+
+        let pattern = #"!\[([^\]]*)\]\(([^)]+)\)"#
+        guard let expression = try? NSRegularExpression(pattern: pattern) else {
+            return [.text(content)]
+        }
+
+        let range = NSRange(content.startIndex..<content.endIndex, in: content)
+        let matches = expression.matches(in: content, range: range)
+        guard !matches.isEmpty else { return [.text(content)] }
+
+        var blocks: [ChatRichContentBlock] = []
+        var cursor = content.startIndex
+        var consumedPaths = Set<String>()
+
+        for match in matches {
+            guard let fullRange = Range(match.range, in: content),
+                  let targetRange = Range(match.range(at: 2), in: content),
+                  let artifact = matchArtifact(target: String(content[targetRange]), artifacts: artifacts)
+            else { continue }
+
+            let before = String(content[cursor..<fullRange.lowerBound])
+            if !before.isEmpty { blocks.append(.text(before)) }
+            blocks.append(.image(artifact))
+            consumedPaths.insert(artifact.path)
+            cursor = fullRange.upperBound
+        }
+
+        if cursor < content.endIndex {
+            blocks.append(.text(String(content[cursor...])))
+        }
+        if blocks.isEmpty { blocks.append(.text(content)) }
+
+        // Older responses may expose artifacts only in metadata. Preserve
+        // those images rather than dropping them when no inline marker exists.
+        for artifact in artifacts where !consumedPaths.contains(artifact.path) {
+            blocks.append(.image(artifact))
+        }
+        return blocks
+    }
+
+    private static func matchArtifact(target: String, artifacts: [ChatImageArtifact]) -> ChatImageArtifact? {
+        let decodedTarget = target.removingPercentEncoding ?? target
+        let targetURL = URL(string: decodedTarget)
+        let targetPath: String
+        if let queryPath = URLComponents(string: decodedTarget)?.queryItems?.first(where: { $0.name == "path" })?.value {
+            targetPath = queryPath
+        } else {
+            targetPath = targetURL?.path ?? decodedTarget
+        }
+        let targetName = URL(fileURLWithPath: targetPath).lastPathComponent
+
+        return artifacts.first { artifact in
+            let artifactPath = artifact.path.removingPercentEncoding ?? artifact.path
+            let artifactName = URL(fileURLWithPath: artifactPath).lastPathComponent
+            return decodedTarget == artifactPath
+                || targetPath == artifactPath
+                || targetName == artifactName
+                || targetPath.hasSuffix("/\(artifactPath.trimmingCharacters(in: CharacterSet(charactersIn: "/")))")
+        }
+    }
+}
+
 struct MessageBubble: View {
 
     let message: ChatThreadMessage
@@ -104,7 +176,7 @@ struct MessageBubble: View {
     @ViewBuilder
     private var bubbleContent: some View {
         if isUser {
-            markdownText
+            markdownText(text: message.content)
                 .font(.system(size: 13.5))
                 .foregroundStyle(Theme.text)
                 .lineSpacing(4)
@@ -122,9 +194,13 @@ struct MessageBubble: View {
             // (when present) fused onto the bottom behind a hairline divider
             // — reads as part of the response, not a separate debug card.
             VStack(alignment: .leading, spacing: 0) {
-                prose
-                if !imageArtifacts.isEmpty {
-                    ChatImageAttachmentSection(artifacts: imageArtifacts, accent: accent)
+                ForEach(Array(richContentBlocks.enumerated()), id: \.offset) { _, block in
+                    switch block {
+                    case .text(let text):
+                        prose(text: text)
+                    case .image(let artifact):
+                        ChatImageAttachmentSection(artifacts: [artifact], accent: accent)
+                    }
                 }
                 if let evidence {
                     Rectangle().fill(Theme.stroke).frame(height: 1)
@@ -143,8 +219,8 @@ struct MessageBubble: View {
         }
     }
 
-    private var prose: some View {
-        markdownText
+    private func prose(text: String) -> some View {
+        markdownText(text: text)
             .font(.system(size: 13.5))
             .foregroundStyle(Theme.textMid)
             .lineSpacing(4)
@@ -154,6 +230,10 @@ struct MessageBubble: View {
 
     private var imageArtifacts: [ChatImageArtifact] {
         evidence?.imageArtifacts ?? []
+    }
+
+    private var richContentBlocks: [ChatRichContentBlock] {
+        ChatRichContentParser.blocks(content: message.content, artifacts: imageArtifacts)
     }
 
     /// Muted source/tool line under assistant replies. Only renders when the
@@ -188,15 +268,15 @@ struct MessageBubble: View {
     }
 
     @ViewBuilder
-    private var markdownText: some View {
+    private func markdownText(text: String) -> some View {
         if let attributed = try? AttributedString(
-            markdown: message.content,
+            markdown: text,
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         ) {
             Text(attributed)
                 .textSelection(.enabled)
         } else {
-            Text(message.content)
+            Text(text)
                 .textSelection(.enabled)
         }
     }

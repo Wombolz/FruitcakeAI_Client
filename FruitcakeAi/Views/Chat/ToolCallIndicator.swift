@@ -4,9 +4,8 @@
 //
 //  Animated indicator shown in the message thread between the user's
 //  message and the first streamed token. Signals that the agent is
-//  working (tool call, generation, etc.) without naming a specific
-//  tool — no live tool-name transport exists yet. `label` and `accent`
-//  are the upgrade seam for when that becomes available.
+//  working (tool call, generation, etc.) while showing bounded live
+//  tool activity supplied by the backend.
 //
 //  Styled as the same speaker mid-response: same bubble fill + accent
 //  rail as MessageBubble's assistant bubble, so the live-run state reads
@@ -20,6 +19,7 @@ struct ToolCallIndicator: View {
     var label: String = "Working…"
     var detail: String? = nil
     var chips: [String] = []
+    var activities: [String] = []
     var accent: Color = Theme.textDim
 
     var body: some View {
@@ -53,6 +53,22 @@ struct ToolCallIndicator: View {
                                     .padding(.horizontal, 7)
                                     .padding(.vertical, 3)
                                     .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 5))
+                            }
+                        }
+                    }
+                }
+                if !activities.isEmpty {
+                    VStack(alignment: .leading, spacing: 5) {
+                        ForEach(activities, id: \.self) { activity in
+                            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                                Circle()
+                                    .fill(accent.opacity(0.8))
+                                    .frame(width: 4, height: 4)
+                                Text(activity)
+                                    .font(Theme.mono(10.5))
+                                    .foregroundStyle(Theme.textDim)
+                                    .lineLimit(2)
+                                    .textSelection(.enabled)
                             }
                         }
                     }
