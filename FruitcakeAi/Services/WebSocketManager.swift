@@ -19,6 +19,9 @@ import Observation
 
 enum WSEvent {
     case token(String)                          // partial chunk — append to streaming buffer
+    case draftToken(String)                     // provisional model text — may be reset by a tool call
+    case draftReset                             // discard provisional narration before tool execution
+    case draftCommit                            // promote provisional text to the final response buffer
     case done(String, Int?, ChatMessageMetadata?)     // full response — store in SwiftData
     case state(ChatLiveStatePayload)
     case personaSwitched(name: String, message: String)
@@ -365,6 +368,15 @@ final class WebSocketManager: NSObject, URLSessionWebSocketDelegate {
         switch payload.type {
         case "token":
             responseContinuation?.yield(.token(payload.content))
+
+        case "draft_token":
+            responseContinuation?.yield(.draftToken(payload.content))
+
+        case "draft_reset":
+            responseContinuation?.yield(.draftReset)
+
+        case "draft_commit":
+            responseContinuation?.yield(.draftCommit)
 
         case "state":
             if let statePayload = payload.statePayload {

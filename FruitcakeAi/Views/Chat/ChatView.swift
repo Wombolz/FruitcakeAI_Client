@@ -1948,6 +1948,22 @@ struct ChatView: View {
                     showToolIndicator = true
                 }
 
+            case .draftToken(let chunk):
+                trace("send_message_event seq=\(sendSequence) session=\(sessionId) client_send_id=\(clientSendID) type=draft_token chars=\(chunk.count)")
+                showToolIndicator = false
+                streamingContent += chunk
+
+            case .draftReset:
+                trace("send_message_event seq=\(sendSequence) session=\(sessionId) client_send_id=\(clientSendID) type=draft_reset")
+                streamingContent = ""
+                fullResponse = ""
+                showToolIndicator = true
+
+            case .draftCommit:
+                trace("send_message_event seq=\(sendSequence) session=\(sessionId) client_send_id=\(clientSendID) type=draft_commit chars=\(streamingContent.count)")
+                fullResponse = streamingContent
+                showToolIndicator = false
+
             case .token(let chunk):
                 trace("send_message_event seq=\(sendSequence) session=\(sessionId) client_send_id=\(clientSendID) type=token chars=\(chunk.count)")
                 showToolIndicator = false
