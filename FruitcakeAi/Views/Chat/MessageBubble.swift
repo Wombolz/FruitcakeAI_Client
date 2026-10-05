@@ -10,7 +10,13 @@
 //
 
 import SwiftUI
+#if os(macOS)
 import AppKit
+private typealias PlatformImage = NSImage
+#else
+import UIKit
+private typealias PlatformImage = UIImage
+#endif
 
 struct ChatThreadMessage: Identifiable, Hashable {
     let id: UUID
@@ -343,8 +349,12 @@ private struct ChatImageAttachmentCard: View {
                     }
                     Spacer(minLength: 8)
                     Button(copied ? "Copied" : "Copy path") {
+                        #if os(macOS)
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(artifact.path, forType: .string)
+                        #else
+                        UIPasteboard.general.string = artifact.path
+                        #endif
                         copied = true
                     }
                     .buttonStyle(.plain)
@@ -372,18 +382,26 @@ private struct AuthenticatedWorkspaceImageView: View {
     let path: String
 
     @Environment(AuthManager.self) private var authManager
-    @State private var image: NSImage?
+    @State private var image: PlatformImage?
     @State private var isLoading = false
     @State private var errorMessage: String?
 
     var body: some View {
         ZStack {
             if let image {
+                #if os(macOS)
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFit()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(Color.black.opacity(0.35))
+                #else
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.black.opacity(0.35))
+                #endif
             } else if isLoading {
                 ProgressView()
                     .controlSize(.small)
@@ -422,7 +440,7 @@ private struct AuthenticatedWorkspaceImageView: View {
                 errorMessage = "Image load failed"
                 return
             }
-            guard let loaded = NSImage(data: data) else {
+            guard let loaded = PlatformImage(data: data) else {
                 errorMessage = "Invalid image"
                 return
             }

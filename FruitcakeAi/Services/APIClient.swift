@@ -436,6 +436,87 @@ final class APIClient {
         )
     }
 
+    // MARK: - User settings and integrations
+
+    func fetchUserAssistantSettings() async throws -> UserAssistantSettings {
+        try await request("/settings/me")
+    }
+
+    func updateUserAssistantSettings(
+        _ patch: UserAssistantSettingsPatch
+    ) async throws -> UserAssistantSettings {
+        try await request("/settings/me", method: "PATCH", body: patch)
+    }
+
+    func fetchAssistantModelProfiles() async throws -> [AssistantModelProfile] {
+        let response: AssistantModelListResponse = try await request("/llm/models")
+        return response.models
+    }
+
+    func fetchAdminModelProfiles() async throws -> [AssistantModelProfile] {
+        let response: AdminModelProfileListResponse = try await request("/admin/model-profiles")
+        return response.profiles
+    }
+
+    func updateAdminModelProfile(
+        _ profileID: String,
+        patch: AdminModelProfilePatch
+    ) async throws -> AssistantModelProfile {
+        try await request(
+            "/admin/model-profiles/\(profileID)",
+            method: "PATCH",
+            body: patch
+        )
+    }
+
+    func fetchUserIntegrations() async throws -> [UserIntegrationSummary] {
+        let response: UserIntegrationListResponse = try await request("/integrations")
+        return response.integrations
+    }
+
+    func connectAppleCalendar(
+        _ connection: AppleCalendarConnectionRequest
+    ) async throws -> UserIntegrationSummary {
+        try await request(
+            "/integrations/apple/calendar/connect",
+            method: "POST",
+            body: connection,
+            timeout: 30
+        )
+    }
+
+    func beginGoogleCalendarAuthorization(
+        codeChallenge: String
+    ) async throws -> GoogleCalendarAuthorizationResponse {
+        let encoded = codeChallenge.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? codeChallenge
+        return try await request("/integrations/google/calendar/auth-url?code_challenge=\(encoded)")
+    }
+
+    func completeGoogleCalendarAuthorization(
+        code: String,
+        state: String,
+        codeVerifier: String
+    ) async throws -> UserIntegrationSummary {
+        try await request(
+            "/integrations/google/calendar/callback",
+            method: "POST",
+            body: GoogleCalendarCallbackRequest(
+                code: code,
+                state: state,
+                codeVerifier: codeVerifier
+            ),
+            timeout: 30
+        )
+    }
+
+    func refreshIntegration(_ id: String) async throws -> UserIntegrationSummary {
+        try await request("/integrations/\(id)/refresh", method: "POST")
+    }
+
+    func disconnectIntegration(_ id: String) async throws -> UserIntegrationSummary {
+        try await request("/integrations/\(id)/disconnect", method: "POST")
+    }
+
     // MARK: - Graph Memory (Phase 7.3)
 
     func fetchGraphMemoryEntities() async throws -> [GraphMemoryEntity] {

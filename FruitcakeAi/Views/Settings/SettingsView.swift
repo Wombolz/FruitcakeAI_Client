@@ -18,7 +18,7 @@ struct SettingsView: View {
 
     @State private var serverURLInput: String = ""
     @State private var urlSaveState: URLSaveState = .idle
-    @State private var selection: SettingsDestination? = .account
+    @State private var selection: SettingsDestination? = .profile
     @State private var isSendingPushTest = false
     @State private var pushTestMessage: String?
 
@@ -43,29 +43,38 @@ struct SettingsView: View {
 
     private var settingsSidebar: some View {
         List(selection: $selection) {
-            Section("General") {
-                settingsLink("Account", systemImage: "person.crop.circle", destination: .account)
-                settingsLink("Server", systemImage: "externaldrive.connected.to.line.below", destination: .server)
-                if authManager.currentUser?.isAdmin == true {
+            Section("My Account") {
+                settingsLink("Profile", systemImage: "person.crop.circle", destination: .profile)
+                settingsLink("Chat & Models", systemImage: "cpu", destination: .assistantPreferences)
+                settingsLink("Connected Accounts", systemImage: "link", destination: .connectedAccounts)
+                settingsLink("Experience", systemImage: "slider.horizontal.3", destination: .experience)
+                settingsLink("Secrets", systemImage: "key", destination: .secrets)
+            }
+
+            Section("Intelligence") {
+                settingsLink("Personas", systemImage: "person.3", destination: .personas)
+                settingsLink("Routing", systemImage: "point.3.connected.trianglepath.dotted", destination: .routing)
+                settingsLink("Memories", systemImage: "brain", destination: .memories)
+            }
+
+            Section("Automations") {
+                settingsLink("Agents", systemImage: "sparkles.rectangle.stack", destination: .agents)
+            }
+
+            if authManager.currentUser?.isAdmin == true {
+                Section("Administration") {
+                    settingsLink("Model Profiles", systemImage: "cpu.fill", destination: .modelProfiles)
                     settingsLink("Push Testing", systemImage: "bell.badge", destination: .pushTesting)
                 }
             }
 
-            Section("Personas") {
-                settingsLink("Personas", systemImage: "person.3", destination: .personas)
-            }
-
-            Section("Agents") {
-                settingsLink("Agents", systemImage: "sparkles.rectangle.stack", destination: .agents)
-            }
-
-            Section("Assistant") {
-                settingsLink("Routing", systemImage: "point.3.connected.trianglepath.dotted", destination: .routing)
-                settingsLink("Secrets", systemImage: "key", destination: .secrets)
-                settingsLink("Memories", systemImage: "brain", destination: .memories)
+            Section("Operations") {
+                settingsLink("Server", systemImage: "externaldrive.connected.to.line.below", destination: .server)
                 settingsLink("Token Usage", systemImage: "number.circle", destination: .tokenUsage)
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(Theme.sidebar)
         .navigationTitle("Settings")
     }
 
@@ -77,9 +86,18 @@ struct SettingsView: View {
 
     @ViewBuilder
     private var settingsDetail: some View {
-        switch selection ?? .account {
-        case .account:
+        switch selection ?? .profile {
+        case .profile:
             accountDetail
+        case .assistantPreferences:
+            AssistantPreferencesView()
+                .environment(authManager)
+        case .connectedAccounts:
+            ConnectedAccountsView()
+                .environment(authManager)
+        case .experience:
+            PersonalExperienceSettingsView()
+                .environment(authManager)
         case .server:
             serverDetail
         case .pushTesting:
@@ -94,6 +112,13 @@ struct SettingsView: View {
         case .agents:
             AgentPresetsView()
                 .environment(authManager)
+        case .modelProfiles:
+            if authManager.currentUser?.isAdmin == true {
+                ModelProfilesView()
+                    .environment(authManager)
+            } else {
+                accountDetail
+            }
         case .routing:
             ChatRoutingView()
                 .environment(authManager)
@@ -110,8 +135,11 @@ struct SettingsView: View {
     }
 
     private var accountDetail: some View {
-        Form {
-            Section("Account") {
+        SettingsPage(
+            title: "Profile",
+            subtitle: "Your identity and access context on this Fruitcake server."
+        ) {
+            SettingsCard(title: "Account", systemImage: "person.crop.circle") {
                 if let user = authManager.currentUser {
                     LabeledContent("Username", value: user.username)
                     LabeledContent("Email", value: user.email)
@@ -122,22 +150,19 @@ struct SettingsView: View {
                             .replacingOccurrences(of: "_", with: " ")
                             .capitalized
                     )
+                    LabeledContent("Library scopes", value: user.libraryScopes.joined(separator: ", "))
                 } else {
                     Text("Not signed in")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Theme.textDim)
                 }
             }
 
-            Section {
+            SettingsCard(title: "Session", systemImage: "rectangle.portrait.and.arrow.right") {
                 Button("Sign out", role: .destructive) {
                     authManager.logout()
                 }
             }
         }
-        .formStyle(.grouped)
-        .navigationTitle("Account")
-        .frame(maxWidth: 700)
-        .frame(maxWidth: .infinity)
     }
 
     private var serverDetail: some View {
@@ -232,10 +257,10 @@ struct SettingsView: View {
 
     private func normalizeSelection() {
         if selection == .pushTesting, authManager.currentUser?.isAdmin != true {
-            selection = .account
+            selection = .profile
         }
         if selection == nil {
-            selection = .account
+            selection = .profile
         }
     }
 
@@ -286,11 +311,15 @@ struct SettingsView: View {
 }
 
 private enum SettingsDestination: String, Hashable, CaseIterable {
-    case account
+    case profile
+    case assistantPreferences
+    case connectedAccounts
+    case experience
     case server
     case pushTesting
     case personas
     case agents
+    case modelProfiles
     case routing
     case secrets
     case memories
