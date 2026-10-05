@@ -469,6 +469,33 @@ final class APIClient {
         )
     }
 
+    func fetchAdminUsers() async throws -> [AdminUserProfile] {
+        try await request("/admin/users")
+    }
+
+    func createAdminUser(_ body: AdminUserCreate) async throws -> AdminUserProfile {
+        try await request("/admin/users", method: "POST", body: body)
+    }
+
+    func updateAdminUser(_ userID: Int, patch: AdminUserPatch) async throws -> AdminUserProfile {
+        try await request("/admin/users/\(userID)", method: "PATCH", body: patch)
+    }
+
+    func fetchAdminUserModelAccess(_ userID: Int) async throws -> AdminUserModelAccess {
+        try await request("/admin/users/\(userID)/model-access")
+    }
+
+    func updateAdminUserModelAccess(
+        _ userID: Int,
+        allowedProfileIDs: [String]
+    ) async throws -> AdminUserModelAccess {
+        try await request(
+            "/admin/users/\(userID)/model-access",
+            method: "PUT",
+            body: AdminUserModelAccessPatch(allowedProfileIds: allowedProfileIDs)
+        )
+    }
+
     func fetchUserIntegrations() async throws -> [UserIntegrationSummary] {
         let response: UserIntegrationListResponse = try await request("/integrations")
         return response.integrations

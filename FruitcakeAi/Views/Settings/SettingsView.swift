@@ -63,6 +63,7 @@ struct SettingsView: View {
 
             if authManager.currentUser?.isAdmin == true {
                 Section("Administration") {
+                    settingsLink("Users & Access", systemImage: "person.2.badge.gearshape", destination: .users)
                     settingsLink("Model Profiles", systemImage: "cpu.fill", destination: .modelProfiles)
                     settingsLink("Push Testing", systemImage: "bell.badge", destination: .pushTesting)
                 }
@@ -115,6 +116,13 @@ struct SettingsView: View {
         case .modelProfiles:
             if authManager.currentUser?.isAdmin == true {
                 ModelProfilesView()
+                    .environment(authManager)
+            } else {
+                accountDetail
+            }
+        case .users:
+            if authManager.currentUser?.isAdmin == true {
+                UserAdministrationView()
                     .environment(authManager)
             } else {
                 accountDetail
@@ -256,7 +264,8 @@ struct SettingsView: View {
     }
 
     private func normalizeSelection() {
-        if selection == .pushTesting, authManager.currentUser?.isAdmin != true {
+        if (selection == .pushTesting || selection == .modelProfiles || selection == .users),
+           authManager.currentUser?.isAdmin != true {
             selection = .profile
         }
         if selection == nil {
@@ -320,6 +329,7 @@ private enum SettingsDestination: String, Hashable, CaseIterable {
     case personas
     case agents
     case modelProfiles
+    case users
     case routing
     case secrets
     case memories

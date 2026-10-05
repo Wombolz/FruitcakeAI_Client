@@ -137,3 +137,62 @@ struct GoogleCalendarCallbackRequest: Encodable {
     let state: String
     let codeVerifier: String
 }
+
+struct AdminUserProfile: Decodable, Identifiable, Equatable {
+    let id: Int
+    let publicId: String
+    let username: String
+    let email: String
+    let fullName: String?
+    let role: String
+    let persona: String
+    let chatRoutingPreference: String
+    let libraryScopes: [String]
+    let calendarAccess: [String]
+    let isActive: Bool
+    let createdAt: Date?
+    let updatedAt: Date?
+    let lastLogin: Date?
+}
+
+struct AdminUserCreate: Encodable {
+    let username: String
+    let email: String
+    let password: String
+    let fullName: String?
+    let role: String
+    let persona: String
+    let chatRoutingPreference: String
+    let libraryScopes: [String]
+    let calendarAccess: [String]
+}
+
+struct AdminUserPatch: Encodable {
+    let role: String?
+    let persona: String?
+    let chatRoutingPreference: String?
+    let libraryScopes: [String]?
+    let calendarAccess: [String]?
+    let isActive: Bool?
+}
+
+struct AdminUserModelAccess: Decodable {
+    let userId: Int
+    let policyMode: String
+    let models: [AdminUserModelAccessItem]
+}
+
+struct AdminUserModelAccessItem: Decodable, Identifiable, Hashable {
+    var id: String { profileId }
+    let profileId: String
+    let modelId: String
+    let displayName: String
+    let providerFamily: String
+    let enabled: Bool
+    let allowed: Bool
+    let source: String
+}
+
+struct AdminUserModelAccessPatch: Encodable {
+    let allowedProfileIds: [String]
+}
