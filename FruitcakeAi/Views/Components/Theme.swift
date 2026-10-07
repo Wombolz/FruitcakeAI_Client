@@ -20,6 +20,11 @@ extension Color {
 }
 
 enum Theme {
+    // Chat layout. User prompts remain compact while assistant responses can
+    // use the reading pane for tables, charts, images, and other rich blocks.
+    static let chatUserMaxWidth: CGFloat = 460
+    static let chatAssistantMaxWidth: CGFloat = 1_100
+
     // Surfaces (back-to-front)
     static let bg       = Color(hex: 0x0F1113)   // detail pane background
     static let sidebar  = Color(hex: 0x141618)

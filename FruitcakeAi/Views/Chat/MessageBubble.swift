@@ -31,6 +31,8 @@ struct ChatThreadMessage: Identifiable, Hashable {
     var taskDraftStatus: String?
     var createdTaskId: Int?
     var evidence: ChatEvidenceMetadata?
+    var contentBlocks: [ChatContentBlock]
+    var activity: [ChatActivityItem]
 
     init(_ cached: CachedMessage) {
         self.id = cached.id
@@ -45,6 +47,8 @@ struct ChatThreadMessage: Identifiable, Hashable {
         self.taskDraftStatus = cached.taskDraftStatus
         self.createdTaskId = cached.createdTaskId
         self.evidence = cached.evidence
+        self.contentBlocks = cached.contentBlocks
+        self.activity = cached.activity
     }
 
     var isUser: Bool { role == "user" }
@@ -56,36 +60,65 @@ struct ChatThreadMessage: Identifiable, Hashable {
 private enum ChatRichContentBlock: Hashable {
     case text(String)
     case image(ChatImageArtifact)
+    case table(ChatContentBlock)
+    case newsDigest(ChatContentBlock)
 }
 
 private enum ChatRichContentParser {
-    static func blocks(content: String, artifacts: [ChatImageArtifact]) -> [ChatRichContentBlock] {
-        guard !artifacts.isEmpty else { return [.text(content)] }
+    private struct Candidate {
+        let range: Range<String.Index>
+        let block: ChatRichContentBlock
+    }
 
+    static func blocks(
+        content: String,
+        artifacts: [ChatImageArtifact],
+        structuredBlocks: [ChatContentBlock]
+    ) -> [ChatRichContentBlock] {
+        var candidates: [Candidate] = []
         let pattern = #"!\[([^\]]*)\]\(([^)]+)\)"#
-        guard let expression = try? NSRegularExpression(pattern: pattern) else {
-            return [.text(content)]
+        if let expression = try? NSRegularExpression(pattern: pattern) {
+            let range = NSRange(content.startIndex..<content.endIndex, in: content)
+            for match in expression.matches(in: content, range: range) {
+                guard let fullRange = Range(match.range, in: content),
+                      let targetRange = Range(match.range(at: 2), in: content),
+                      let artifact = matchArtifact(target: String(content[targetRange]), artifacts: artifacts)
+                else { continue }
+                candidates.append(Candidate(range: fullRange, block: .image(artifact)))
+            }
         }
 
-        let range = NSRange(content.startIndex..<content.endIndex, in: content)
-        let matches = expression.matches(in: content, range: range)
-        guard !matches.isEmpty else { return [.text(content)] }
+        for block in structuredBlocks where !block.sourceMarkdown.isEmpty {
+            guard let tableRange = content.range(of: block.sourceMarkdown) else { continue }
+            switch block.type {
+            case "table":
+                candidates.append(Candidate(range: tableRange, block: .table(block)))
+            case "news_digest":
+                candidates.append(Candidate(range: tableRange, block: .newsDigest(block)))
+            default:
+                continue
+            }
+        }
+
+        candidates.sort { lhs, rhs in
+            if lhs.range.lowerBound == rhs.range.lowerBound {
+                return lhs.range.upperBound < rhs.range.upperBound
+            }
+            return lhs.range.lowerBound < rhs.range.lowerBound
+        }
 
         var blocks: [ChatRichContentBlock] = []
         var cursor = content.startIndex
         var consumedPaths = Set<String>()
 
-        for match in matches {
-            guard let fullRange = Range(match.range, in: content),
-                  let targetRange = Range(match.range(at: 2), in: content),
-                  let artifact = matchArtifact(target: String(content[targetRange]), artifacts: artifacts)
-            else { continue }
-
-            let before = String(content[cursor..<fullRange.lowerBound])
+        for candidate in candidates where candidate.range.lowerBound >= cursor {
+            let before = String(content[cursor..<candidate.range.lowerBound])
             if !before.isEmpty { blocks.append(.text(before)) }
-            blocks.append(.image(artifact))
-            consumedPaths.insert(artifact.path)
-            cursor = fullRange.upperBound
+            blocks.append(candidate.block)
+            if case .image(let artifact) = candidate.block {
+                consumedPaths.insert(artifact.path)
+            }
+            cursor = candidate.range.upperBound
         }
 
         if cursor < content.endIndex {
@@ -171,7 +204,10 @@ struct MessageBubble: View {
                 .foregroundStyle(message.isLocal ? Theme.onDevice : Theme.textFaint)
                 .padding(.horizontal, 4)
             }
-            .frame(maxWidth: isUser ? 460 : 560, alignment: isUser ? .trailing : .leading)
+            .frame(
+                maxWidth: isUser ? Theme.chatUserMaxWidth : Theme.chatAssistantMaxWidth,
+                alignment: isUser ? .trailing : .leading
+            )
 
             if !isUser { Spacer(minLength: 48) }
         }
@@ -206,11 +242,20 @@ struct MessageBubble: View {
                         prose(text: text)
                     case .image(let artifact):
                         ChatImageAttachmentSection(artifacts: [artifact], accent: accent)
+                    case .table(let block):
+                        ChatStructuredTableBlockView(block: block, accent: accent)
+                    case .newsDigest(let block):
+                        ChatNewsDigestBlockView(block: block, accent: accent)
                     }
                 }
                 if let evidence {
                     Rectangle().fill(Theme.stroke).frame(height: 1)
-                    EvidenceSection(evidence: evidence, expanded: $evidenceExpanded, accent: accent)
+                    EvidenceSection(
+                        evidence: evidence,
+                        activity: message.activity,
+                        expanded: $evidenceExpanded,
+                        accent: accent
+                    )
                 }
             }
             .background(Theme.bubble)
@@ -230,6 +275,7 @@ struct MessageBubble: View {
             .font(.system(size: 13.5))
             .foregroundStyle(Theme.textMid)
             .lineSpacing(4)
+            .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 15)
             .padding(.vertical, 12)
     }
@@ -239,7 +285,11 @@ struct MessageBubble: View {
     }
 
     private var richContentBlocks: [ChatRichContentBlock] {
-        ChatRichContentParser.blocks(content: message.content, artifacts: imageArtifacts)
+        ChatRichContentParser.blocks(
+            content: message.content,
+            artifacts: imageArtifacts,
+            structuredBlocks: message.contentBlocks
+        )
     }
 
     /// Muted source/tool line under assistant replies. Only renders when the
@@ -472,6 +522,7 @@ private struct AuthenticatedWorkspaceImageView: View {
 /// from a demoted tier of raw tool-name tags below a hairline.
 private struct EvidenceSection: View {
     let evidence: ChatEvidenceMetadata
+    let activity: [ChatActivityItem]
     @Binding var expanded: Bool
     let accent: Color
 
@@ -480,6 +531,12 @@ private struct EvidenceSection: View {
             header
             if expanded {
                 VStack(alignment: .leading, spacing: 0) {
+                    if !activity.isEmpty {
+                        ActivityRows(items: activity, accent: accent)
+                        if !evidence.toolDetails.isEmpty {
+                            Rectangle().fill(Color.white.opacity(0.045)).frame(height: 1)
+                        }
+                    }
                     ForEach(Array(evidence.toolDetails.enumerated()), id: \.offset) { index, detail in
                         if index > 0 {
                             Rectangle().fill(Color.white.opacity(0.045)).frame(height: 1)
@@ -568,6 +625,33 @@ private struct EvidenceSection: View {
             parts.append("\(count) \(key.replacingOccurrences(of: "_", with: " "))")
         }
         return parts.joined(separator: " · ")
+    }
+}
+
+private struct ActivityRows: View {
+    let items: [ChatActivityItem]
+    let accent: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("ACTIVITY")
+                .font(Theme.mono(9.5, weight: .semibold))
+                .kerning(1.2)
+                .foregroundStyle(Theme.textFaint)
+            ForEach(items.prefix(8)) { item in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Circle()
+                        .fill(accent.opacity(0.8))
+                        .frame(width: 4, height: 4)
+                    Text(item.displayText)
+                        .font(Theme.mono(10.5))
+                        .foregroundStyle(Theme.textDim)
+                        .lineLimit(2)
+                        .textSelection(.enabled)
+                }
+            }
+        }
+        .padding(.vertical, 10)
     }
 }
 

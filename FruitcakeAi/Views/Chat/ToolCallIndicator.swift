@@ -85,7 +85,7 @@ struct ToolCallIndicator: View {
             .overlay(
                 RoundedRectangle(cornerRadius: 14).stroke(Theme.stroke, lineWidth: 1)
             )
-            .frame(maxWidth: 560, alignment: .leading)
+            .frame(maxWidth: Theme.chatAssistantMaxWidth, alignment: .leading)
 
             Spacer(minLength: 48)
         }

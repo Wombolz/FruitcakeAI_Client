@@ -268,6 +268,8 @@ struct ChatView: View {
         cached.taskDraftStatus = threadMessage.taskDraftStatus
         cached.createdTaskId = threadMessage.createdTaskId
         cached.evidence = threadMessage.evidence
+        cached.contentBlocks = threadMessage.contentBlocks
+        cached.activity = threadMessage.activity
     }
 
     private func appendMessage(_ cached: CachedMessage) {
@@ -378,10 +380,36 @@ struct ChatView: View {
             let key = preferredKeys.first(where: { !(detail.arguments[$0] ?? "").isEmpty })
                 ?? detail.arguments.keys.sorted().first
             guard let key, let value = detail.arguments[key], !value.isEmpty else {
-                return detail.toolName
+                return humanizedToolActivity(toolName: detail.toolName, value: nil)
             }
-            return "\(detail.toolName) · \(value)"
+            return humanizedToolActivity(toolName: detail.toolName, value: value)
         }
+    }
+
+    private func humanizedToolActivity(toolName: String, value: String?) -> String {
+        let label: String
+        switch toolName {
+        case "web_search", "web_context", "web_research":
+            label = "Searched the web"
+        case "fetch_page":
+            label = "Read webpage"
+        case "search_my_feeds", "search_feeds", "list_recent_feed_items", "get_feed_items":
+            label = "Searched news feeds"
+        case "search_library", "list_library_documents":
+            label = "Searched your library"
+        case "summarize_document":
+            label = "Summarized document"
+        case "list_directory", "find_files", "stat_file", "read_file":
+            label = "Inspected workspace"
+        case "write_file", "append_file", "make_directory":
+            label = "Updated workspace"
+        case "get_daily_market_data", "get_intraday_market_data":
+            label = "Checked market data"
+        default:
+            label = toolName.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+        guard let value, !value.isEmpty else { return label }
+        return "\(label) · \(value)"
     }
 
     private func retryReasonLabel(_ raw: String?) -> String? {
@@ -1812,6 +1840,8 @@ struct ChatView: View {
                 taskDraftStatus: $0.metadata?.taskDraftStatus,
                 createdTaskId: $0.metadata?.createdTaskId,
                 evidence: $0.metadata?.evidence,
+                contentBlocks: $0.metadata?.contentBlocks ?? [],
+                activity: $0.metadata?.activity ?? [],
                 recalledMemoryIds: $0.metadata?.recalledMemoryIds
             )
         }
@@ -1986,6 +2016,8 @@ struct ChatView: View {
                     taskDraftStatus: metadata?.taskDraftStatus,
                     createdTaskId: metadata?.createdTaskId,
                     evidence: metadata?.evidence,
+                    contentBlocks: metadata?.contentBlocks ?? [],
+                    activity: metadata?.activity ?? [],
                     recalledMemoryIds: metadata?.recalledMemoryIds
                 )
                 appendMessage(assistantMsg)
@@ -2079,6 +2111,8 @@ struct ChatView: View {
                 taskDraftStatus: resp.metadata?.taskDraftStatus,
                 createdTaskId: resp.metadata?.createdTaskId,
                 evidence: resp.metadata?.evidence,
+                contentBlocks: resp.metadata?.contentBlocks ?? [],
+                activity: resp.metadata?.activity ?? [],
                 recalledMemoryIds: resp.metadata?.recalledMemoryIds
             )
             appendMessage(msg)

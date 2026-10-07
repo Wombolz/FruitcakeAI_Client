@@ -319,9 +319,12 @@ struct ChatMessageMetadata: Decodable {
     let toolCalls: [String]?
     let evidence: ChatEvidenceMetadata?
     let recalledMemoryIds: [Int]?
+    let contentBlocks: [ChatContentBlock]?
+    let activity: [ChatActivityItem]?
 
     private enum CodingKeys: String, CodingKey {
         case taskDraft, taskDraftStatus, createdTaskId, toolCalls, evidence, recalledMemoryIds
+        case contentBlocks, activity
     }
 
     init(from decoder: Decoder) throws {
@@ -337,6 +340,96 @@ struct ChatMessageMetadata: Decodable {
         toolCalls = try container.decodeIfPresent([String].self, forKey: .toolCalls)
         evidence = try container.decodeIfPresent(ChatEvidenceMetadata.self, forKey: .evidence)
         recalledMemoryIds = try container.decodeIfPresent([Int].self, forKey: .recalledMemoryIds)
+        contentBlocks = try container.decodeIfPresent([ChatContentBlock].self, forKey: .contentBlocks)
+        activity = try container.decodeIfPresent([ChatActivityItem].self, forKey: .activity)
+    }
+}
+
+struct ChatContentBlock: Codable, Hashable, Identifiable {
+    let id: String
+    let type: String
+    let sourceMarkdown: String
+    let columns: [String]
+    let rows: [[String]]
+    let chart: ChatChartHint?
+    let title: String?
+    let sections: [ChatNewsSection]
+
+    init(
+        id: String,
+        type: String,
+        sourceMarkdown: String,
+        columns: [String] = [],
+        rows: [[String]] = [],
+        chart: ChatChartHint? = nil,
+        title: String? = nil,
+        sections: [ChatNewsSection] = []
+    ) {
+        self.id = id
+        self.type = type
+        self.sourceMarkdown = sourceMarkdown
+        self.columns = columns
+        self.rows = rows
+        self.chart = chart
+        self.title = title
+        self.sections = sections
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, type, sourceMarkdown, columns, rows, chart, title, sections
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        type = try container.decode(String.self, forKey: .type)
+        sourceMarkdown = try container.decodeIfPresent(String.self, forKey: .sourceMarkdown) ?? ""
+        columns = try container.decodeIfPresent([String].self, forKey: .columns) ?? []
+        rows = try container.decodeIfPresent([[String]].self, forKey: .rows) ?? []
+        chart = try container.decodeIfPresent(ChatChartHint.self, forKey: .chart)
+        title = try container.decodeIfPresent(String.self, forKey: .title)
+        sections = try container.decodeIfPresent([ChatNewsSection].self, forKey: .sections) ?? []
+    }
+}
+
+struct ChatNewsSection: Codable, Hashable, Identifiable {
+    let title: String
+    let items: [ChatNewsItem]
+
+    var id: String { title }
+}
+
+struct ChatNewsItem: Codable, Hashable, Identifiable {
+    let title: String
+    let summary: String
+    let sources: [ChatNewsSource]
+
+    var id: String { "\(title):\(sources.first?.url ?? "")" }
+}
+
+struct ChatNewsSource: Codable, Hashable, Identifiable {
+    let label: String
+    let url: String
+
+    var id: String { "\(label):\(url)" }
+}
+
+struct ChatChartHint: Codable, Hashable {
+    let kind: String
+    let categoryColumn: Int
+    let valueColumns: [Int]
+}
+
+struct ChatActivityItem: Codable, Hashable, Identifiable {
+    let toolName: String
+    let label: String
+    let value: String?
+
+    var id: String { "\(toolName):\(label):\(value ?? "")" }
+
+    var displayText: String {
+        guard let value, !value.isEmpty else { return label }
+        return "\(label) · \(value)"
     }
 }
 
