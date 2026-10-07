@@ -30,9 +30,78 @@ struct ChatStructuredContentBlockView: View {
             ChatNewsDigestBlockView(block: block, accent: accent)
         case .statGroup:
             ChatStatGroupBlockView(block: block, accent: accent)
+        case .timeline:
+            ChatTimelineBlockView(block: block, accent: accent)
         case nil:
             EmptyView()
         }
+    }
+}
+
+struct ChatTimelineBlockView: View {
+    let block: ChatContentBlock
+    let accent: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "clock.arrow.trianglehead.counterclockwise.rotate.90")
+                    .foregroundStyle(accent)
+                Text((block.title ?? "Timeline").uppercased())
+                    .font(Theme.mono(10.5).weight(.semibold))
+                    .tracking(1.1)
+                    .foregroundStyle(Theme.textMid)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
+
+            Rectangle()
+                .fill(Theme.stroke)
+                .frame(height: 1)
+
+            ForEach(Array(block.events.enumerated()), id: \.element.id) { index, event in
+                HStack(alignment: .top, spacing: 11) {
+                    VStack(spacing: 0) {
+                        Circle()
+                            .fill(accent)
+                            .frame(width: 7, height: 7)
+                            .padding(.top, 4)
+
+                        if index < block.events.count - 1 {
+                            Rectangle()
+                                .fill(accent.opacity(0.25))
+                                .frame(width: 1)
+                                .frame(minHeight: 34)
+                        }
+                    }
+                    .frame(width: 9)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(event.label.uppercased())
+                            .font(Theme.mono(9.5).weight(.semibold))
+                            .tracking(0.5)
+                            .foregroundStyle(accent)
+
+                        Text(event.detail)
+                            .font(.system(size: 13))
+                            .foregroundStyle(Theme.textMid)
+                            .lineSpacing(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.bottom, index < block.events.count - 1 ? 8 : 0)
+                }
+            }
+            .padding(.horizontal, 15)
+            .padding(.vertical, 12)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.white.opacity(0.065), lineWidth: 1)
+        )
+        .padding(.horizontal, 13)
+        .padding(.vertical, 8)
     }
 }
 

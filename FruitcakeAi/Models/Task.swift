@@ -358,6 +358,7 @@ struct ChatContentBlock: Codable, Hashable, Identifiable {
     let title: String?
     let sections: [ChatNewsSection]
     let items: [ChatStatItem]
+    let events: [ChatTimelineEvent]
 
     init(
         schemaVersion: Int = 1,
@@ -371,7 +372,8 @@ struct ChatContentBlock: Codable, Hashable, Identifiable {
         chart: ChatChartHint? = nil,
         title: String? = nil,
         sections: [ChatNewsSection] = [],
-        items: [ChatStatItem] = []
+        items: [ChatStatItem] = [],
+        events: [ChatTimelineEvent] = []
     ) {
         self.schemaVersion = schemaVersion
         self.id = id
@@ -385,11 +387,12 @@ struct ChatContentBlock: Codable, Hashable, Identifiable {
         self.title = title
         self.sections = sections
         self.items = items
+        self.events = events
     }
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, id, type, sourceMarkdown, sourceFingerprint
-        case columns, columnAlignments, rows, chart, title, sections, items
+        case columns, columnAlignments, rows, chart, title, sections, items, events
     }
 
     init(from decoder: Decoder) throws {
@@ -406,6 +409,7 @@ struct ChatContentBlock: Codable, Hashable, Identifiable {
         title = try container.decodeIfPresent(String.self, forKey: .title)
         sections = try container.decodeIfPresent([ChatNewsSection].self, forKey: .sections) ?? []
         items = try container.decodeIfPresent([ChatStatItem].self, forKey: .items) ?? []
+        events = try container.decodeIfPresent([ChatTimelineEvent].self, forKey: .events) ?? []
     }
 }
 
@@ -413,6 +417,7 @@ enum ChatContentBlockKind: String {
     case table
     case newsDigest = "news_digest"
     case statGroup = "stat_group"
+    case timeline
 }
 
 struct ChatStatItem: Codable, Hashable, Identifiable {
@@ -420,6 +425,13 @@ struct ChatStatItem: Codable, Hashable, Identifiable {
     let value: String
 
     var id: String { "\(label):\(value)" }
+}
+
+struct ChatTimelineEvent: Codable, Hashable, Identifiable {
+    let label: String
+    let detail: String
+
+    var id: String { "\(label):\(detail)" }
 }
 
 extension ChatContentBlock {
