@@ -346,29 +346,38 @@ struct ChatMessageMetadata: Decodable {
 }
 
 struct ChatContentBlock: Codable, Hashable, Identifiable {
+    let schemaVersion: Int
     let id: String
     let type: String
     let sourceMarkdown: String
+    let sourceFingerprint: String?
     let columns: [String]
+    let columnAlignments: [String]
     let rows: [[String]]
     let chart: ChatChartHint?
     let title: String?
     let sections: [ChatNewsSection]
 
     init(
+        schemaVersion: Int = 1,
         id: String,
         type: String,
         sourceMarkdown: String,
+        sourceFingerprint: String? = nil,
         columns: [String] = [],
+        columnAlignments: [String] = [],
         rows: [[String]] = [],
         chart: ChatChartHint? = nil,
         title: String? = nil,
         sections: [ChatNewsSection] = []
     ) {
+        self.schemaVersion = schemaVersion
         self.id = id
         self.type = type
         self.sourceMarkdown = sourceMarkdown
+        self.sourceFingerprint = sourceFingerprint
         self.columns = columns
+        self.columnAlignments = columnAlignments
         self.rows = rows
         self.chart = chart
         self.title = title
@@ -376,19 +385,35 @@ struct ChatContentBlock: Codable, Hashable, Identifiable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, type, sourceMarkdown, columns, rows, chart, title, sections
+        case schemaVersion, id, type, sourceMarkdown, sourceFingerprint
+        case columns, columnAlignments, rows, chart, title, sections
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
         id = try container.decode(String.self, forKey: .id)
         type = try container.decode(String.self, forKey: .type)
         sourceMarkdown = try container.decodeIfPresent(String.self, forKey: .sourceMarkdown) ?? ""
+        sourceFingerprint = try container.decodeIfPresent(String.self, forKey: .sourceFingerprint)
         columns = try container.decodeIfPresent([String].self, forKey: .columns) ?? []
+        columnAlignments = try container.decodeIfPresent([String].self, forKey: .columnAlignments) ?? []
         rows = try container.decodeIfPresent([[String]].self, forKey: .rows) ?? []
         chart = try container.decodeIfPresent(ChatChartHint.self, forKey: .chart)
         title = try container.decodeIfPresent(String.self, forKey: .title)
         sections = try container.decodeIfPresent([ChatNewsSection].self, forKey: .sections) ?? []
+    }
+}
+
+enum ChatContentBlockKind: String {
+    case table
+    case newsDigest = "news_digest"
+}
+
+extension ChatContentBlock {
+    var kind: ChatContentBlockKind? {
+        guard schemaVersion == 1 else { return nil }
+        return ChatContentBlockKind(rawValue: type)
     }
 }
 

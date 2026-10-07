@@ -60,8 +60,7 @@ struct ChatThreadMessage: Identifiable, Hashable {
 private enum ChatRichContentBlock: Hashable {
     case text(String)
     case image(ChatImageArtifact)
-    case table(ChatContentBlock)
-    case newsDigest(ChatContentBlock)
+    case structured(ChatContentBlock)
 }
 
 private enum ChatRichContentParser {
@@ -90,14 +89,8 @@ private enum ChatRichContentParser {
 
         for block in structuredBlocks where !block.sourceMarkdown.isEmpty {
             guard let tableRange = content.range(of: block.sourceMarkdown) else { continue }
-            switch block.type {
-            case "table":
-                candidates.append(Candidate(range: tableRange, block: .table(block)))
-            case "news_digest":
-                candidates.append(Candidate(range: tableRange, block: .newsDigest(block)))
-            default:
-                continue
-            }
+            guard block.kind != nil else { continue }
+            candidates.append(Candidate(range: tableRange, block: .structured(block)))
         }
 
         candidates.sort { lhs, rhs in
@@ -242,10 +235,8 @@ struct MessageBubble: View {
                         prose(text: text)
                     case .image(let artifact):
                         ChatImageAttachmentSection(artifacts: [artifact], accent: accent)
-                    case .table(let block):
-                        ChatStructuredTableBlockView(block: block, accent: accent)
-                    case .newsDigest(let block):
-                        ChatNewsDigestBlockView(block: block, accent: accent)
+                    case .structured(let block):
+                        ChatStructuredContentBlockView(block: block, accent: accent)
                     }
                 }
                 if let evidence {

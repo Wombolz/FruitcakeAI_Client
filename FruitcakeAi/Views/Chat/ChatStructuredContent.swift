@@ -15,6 +15,25 @@ import AppKit
 import UIKit
 #endif
 
+/// Single dispatch point for versioned assistant content blocks. Unknown
+/// versions/types remain in the original prose because the parser ignores them.
+struct ChatStructuredContentBlockView: View {
+    let block: ChatContentBlock
+    let accent: Color
+
+    @ViewBuilder
+    var body: some View {
+        switch block.kind {
+        case .table:
+            ChatStructuredTableBlockView(block: block, accent: accent)
+        case .newsDigest:
+            ChatNewsDigestBlockView(block: block, accent: accent)
+        case nil:
+            EmptyView()
+        }
+    }
+}
+
 struct ChatNewsDigestBlockView: View {
     let block: ChatContentBlock
     let accent: Color
@@ -195,7 +214,7 @@ struct ChatStructuredTableBlockView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            Label("Data", systemImage: "tablecells")
+            Label(block.title ?? "Data", systemImage: "tablecells")
                 .font(.system(size: 11.5, weight: .semibold))
                 .foregroundStyle(Theme.textMid)
 
@@ -392,7 +411,10 @@ private struct ResizableChatTable: View {
                         .tint(accent)
                         .textSelection(.enabled)
                         .lineLimit(isHeader ? 2 : 4)
-                        .frame(width: width(at: columnIndex) - 20, alignment: .leading)
+                        .frame(
+                            width: width(at: columnIndex) - 20,
+                            alignment: alignment(at: columnIndex)
+                        )
                         .padding(.horizontal, 10)
                         .padding(.vertical, isHeader ? 8 : 7)
 
@@ -445,6 +467,15 @@ private struct ResizableChatTable: View {
 
     private func width(at index: Int) -> CGFloat {
         columnWidths.indices.contains(index) ? columnWidths[index] : 140
+    }
+
+    private func alignment(at index: Int) -> Alignment {
+        guard block.columnAlignments.indices.contains(index) else { return .leading }
+        switch block.columnAlignments[index] {
+        case "center": return .center
+        case "right": return .trailing
+        default: return .leading
+        }
     }
 
     private func cell(_ values: [String], at index: Int) -> String {
@@ -501,7 +532,7 @@ private struct ExpandedStructuredTableContent: View {
         VStack(spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Structured Data")
+                    Text(block.title ?? "Structured Data")
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(Theme.text)
                     Text("Resize columns, switch views, or copy the data as CSV.")
@@ -551,7 +582,7 @@ private final class StructuredDataWindowController: NSWindowController, NSWindow
             backing: .buffered,
             defer: false
         )
-        window.title = "Structured Data"
+        window.title = block.title ?? "Structured Data"
         window.minSize = NSSize(width: 640, height: 420)
         window.isReleasedWhenClosed = false
         window.hidesOnDeactivate = false
