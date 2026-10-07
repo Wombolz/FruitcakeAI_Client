@@ -178,6 +178,7 @@ struct ChatView: View {
 
     @State private var inputText: String = ""
     @State private var pendingAttachments: [PendingChatAttachment] = []
+    @State private var pendingNativeContextBySession: [Int: ChatNativeContextAttachment] = [:]
     @State private var isAttachmentImporterPresented: Bool = false
     @State private var isUploadingAttachment: Bool = false
     @State private var loadingError: String?
@@ -875,7 +876,19 @@ struct ChatView: View {
                                 message: msg,
                                 personaKey: session.persona,
                                 personaDisplayName: personaDisplayName(session.persona),
-                                evidenceExpanded: evidenceExpandedBinding(for: session.id, message: msg)
+                                evidenceExpanded: evidenceExpandedBinding(for: session.id, message: msg),
+                                onContextHandback: { context in
+                                    pendingNativeContextBySession[session.id] = context
+                                    if selectedSession?.id == session.id,
+                                       inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                        inputText = switch context.kind {
+                                        case "chart": "Explain this selected chart data."
+                                        case "file": "Tell me about this file."
+                                        case "place": "Tell me more about this place."
+                                        default: "Explain this data."
+                                        }
+                                    }
+                                }
                             )
                             .id(msg.id)
 
@@ -999,8 +1012,8 @@ struct ChatView: View {
                 .disabled(isSending)
                 .onSubmit { sendIfReady(sessionId: sessionId) }
 
-            if !pendingAttachments.isEmpty {
-                pendingAttachmentStrip
+            if !pendingAttachments.isEmpty || pendingNativeContextBySession[sessionId] != nil {
+                pendingAttachmentStrip(sessionId: sessionId)
             }
 
             HStack(spacing: 8) {
@@ -1044,9 +1057,34 @@ struct ChatView: View {
         .overlay(Rectangle().fill(Theme.stroke).frame(height: 1), alignment: .top)
     }
 
-    private var pendingAttachmentStrip: some View {
+    private func pendingAttachmentStrip(sessionId: Int) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
+                if let context = pendingNativeContextBySession[sessionId] {
+                    HStack(spacing: 6) {
+                        Image(systemName: context.kind == "chart" ? "chart.xyaxis.line" : "tablecells")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text(context.title)
+                            .lineLimit(1)
+                        Text(context.selectionSummary)
+                            .foregroundStyle(Theme.textFaint)
+                            .lineLimit(1)
+                        Button {
+                            pendingNativeContextBySession.removeValue(forKey: sessionId)
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 9, weight: .bold))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Theme.textMid)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Theme.field, in: Capsule())
+                    .overlay(Capsule().stroke(Theme.strokeUp, lineWidth: 1))
+                }
+
                 ForEach(pendingAttachments) { attachment in
                     HStack(spacing: 6) {
                         Image(systemName: attachment.isImage ? "photo" : "doc")
@@ -1173,7 +1211,8 @@ struct ChatView: View {
         let sendSeq = sendTraceSequence
         let text = composedMessageText(
             inputText.trimmingCharacters(in: .whitespaces),
-            attachments: pendingAttachments
+            attachments: pendingAttachments,
+            nativeContext: pendingNativeContextBySession[sessionId]
         )
         let fingerprint = normalizedPromptFingerprint(text)
         trace("send_if_ready_enter seq=\(sendSeq) session=\(sessionId) chars=\(text.count) fingerprint=\(fingerprint.prefix(24)) isSending=\(isSending) sendClaimed=\(sendClaimed) ws_state=\(wsManager.stateLabel)")
@@ -1196,6 +1235,7 @@ struct ChatView: View {
         trace("send_if_ready_claimed seq=\(sendSeq) session=\(sessionId) client_send_id=\(clientSendID) chars=\(text.count) ws_state=\(wsManager.stateLabel)")
         inputText = ""
         pendingAttachments = []
+        pendingNativeContextBySession.removeValue(forKey: sessionId)
         activeClientSendID = clientSendID
         activeSendTask = Task {
             await sendMessage(text, sessionId: sessionId, clientSendID: clientSendID, sendSequence: sendSeq)
@@ -1203,19 +1243,27 @@ struct ChatView: View {
         trace("active_send_task_assigned seq=\(sendSeq) session=\(sessionId) client_send_id=\(clientSendID)")
     }
 
-    private func composedMessageText(_ text: String, attachments: [PendingChatAttachment]) -> String {
-        guard !attachments.isEmpty else { return text }
-        let attachmentLines = attachments.map { attachment in
-            "- \(attachment.filename) (`\(attachment.path)`, \(attachment.mediaType), \(attachmentSizeLabel(attachment.sizeBytes)))"
-        }.joined(separator: "\n")
-        return """
-        \(text)
+    private func composedMessageText(
+        _ text: String,
+        attachments: [PendingChatAttachment],
+        nativeContext: ChatNativeContextAttachment?
+    ) -> String {
+        var sections = [text]
+        if !attachments.isEmpty {
+            let attachmentLines = attachments.map { attachment in
+                "- \(attachment.filename) (`\(attachment.path)`, \(attachment.mediaType), \(attachmentSizeLabel(attachment.sizeBytes)))"
+            }.joined(separator: "\n")
+            sections.append("""
+            Attached files in my workspace:
+            \(attachmentLines)
 
-        Attached files in my workspace:
-        \(attachmentLines)
-
-        Use the workspace path(s) above with the appropriate tools when needed.
-        """
+            Use the workspace path(s) above with the appropriate tools when needed.
+            """)
+        }
+        if let nativeContext {
+            sections.append(nativeContext.promptAppendix)
+        }
+        return sections.joined(separator: "\n\n")
     }
 
     private func attachmentSizeLabel(_ bytes: Int) -> String {

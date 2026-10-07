@@ -155,6 +155,7 @@ struct MessageBubble: View {
     var personaKey: String = ""
     var personaDisplayName: String = ""    // shown as label above assistant messages
     @Binding var evidenceExpanded: Bool
+    var onContextHandback: ((ChatNativeContextAttachment) -> Void)? = nil
 
     private var isUser: Bool { message.isUser }
     private var accent: Color { PersonaAccent.color(for: personaKey) }
@@ -236,7 +237,11 @@ struct MessageBubble: View {
                     case .image(let artifact):
                         ChatImageAttachmentSection(artifacts: [artifact], accent: accent)
                     case .structured(let block):
-                        ChatStructuredContentBlockView(block: block, accent: accent)
+                        ChatStructuredContentBlockView(
+                            block: block,
+                            accent: accent,
+                            onContextHandback: onContextHandback
+                        )
                     }
                 }
                 if let evidence {

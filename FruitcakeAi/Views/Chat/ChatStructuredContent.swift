@@ -9,6 +9,8 @@
 
 import SwiftUI
 import Charts
+import MapKit
+import UniformTypeIdentifiers
 #if os(macOS)
 import AppKit
 #else
@@ -20,12 +22,17 @@ import UIKit
 struct ChatStructuredContentBlockView: View {
     let block: ChatContentBlock
     let accent: Color
+    var onContextHandback: ((ChatNativeContextAttachment) -> Void)? = nil
 
     @ViewBuilder
     var body: some View {
         switch block.kind {
         case .table:
-            ChatStructuredTableBlockView(block: block, accent: accent)
+            ChatStructuredTableBlockView(
+                block: block,
+                accent: accent,
+                onContextHandback: onContextHandback
+            )
         case .newsDigest:
             ChatNewsDigestBlockView(block: block, accent: accent)
         case .statGroup:
@@ -33,16 +40,423 @@ struct ChatStructuredContentBlockView: View {
         case .timeline:
             ChatTimelineBlockView(block: block, accent: accent)
         case .fileArtifact:
-            ChatFileArtifactBlockView(block: block, accent: accent)
+            ChatFileArtifactBlockView(
+                block: block,
+                accent: accent,
+                onContextHandback: onContextHandback
+            )
+        case .placeGroup:
+            ChatPlaceGroupBlockView(
+                block: block,
+                accent: accent,
+                onContextHandback: onContextHandback
+            )
+        case .codeArtifact:
+            ChatCodeArtifactBlockView(block: block, accent: accent)
         case nil:
             EmptyView()
         }
     }
 }
 
+struct ChatCodeArtifactBlockView: View {
+    let block: ChatContentBlock
+    let accent: Color
+
+    @Environment(AuthManager.self) private var authManager
+    @State private var copied = false
+    @State private var isOpening = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        if let artifact = block.code {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 9) {
+                    Image(systemName: "chevron.left.forwardslash.chevron.right")
+                        .foregroundStyle(accent)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(block.title ?? artifact.filename ?? "Code")
+                            .font(.system(size: 12.5, weight: .semibold))
+                            .foregroundStyle(Theme.text)
+                            .lineLimit(1)
+                        if let path = artifact.path, !path.isEmpty {
+                            Text(path)
+                                .font(Theme.mono(9))
+                                .foregroundStyle(Theme.textFaint)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+
+                    Spacer(minLength: 10)
+
+                    Text(artifact.language.uppercased())
+                        .font(Theme.mono(8.5).weight(.semibold))
+                        .tracking(0.6)
+                        .foregroundStyle(Theme.textFaint)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 4)
+                        .background(Color.white.opacity(0.04), in: Capsule())
+
+                    Button(copied ? "Copied" : "Copy") {
+                        copyCode(artifact.content)
+                        copied = true
+                    }
+                    .buttonStyle(.plain)
+                    .font(Theme.mono(9.5).weight(.medium))
+                    .foregroundStyle(copied ? Theme.ok : accent)
+
+                    if let path = artifact.path, !path.isEmpty {
+                        Button {
+                            Task { await open(artifact, path: path) }
+                        } label: {
+                            if isOpening {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Label("Open", systemImage: "arrow.up.forward.app")
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .font(Theme.mono(9.5).weight(.medium))
+                        .foregroundStyle(accent)
+                        .disabled(isOpening)
+                    }
+                }
+                .padding(.horizontal, 13)
+                .padding(.vertical, 10)
+
+                Rectangle()
+                    .fill(Theme.stroke)
+                    .frame(height: 1)
+
+                ScrollView(.horizontal, showsIndicators: true) {
+                    HStack(alignment: .top, spacing: 13) {
+                        Text(lineNumbers(for: artifact.content))
+                            .font(Theme.mono(11))
+                            .foregroundStyle(Theme.textFaint.opacity(0.75))
+                            .multilineTextAlignment(.trailing)
+                            .textSelection(.disabled)
+
+                        Rectangle()
+                            .fill(Theme.stroke.opacity(0.8))
+                            .frame(width: 1)
+                            .frame(maxHeight: .infinity)
+
+                        Text(artifact.content)
+                            .font(Theme.mono(11.5))
+                            .foregroundStyle(Theme.textMid)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: true, vertical: true)
+                    }
+                    .padding(13)
+                }
+
+                if let errorMessage {
+                    Text(errorMessage)
+                        .font(Theme.mono(9.5))
+                        .foregroundStyle(Theme.onDevice)
+                        .padding(.horizontal, 13)
+                        .padding(.bottom, 10)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.black.opacity(0.22), in: RoundedRectangle(cornerRadius: 10))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(Color.white.opacity(0.065), lineWidth: 1)
+            )
+            .padding(.horizontal, 13)
+            .padding(.vertical, 8)
+        }
+    }
+
+    private func lineNumbers(for content: String) -> String {
+        let count = max(content.split(separator: "\n", omittingEmptySubsequences: false).count, 1)
+        return (1...count).map(String.init).joined(separator: "\n")
+    }
+
+    private func copyCode(_ content: String) {
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(content, forType: .string)
+        #else
+        UIPasteboard.general.string = content
+        #endif
+    }
+
+    @MainActor
+    private func open(_ artifact: ChatCodeArtifact, path: String) async {
+        guard !isOpening else { return }
+        guard let request = fileRequest(path: path) else {
+            errorMessage = "Not connected"
+            return
+        }
+        isOpening = true
+        errorMessage = nil
+        defer { isOpening = false }
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                errorMessage = "File download failed"
+                return
+            }
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("FruitcakeArtifacts", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let requestedName = artifact.filename ?? URL(fileURLWithPath: path).lastPathComponent
+            let safeName = (requestedName as NSString).lastPathComponent
+            let localURL = directory.appendingPathComponent(safeName.isEmpty ? "code.txt" : safeName)
+            try data.write(to: localURL, options: .atomic)
+            #if os(macOS)
+            NSWorkspace.shared.open(localURL)
+            #else
+            await UIApplication.shared.open(localURL)
+            #endif
+        } catch {
+            errorMessage = "File download failed"
+        }
+    }
+
+    private func fileRequest(path: String) -> URLRequest? {
+        guard let baseURL = authManager.serverURL,
+              let token = try? authManager.token() else { return nil }
+        let url = baseURL.appendingPathComponent("workspace/files")
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "path", value: path)]
+        guard let finalURL = components?.url else { return nil }
+        var request = URLRequest(url: finalURL)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 60
+        return request
+    }
+}
+
+struct ChatPlaceGroupBlockView: View {
+    let block: ChatContentBlock
+    let accent: Color
+    var onContextHandback: ((ChatNativeContextAttachment) -> Void)? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "mappin.and.ellipse")
+                    .foregroundStyle(accent)
+                Text((block.title ?? "Places").uppercased())
+                    .font(Theme.mono(10.5).weight(.semibold))
+                    .tracking(1.1)
+                    .foregroundStyle(Theme.textMid)
+                Spacer(minLength: 12)
+                if let provider = block.provider, !provider.isEmpty {
+                    Text(provider.uppercased())
+                        .font(Theme.mono(8.5).weight(.medium))
+                        .tracking(0.5)
+                        .foregroundStyle(Theme.textFaint)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
+
+            Rectangle()
+                .fill(Theme.stroke)
+                .frame(height: 1)
+
+            ForEach(Array(block.places.enumerated()), id: \.element.id) { index, place in
+                placeRow(place, index: index)
+                if index < block.places.count - 1 {
+                    Rectangle()
+                        .fill(Theme.stroke.opacity(0.7))
+                        .frame(height: 1)
+                        .padding(.leading, 48)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.white.opacity(0.065), lineWidth: 1)
+        )
+        .padding(.horizontal, 13)
+        .padding(.vertical, 8)
+    }
+
+    private func placeRow(_ place: ChatPlace, index: Int) -> some View {
+        HStack(alignment: .top, spacing: 11) {
+            Text("\(index + 1)")
+                .font(Theme.mono(10).weight(.semibold))
+                .foregroundStyle(accent)
+                .frame(width: 26, height: 26)
+                .background(accent.opacity(0.1), in: Circle())
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(place.name)
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .foregroundStyle(Theme.text)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if let priceRange = place.priceRange, !priceRange.isEmpty {
+                        Text(priceRange)
+                            .font(Theme.mono(9.5))
+                            .foregroundStyle(Theme.textFaint)
+                    }
+                }
+
+                if let category = place.category, !category.isEmpty {
+                    Text(category)
+                        .font(Theme.mono(9.5).weight(.medium))
+                        .foregroundStyle(accent.opacity(0.9))
+                }
+
+                if let address = place.address, !address.isEmpty {
+                    Text(address)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.textMid)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                metadata(place)
+            }
+
+            Spacer(minLength: 10)
+
+            VStack(alignment: .trailing, spacing: 7) {
+                if let onContextHandback {
+                    Button {
+                        onContextHandback(contextAttachment(for: place))
+                    } label: {
+                        Label("Ask", systemImage: "text.bubble")
+                    }
+                    .buttonStyle(.plain)
+                    .font(Theme.mono(9.5).weight(.medium))
+                    .foregroundStyle(accent)
+                }
+
+                if mapsURL(for: place) != nil {
+                    Button {
+                        openInMaps(place)
+                    } label: {
+                        Label("Maps", systemImage: "arrow.triangle.turn.up.right.diamond")
+                    }
+                    .buttonStyle(.plain)
+                    .font(Theme.mono(9.5).weight(.medium))
+                    .foregroundStyle(accent)
+                }
+
+                if let rawURL = place.url, let websiteURL = safeWebURL(rawURL) {
+                    Link(destination: websiteURL) {
+                        Label("Website", systemImage: "arrow.up.right")
+                    }
+                    .buttonStyle(.plain)
+                    .font(Theme.mono(9.5).weight(.medium))
+                    .foregroundStyle(accent)
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+    }
+
+    @ViewBuilder
+    private func metadata(_ place: ChatPlace) -> some View {
+        let hasRating = place.rating != nil
+        let hasDistance = place.distance != nil && !(place.distanceUnit ?? "").isEmpty
+        let hasPhone = !(place.phone ?? "").isEmpty
+        if hasRating || hasDistance || hasPhone {
+            HStack(spacing: 10) {
+                if let rating = place.rating {
+                    Label {
+                        Text(rating.formatted(.number.precision(.fractionLength(1))))
+                        if let reviewCount = place.reviewCount {
+                            Text("(\(reviewCount))")
+                                .foregroundStyle(Theme.textFaint)
+                        }
+                    } icon: {
+                        Image(systemName: "star.fill")
+                            .foregroundStyle(.yellow)
+                    }
+                }
+                if let distance = place.distance, let unit = place.distanceUnit, !unit.isEmpty {
+                    Label("\(distance.formatted(.number.precision(.fractionLength(0...1)))) \(unit)", systemImage: "location")
+                }
+                if let phone = place.phone, !phone.isEmpty {
+                    Text(phone)
+                }
+            }
+            .font(Theme.mono(9.5))
+            .foregroundStyle(Theme.textMid)
+        }
+    }
+
+    private func mapsURL(for place: ChatPlace) -> URL? {
+        var components = URLComponents(string: "https://maps.apple.com/")
+        var queryItems = [URLQueryItem(name: "q", value: place.name)]
+        if let latitude = place.latitude, let longitude = place.longitude {
+            queryItems.append(URLQueryItem(name: "ll", value: "\(latitude),\(longitude)"))
+        } else if let address = place.address, !address.isEmpty {
+            queryItems[0] = URLQueryItem(name: "q", value: "\(place.name), \(address)")
+        } else {
+            return nil
+        }
+        components?.queryItems = queryItems
+        return components?.url
+    }
+
+    private func openInMaps(_ place: ChatPlace) {
+        if let latitude = place.latitude, let longitude = place.longitude {
+            let placemark = MKPlacemark(
+                coordinate: CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+            )
+            let mapItem = MKMapItem(placemark: placemark)
+            mapItem.name = place.name
+            mapItem.openInMaps()
+            return
+        }
+        guard let url = mapsURL(for: place) else { return }
+        #if os(macOS)
+        NSWorkspace.shared.open(url)
+        #else
+        UIApplication.shared.open(url)
+        #endif
+    }
+
+    private func safeWebURL(_ value: String) -> URL? {
+        guard let url = URL(string: value), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
+            return nil
+        }
+        return url
+    }
+
+    private func contextAttachment(for place: ChatPlace) -> ChatNativeContextAttachment {
+        var lines = ["- Name: \(place.name)"]
+        if let category = place.category, !category.isEmpty { lines.append("- Category: \(category)") }
+        if let address = place.address, !address.isEmpty { lines.append("- Address: \(address)") }
+        if let rating = place.rating {
+            let reviews = place.reviewCount.map { ", \($0) reviews" } ?? ""
+            lines.append("- Rating: \(rating)\(reviews)")
+        }
+        if let priceRange = place.priceRange, !priceRange.isEmpty { lines.append("- Price: \(priceRange)") }
+        if let distance = place.distance, let unit = place.distanceUnit, !unit.isEmpty {
+            lines.append("- Distance: \(distance) \(unit)")
+        }
+        if let phone = place.phone, !phone.isEmpty { lines.append("- Phone: \(phone)") }
+        if let url = place.url, safeWebURL(url) != nil { lines.append("- Website: \(url)") }
+        return ChatNativeContextAttachment(
+            blockId: block.id,
+            sourceFingerprint: block.sourceFingerprint,
+            title: place.name,
+            kind: "place",
+            selectionSummary: "One selected place",
+            content: lines.joined(separator: "\n")
+        )
+    }
+}
+
 struct ChatFileArtifactBlockView: View {
     let block: ChatContentBlock
     let accent: Color
+    var onContextHandback: ((ChatNativeContextAttachment) -> Void)? = nil
 
     @Environment(AuthManager.self) private var authManager
     @State private var copied = false
@@ -84,6 +498,17 @@ struct ChatFileArtifactBlockView: View {
                 }
 
                 Spacer(minLength: 10)
+
+                if let onContextHandback {
+                    Button {
+                        onContextHandback(contextAttachment(for: artifact))
+                    } label: {
+                        Label("Ask", systemImage: "text.bubble")
+                    }
+                    .buttonStyle(.plain)
+                    .font(Theme.mono(10.5))
+                    .foregroundStyle(accent)
+                }
 
                 Button(copied ? "Copied" : "Copy Path") {
                     copyPath(artifact.path)
@@ -135,6 +560,22 @@ struct ChatFileArtifactBlockView: View {
         #else
         UIPasteboard.general.string = path
         #endif
+    }
+
+    private func contextAttachment(for artifact: ChatFileArtifact) -> ChatNativeContextAttachment {
+        ChatNativeContextAttachment(
+            blockId: block.id,
+            sourceFingerprint: block.sourceFingerprint,
+            title: artifact.filename,
+            kind: "file",
+            selectionSummary: "Workspace file reference",
+            content: """
+            - Filename: \(artifact.filename)
+            - Workspace path: `\(artifact.path)`
+            - Media type: \(artifact.mediaType)
+            - Operation: \(artifact.operation)
+            """
+        )
     }
 
     @MainActor
@@ -408,17 +849,31 @@ struct ChatStructuredTableBlockView: View {
     let block: ChatContentBlock
     let accent: Color
     let allowsExpansion: Bool
+    var onContextHandback: ((ChatNativeContextAttachment) -> Void)?
 
-    @State private var presentation: Presentation = .table
+    @State private var presentation: Presentation
     @State private var copied = false
     @State private var showingExpanded = false
     @State private var columnWidths: [CGFloat]
+    @State private var filterText = ""
+    @State private var sortColumn: Int?
+    @State private var sortAscending = true
+    @State private var selectedCategory: String?
+    @State private var selectedRowKeys: Set<String> = []
+    @State private var showingCSVExporter = false
 
-    init(block: ChatContentBlock, accent: Color, allowsExpansion: Bool = true) {
+    init(
+        block: ChatContentBlock,
+        accent: Color,
+        allowsExpansion: Bool = true,
+        onContextHandback: ((ChatNativeContextAttachment) -> Void)? = nil
+    ) {
         self.block = block
         self.accent = accent
         self.allowsExpansion = allowsExpansion
-        _columnWidths = State(initialValue: Self.initialColumnWidths(for: block))
+        self.onContextHandback = onContextHandback
+        _columnWidths = State(initialValue: Self.savedColumnWidths(for: block) ?? Self.initialColumnWidths(for: block))
+        _presentation = State(initialValue: Self.savedPresentation(for: block) ?? .table)
     }
 
     private enum Presentation: String, CaseIterable, Identifiable {
@@ -441,25 +896,51 @@ struct ChatStructuredTableBlockView: View {
         #else
         content
             .sheet(isPresented: $showingExpanded) {
-                ExpandedStructuredTableContent(block: block, accent: accent)
+                ExpandedStructuredTableContent(
+                    block: block,
+                    accent: accent,
+                    onContextHandback: onContextHandback
+                )
             }
         #endif
     }
 
     private var content: some View {
+        persistedContent
+            .fileExporter(
+                isPresented: $showingCSVExporter,
+                document: ChatCSVDocument(text: csvText),
+                contentType: .commaSeparatedText,
+                defaultFilename: csvFilename
+            ) { _ in }
+    }
+
+    private var persistedContent: some View {
+        tableSurface
+            .onChange(of: canChart) { _, available in
+                if !available { presentation = .table }
+            }
+            .onChange(of: presentation) { _, value in
+                UserDefaults.standard.set(value.rawValue, forKey: stateKey("presentation"))
+            }
+            .onChange(of: columnWidths) { _, value in
+                UserDefaults.standard.set(value.map(Double.init), forKey: stateKey("widths"))
+            }
+            .onChange(of: filterText) { _, _ in
+                selectedCategory = nil
+                selectedRowKeys.removeAll()
+            }
+    }
+
+    private var tableSurface: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
 
-            if presentation == .chart, canChart {
-                chart
-            } else {
-                ResizableChatTable(
-                    block: block,
-                    accent: accent,
-                    columnWidths: $columnWidths,
-                    allowsVerticalScrolling: !allowsExpansion
-                )
+            if !allowsExpansion {
+                inspectorControls
             }
+
+            activePresentation
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
@@ -470,8 +951,22 @@ struct ChatStructuredTableBlockView: View {
         )
         .padding(.horizontal, allowsExpansion ? 13 : 0)
         .padding(.vertical, allowsExpansion ? 8 : 0)
-        .onChange(of: canChart) { _, available in
-            if !available { presentation = .table }
+    }
+
+    @ViewBuilder
+    private var activePresentation: some View {
+        if presentation == .chart, canChart {
+            chart
+        } else {
+            ResizableChatTable(
+                block: block,
+                accent: accent,
+                rows: displayedRows,
+                columnWidths: $columnWidths,
+                allowsVerticalScrolling: !allowsExpansion,
+                allowsRowSelection: !allowsExpansion,
+                selectedRowKeys: $selectedRowKeys
+            )
         }
     }
 
@@ -497,7 +992,11 @@ struct ChatStructuredTableBlockView: View {
             if allowsExpansion {
                 Button {
                     #if os(macOS)
-                    StructuredDataWindowController.open(block: block, accent: accent)
+                    StructuredDataWindowController.open(
+                        block: block,
+                        accent: accent,
+                        onContextHandback: onContextHandback
+                    )
                     #else
                     showingExpanded = true
                     #endif
@@ -510,49 +1009,137 @@ struct ChatStructuredTableBlockView: View {
                 .help("Open this data in a separate resizable window")
             }
 
+            if let onContextHandback {
+                Button {
+                    onContextHandback(contextAttachment)
+                } label: {
+                    Label(contextActionLabel, systemImage: "text.bubble")
+                }
+                .buttonStyle(.plain)
+                .font(Theme.mono(10))
+                .foregroundStyle(accent)
+                .help("Attach the current bounded data view to the chat composer")
+            }
+
             Button(copied ? "Copied" : "Copy CSV") {
                 copyCSV()
             }
             .buttonStyle(.plain)
             .font(Theme.mono(10))
             .foregroundStyle(copied ? Theme.ok : accent)
+
+            if !allowsExpansion {
+                Button {
+                    showingCSVExporter = true
+                } label: {
+                    Label("Export CSV", systemImage: "square.and.arrow.down")
+                }
+                .buttonStyle(.plain)
+                .font(Theme.mono(10))
+                .foregroundStyle(accent)
+            }
         }
     }
 
-    @ViewBuilder
-    private var chart: some View {
-        if chartKind == "line" {
-            Chart(chartPoints) { point in
-                LineMark(
-                    x: .value("Category", point.category),
-                    y: .value("Value", point.value)
-                )
-                .foregroundStyle(by: .value("Series", point.series))
-                .interpolationMethod(.catmullRom)
+    private var inspectorControls: some View {
+        HStack(spacing: 10) {
+            TextField("Filter rows", text: $filterText)
+                .textFieldStyle(.roundedBorder)
+                .frame(minWidth: 180, idealWidth: 260, maxWidth: 360)
 
-                PointMark(
-                    x: .value("Category", point.category),
-                    y: .value("Value", point.value)
-                )
-                .foregroundStyle(by: .value("Series", point.series))
+            Picker("Sort", selection: $sortColumn) {
+                Text("Original order").tag(Int?.none)
+                ForEach(block.columns.indices, id: \.self) { index in
+                    Text(block.columns[index]).tag(Int?.some(index))
+                }
             }
-            .chartForegroundStyleScale(range: chartColors)
-            .chartLegend(position: .bottom, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(height: allowsExpansion ? 230 : 480, alignment: .leading)
-        } else {
+            .pickerStyle(.menu)
+            .frame(maxWidth: 220)
+
+            Button {
+                sortAscending.toggle()
+            } label: {
+                Label(
+                    sortAscending ? "Ascending" : "Descending",
+                    systemImage: sortAscending ? "arrow.up" : "arrow.down"
+                )
+            }
+            .buttonStyle(.plain)
+            .font(Theme.mono(9.5))
+            .foregroundStyle(sortColumn == nil ? Theme.textFaint : accent)
+            .disabled(sortColumn == nil)
+
+            Spacer(minLength: 8)
+
+            if !selectedRowKeys.isEmpty {
+                Button("Clear \(selectedRowKeys.count) selected") {
+                    selectedRowKeys.removeAll()
+                }
+                .buttonStyle(.plain)
+                .font(Theme.mono(9.5))
+                .foregroundStyle(accent)
+            } else {
+                Text("Select rows to narrow Ask About")
+                    .font(Theme.mono(9.5))
+                    .foregroundStyle(Theme.textFaint)
+            }
+
+            Text("\(displayedRows.count) of \(block.rows.count) rows")
+                .font(Theme.mono(9.5))
+                .foregroundStyle(Theme.textFaint)
+        }
+    }
+
+    private var chart: some View {
+        VStack(alignment: .leading, spacing: 10) {
             Chart(chartPoints) { point in
-                BarMark(
-                    x: .value("Category", point.category),
-                    y: .value("Value", point.value)
-                )
-                .foregroundStyle(by: .value("Series", point.series))
-                .position(by: .value("Series", point.series))
+                if chartKind == "line" {
+                    LineMark(
+                        x: .value("Category", point.category),
+                        y: .value("Value", point.value)
+                    )
+                    .foregroundStyle(by: .value("Series", point.series))
+                    .interpolationMethod(.catmullRom)
+
+                    PointMark(
+                        x: .value("Category", point.category),
+                        y: .value("Value", point.value)
+                    )
+                    .foregroundStyle(by: .value("Series", point.series))
+                } else {
+                    BarMark(
+                        x: .value("Category", point.category),
+                        y: .value("Value", point.value)
+                    )
+                    .foregroundStyle(by: .value("Series", point.series))
+                    .position(by: .value("Series", point.series))
+                }
             }
             .chartForegroundStyleScale(range: chartColors)
             .chartLegend(position: .bottom, alignment: .leading)
+            .chartXSelection(value: $selectedCategory)
             .frame(maxWidth: .infinity, alignment: .leading)
             .frame(height: allowsExpansion ? 230 : 480, alignment: .leading)
+
+            if let selectedCategory, !selectedChartPoints.isEmpty {
+                HStack(spacing: 12) {
+                    Text(selectedCategory)
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(Theme.text)
+                    ForEach(selectedChartPoints) { point in
+                        HStack(spacing: 4) {
+                            Text(point.series)
+                                .foregroundStyle(Theme.textFaint)
+                            Text(point.value.formatted(.number.precision(.fractionLength(0...3))))
+                                .foregroundStyle(accent)
+                        }
+                        .font(Theme.mono(9.5))
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(Color.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 7))
+            }
         }
     }
 
@@ -569,7 +1156,7 @@ struct ChatStructuredTableBlockView: View {
               block.columns.indices.contains(hint.categoryColumn)
         else { return [] }
 
-        return block.rows.flatMap { row -> [ChartPoint] in
+        return displayedRows.flatMap { row -> [ChartPoint] in
             guard row.indices.contains(hint.categoryColumn) else { return [] }
             let category = row[hint.categoryColumn]
             return hint.valueColumns.compactMap { index in
@@ -580,6 +1167,31 @@ struct ChatStructuredTableBlockView: View {
                 return ChartPoint(category: category, series: block.columns[index], value: value)
             }
         }
+    }
+
+    private var selectedChartPoints: [ChartPoint] {
+        guard let selectedCategory else { return [] }
+        return chartPoints.filter { $0.category == selectedCategory }
+    }
+
+    private var displayedRows: [[String]] {
+        let query = filterText.trimmingCharacters(in: .whitespacesAndNewlines)
+        var rows = query.isEmpty ? block.rows : block.rows.filter { row in
+            row.contains { $0.localizedCaseInsensitiveContains(query) }
+        }
+        guard let sortColumn else { return rows }
+        rows.sort { lhs, rhs in
+            let left = lhs.indices.contains(sortColumn) ? lhs[sortColumn] : ""
+            let right = rhs.indices.contains(sortColumn) ? rhs[sortColumn] : ""
+            let comparison: ComparisonResult
+            if let leftNumber = numericValue(left), let rightNumber = numericValue(right) {
+                comparison = leftNumber == rightNumber ? .orderedSame : (leftNumber < rightNumber ? .orderedAscending : .orderedDescending)
+            } else {
+                comparison = left.localizedStandardCompare(right)
+            }
+            return sortAscending ? comparison == .orderedAscending : comparison == .orderedDescending
+        }
+        return rows
     }
 
     private var chartColors: [Color] {
@@ -593,17 +1205,79 @@ struct ChatStructuredTableBlockView: View {
     }
 
     private func copyCSV() {
-        let lines = [block.columns] + block.rows
-        let value = lines
-            .map { $0.map(csvCell).joined(separator: ",") }
-            .joined(separator: "\n")
         #if os(macOS)
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(value, forType: .string)
+        NSPasteboard.general.setString(csvText, forType: .string)
         #else
-        UIPasteboard.general.string = value
+        UIPasteboard.general.string = csvText
         #endif
         copied = true
+    }
+
+    private var csvText: String {
+        ([block.columns] + displayedRows)
+            .map { $0.map(csvCell).joined(separator: ",") }
+            .joined(separator: "\n")
+    }
+
+    private var contextActionLabel: String {
+        if !selectedRowKeys.isEmpty { return "Ask About Rows" }
+        return selectedCategory == nil ? "Ask About" : "Ask About Point"
+    }
+
+    private var contextAttachment: ChatNativeContextAttachment {
+        let selectedRows: [[String]]
+        let selectionSummary: String
+        if presentation == .table, !selectedRowKeys.isEmpty {
+            selectedRows = displayedRows.filter { selectedRowKeys.contains(rowKey($0)) }
+            selectionSummary = "\(selectedRows.count) selected rows"
+        } else if let selectedCategory, let categoryColumn = block.chart?.categoryColumn {
+            selectedRows = displayedRows.filter { row in
+                row.indices.contains(categoryColumn) && row[categoryColumn] == selectedCategory
+            }
+            selectionSummary = "Chart category \"\(selectedCategory)\""
+        } else {
+            selectedRows = displayedRows
+            selectionSummary = filterText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "Current view, \(displayedRows.count) rows"
+                : "Filtered view, \(displayedRows.count) rows"
+        }
+
+        let boundedRows = Array(selectedRows.prefix(12))
+        let boundedColumns = Array(block.columns.prefix(8))
+        let markdownRows = boundedRows.map { row in
+            boundedColumns.indices.map { index in
+                let value = row.indices.contains(index) ? row[index] : ""
+                return value.replacingOccurrences(of: "|", with: "\\|").prefix(160).description
+            }
+        }
+        var lines = [
+            "| " + boundedColumns.joined(separator: " | ") + " |",
+            "| " + boundedColumns.map { _ in "---" }.joined(separator: " | ") + " |",
+        ]
+        lines.append(contentsOf: markdownRows.map { "| " + $0.joined(separator: " | ") + " |" })
+        if selectedRows.count > boundedRows.count {
+            lines.append("\n_\(selectedRows.count - boundedRows.count) additional rows omitted from this bounded attachment._")
+        }
+        return ChatNativeContextAttachment(
+            blockId: block.id,
+            sourceFingerprint: block.sourceFingerprint,
+            title: block.title ?? "Structured Data",
+            kind: presentation == .chart ? "chart" : "table",
+            selectionSummary: selectionSummary,
+            content: lines.joined(separator: "\n")
+        )
+    }
+
+    private func rowKey(_ row: [String]) -> String {
+        row.joined(separator: "\u{1F}")
+    }
+
+    private var csvFilename: String {
+        let title = (block.title ?? "Fruitcake Data")
+            .replacingOccurrences(of: "[^A-Za-z0-9._-]+", with: "-", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return title.isEmpty ? "Fruitcake-Data.csv" : "\(title).csv"
     }
 
     private func csvCell(_ value: String) -> String {
@@ -620,13 +1294,39 @@ struct ChatStructuredTableBlockView: View {
             return min(max(CGFloat(longest) * 6.5 + 30, 110), 280)
         }
     }
+
+    private func stateKey(_ suffix: String) -> String {
+        Self.stateKey(for: block, suffix: suffix)
+    }
+
+    private static func stateKey(for block: ChatContentBlock, suffix: String) -> String {
+        "chat.structured-table.\(block.sourceFingerprint ?? block.id).\(suffix)"
+    }
+
+    private static func savedColumnWidths(for block: ChatContentBlock) -> [CGFloat]? {
+        guard let storedValues = UserDefaults.standard.array(forKey: stateKey(for: block, suffix: "widths")),
+              storedValues.count == block.columns.count else { return nil }
+        let values = storedValues.compactMap { ($0 as? NSNumber)?.doubleValue }
+        guard values.count == storedValues.count else { return nil }
+        return values.map { CGFloat(min(max($0, 80), 520)) }
+    }
+
+    private static func savedPresentation(for block: ChatContentBlock) -> Presentation? {
+        guard let raw = UserDefaults.standard.string(forKey: stateKey(for: block, suffix: "presentation")) else {
+            return nil
+        }
+        return Presentation(rawValue: raw)
+    }
 }
 
 private struct ResizableChatTable: View {
     let block: ChatContentBlock
     let accent: Color
+    let rows: [[String]]
     @Binding var columnWidths: [CGFloat]
     let allowsVerticalScrolling: Bool
+    let allowsRowSelection: Bool
+    @Binding var selectedRowKeys: Set<String>
 
     @State private var activeResizeIndex: Int?
     @State private var resizeStartWidth: CGFloat = 0
@@ -654,9 +1354,9 @@ private struct ResizableChatTable: View {
         VStack(alignment: .leading, spacing: 0) {
             row(block.columns, isHeader: true, rowIndex: nil)
             Rectangle().fill(Color.white.opacity(0.08)).frame(height: 1)
-            ForEach(Array(block.rows.enumerated()), id: \.offset) { index, values in
+            ForEach(Array(rows.enumerated()), id: \.offset) { index, values in
                 row(values, isHeader: false, rowIndex: index)
-                if index < block.rows.count - 1 {
+                if index < rows.count - 1 {
                     Rectangle().fill(Color.white.opacity(0.035)).frame(height: 1)
                 }
             }
@@ -686,7 +1386,17 @@ private struct ResizableChatTable: View {
                     }
                 }
                 .frame(width: width(at: columnIndex), alignment: .leading)
-                .background(rowBackground(rowIndex))
+                .background(rowBackground(rowIndex, values: values))
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard allowsRowSelection, !isHeader else { return }
+            let key = rowKey(values)
+            if selectedRowKeys.contains(key) {
+                selectedRowKeys.remove(key)
+            } else {
+                selectedRowKeys.insert(key)
             }
         }
     }
@@ -745,6 +1455,10 @@ private struct ResizableChatTable: View {
         values.indices.contains(index) ? values[index] : ""
     }
 
+    private func rowKey(_ row: [String]) -> String {
+        row.joined(separator: "\u{1F}")
+    }
+
     @ViewBuilder
     private func cellText(_ value: String) -> some View {
         if let attributed = attributedCell(value) {
@@ -781,15 +1495,41 @@ private struct ResizableChatTable: View {
         return (rowIndex ?? 0).isMultiple(of: 2) ? Theme.textMid : Theme.textDim
     }
 
-    private func rowBackground(_ rowIndex: Int?) -> Color {
+    private func rowBackground(_ rowIndex: Int?, values: [String]) -> Color {
         guard let rowIndex else { return Color.white.opacity(0.025) }
+        if allowsRowSelection, selectedRowKeys.contains(rowKey(values)) {
+            return accent.opacity(0.14)
+        }
         return rowIndex.isMultiple(of: 2) ? Color.clear : Color.white.opacity(0.012)
+    }
+}
+
+private struct ChatCSVDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.commaSeparatedText] }
+
+    let text: String
+
+    init(text: String) {
+        self.text = text
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        guard let data = configuration.file.regularFileContents,
+              let value = String(data: data, encoding: .utf8) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        text = value
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: Data(text.utf8))
     }
 }
 
 private struct ExpandedStructuredTableContent: View {
     let block: ChatContentBlock
     let accent: Color
+    var onContextHandback: ((ChatNativeContextAttachment) -> Void)?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -811,7 +1551,8 @@ private struct ExpandedStructuredTableContent: View {
             ChatStructuredTableBlockView(
                 block: block,
                 accent: accent,
-                allowsExpansion: false
+                allowsExpansion: false,
+                onContextHandback: onContextHandback
             )
             .padding(18)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -828,17 +1569,35 @@ private final class StructuredDataWindowController: NSWindowController, NSWindow
 
     private let windowID: UUID
 
-    static func open(block: ChatContentBlock, accent: Color) {
+    static func open(
+        block: ChatContentBlock,
+        accent: Color,
+        onContextHandback: ((ChatNativeContextAttachment) -> Void)?
+    ) {
         let id = UUID()
-        let controller = StructuredDataWindowController(id: id, block: block, accent: accent)
+        let controller = StructuredDataWindowController(
+            id: id,
+            block: block,
+            accent: accent,
+            onContextHandback: onContextHandback
+        )
         activeWindows[id] = controller
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
     }
 
-    private init(id: UUID, block: ChatContentBlock, accent: Color) {
+    private init(
+        id: UUID,
+        block: ChatContentBlock,
+        accent: Color,
+        onContextHandback: ((ChatNativeContextAttachment) -> Void)?
+    ) {
         windowID = id
-        let content = ExpandedStructuredTableContent(block: block, accent: accent)
+        let content = ExpandedStructuredTableContent(
+            block: block,
+            accent: accent,
+            onContextHandback: onContextHandback
+        )
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1_150, height: 760),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],

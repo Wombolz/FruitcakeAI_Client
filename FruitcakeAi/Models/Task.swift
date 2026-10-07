@@ -360,6 +360,9 @@ struct ChatContentBlock: Codable, Hashable, Identifiable {
     let items: [ChatStatItem]
     let events: [ChatTimelineEvent]
     let file: ChatFileArtifact?
+    let code: ChatCodeArtifact?
+    let provider: String?
+    let places: [ChatPlace]
 
     init(
         schemaVersion: Int = 1,
@@ -375,7 +378,10 @@ struct ChatContentBlock: Codable, Hashable, Identifiable {
         sections: [ChatNewsSection] = [],
         items: [ChatStatItem] = [],
         events: [ChatTimelineEvent] = [],
-        file: ChatFileArtifact? = nil
+        file: ChatFileArtifact? = nil,
+        code: ChatCodeArtifact? = nil,
+        provider: String? = nil,
+        places: [ChatPlace] = []
     ) {
         self.schemaVersion = schemaVersion
         self.id = id
@@ -391,11 +397,14 @@ struct ChatContentBlock: Codable, Hashable, Identifiable {
         self.items = items
         self.events = events
         self.file = file
+        self.code = code
+        self.provider = provider
+        self.places = places
     }
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, id, type, sourceMarkdown, sourceFingerprint
-        case columns, columnAlignments, rows, chart, title, sections, items, events, file
+        case columns, columnAlignments, rows, chart, title, sections, items, events, file, code, provider, places
     }
 
     init(from decoder: Decoder) throws {
@@ -414,6 +423,40 @@ struct ChatContentBlock: Codable, Hashable, Identifiable {
         items = try container.decodeIfPresent([ChatStatItem].self, forKey: .items) ?? []
         events = try container.decodeIfPresent([ChatTimelineEvent].self, forKey: .events) ?? []
         file = try container.decodeIfPresent(ChatFileArtifact.self, forKey: .file)
+        code = try container.decodeIfPresent(ChatCodeArtifact.self, forKey: .code)
+        provider = try container.decodeIfPresent(String.self, forKey: .provider)
+        places = try container.decodeIfPresent([ChatPlace].self, forKey: .places) ?? []
+    }
+}
+
+/// Explicit, user-selected context handed back from a native content surface.
+/// This is intentionally ephemeral and bounded; it is serialized into the
+/// outgoing user message only after the user chooses to attach and send it.
+struct ChatNativeContextAttachment: Identifiable, Hashable {
+    let id = UUID()
+    let blockId: String
+    let sourceFingerprint: String?
+    let title: String
+    let kind: String
+    let selectionSummary: String
+    let content: String
+
+    var promptAppendix: String {
+        var lines = [
+            "---",
+            "**Attached native context (selected by me)**",
+            "- Title: \(title)",
+            "- Type: \(kind)",
+            "- Selection: \(selectionSummary)",
+            "- Block: \(blockId)",
+        ]
+        if let sourceFingerprint, !sourceFingerprint.isEmpty {
+            lines.append("- Source fingerprint: \(sourceFingerprint)")
+        }
+        lines.append("")
+        lines.append(content)
+        lines.append("---")
+        return lines.joined(separator: "\n")
     }
 }
 
@@ -423,6 +466,8 @@ enum ChatContentBlockKind: String {
     case statGroup = "stat_group"
     case timeline
     case fileArtifact = "file_artifact"
+    case placeGroup = "place_group"
+    case codeArtifact = "code_artifact"
 }
 
 struct ChatStatItem: Codable, Hashable, Identifiable {
@@ -444,6 +489,35 @@ struct ChatFileArtifact: Codable, Hashable {
     let filename: String
     let mediaType: String
     let operation: String
+}
+
+struct ChatCodeArtifact: Codable, Hashable {
+    let language: String
+    let filename: String?
+    let content: String
+    let path: String?
+}
+
+struct ChatPlace: Codable, Hashable, Identifiable {
+    let name: String
+    let address: String?
+    let latitude: Double?
+    let longitude: Double?
+    let category: String?
+    let categories: [String]?
+    let url: String?
+    let phone: String?
+    let rating: Double?
+    let ratingMax: Double?
+    let reviewCount: Int?
+    let priceRange: String?
+    let distance: Double?
+    let distanceUnit: String?
+    let provider: String?
+
+    var id: String {
+        "\(name):\(address ?? ""):\(latitude ?? 0):\(longitude ?? 0)"
+    }
 }
 
 extension ChatContentBlock {
