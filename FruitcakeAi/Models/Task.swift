@@ -464,10 +464,11 @@ struct ChatEvidenceMetadata: Codable, Hashable {
     let sourceKinds: [String]
     let sourceCounts: [String: Int]
     let toolDetails: [ChatEvidenceToolDetail]
+    let citations: [ChatEvidenceCitation]
     let imageArtifacts: [ChatImageArtifact]
 
     private enum CodingKeys: String, CodingKey {
-        case grounded, toolNames, sourceKinds, sourceCounts, toolDetails, imageArtifacts
+        case grounded, toolNames, sourceKinds, sourceCounts, toolDetails, citations, imageArtifacts
     }
 
     init(
@@ -476,6 +477,7 @@ struct ChatEvidenceMetadata: Codable, Hashable {
         sourceKinds: [String] = [],
         sourceCounts: [String: Int] = [:],
         toolDetails: [ChatEvidenceToolDetail] = [],
+        citations: [ChatEvidenceCitation] = [],
         imageArtifacts: [ChatImageArtifact] = []
     ) {
         self.grounded = grounded
@@ -483,6 +485,7 @@ struct ChatEvidenceMetadata: Codable, Hashable {
         self.sourceKinds = sourceKinds
         self.sourceCounts = sourceCounts
         self.toolDetails = toolDetails
+        self.citations = citations
         self.imageArtifacts = imageArtifacts
     }
 
@@ -493,11 +496,34 @@ struct ChatEvidenceMetadata: Codable, Hashable {
         sourceKinds = try container.decodeIfPresent([String].self, forKey: .sourceKinds) ?? []
         sourceCounts = try container.decodeIfPresent([String: Int].self, forKey: .sourceCounts) ?? [:]
         toolDetails = try container.decodeIfPresent([ChatEvidenceToolDetail].self, forKey: .toolDetails) ?? []
+        citations = try container.decodeIfPresent([ChatEvidenceCitation].self, forKey: .citations) ?? []
         imageArtifacts = try container.decodeIfPresent([ChatImageArtifact].self, forKey: .imageArtifacts) ?? []
     }
 
     var isMeaningful: Bool {
-        grounded || !toolNames.isEmpty || !sourceKinds.isEmpty || !sourceCounts.isEmpty || !toolDetails.isEmpty || !imageArtifacts.isEmpty
+        grounded || !toolNames.isEmpty || !sourceKinds.isEmpty || !sourceCounts.isEmpty || !toolDetails.isEmpty || !citations.isEmpty || !imageArtifacts.isEmpty
+    }
+}
+
+struct ChatEvidenceCitation: Codable, Hashable, Identifiable {
+    let url: String?
+    let title: String?
+    let label: String?
+    let source: String?
+    let publishedAt: String?
+    let document: String?
+    let path: String?
+
+    var id: String { url ?? path ?? document ?? displayTitle }
+    var displayTitle: String {
+        let preferred = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let preferred, !preferred.isEmpty { return preferred }
+        let fallback = label?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let fallback, !fallback.isEmpty { return fallback }
+        if let document, !document.isEmpty { return document }
+        if let path, !path.isEmpty { return path }
+        if let url, !url.isEmpty { return URL(string: url)?.host ?? url }
+        return "Source"
     }
 }
 

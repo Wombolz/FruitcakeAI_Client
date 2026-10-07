@@ -534,6 +534,12 @@ private struct EvidenceSection: View {
                         }
                         EvidenceDetailRow(detail: detail, accent: accent)
                     }
+                    if !evidence.citations.isEmpty {
+                        if !evidence.toolDetails.isEmpty {
+                            Rectangle().fill(Color.white.opacity(0.045)).frame(height: 1)
+                        }
+                        CitationRows(items: evidence.citations, accent: accent)
+                    }
                     if !evidence.toolNames.isEmpty || !lowSignalSummary.isEmpty {
                         lowSignalRow
                     }
@@ -597,6 +603,7 @@ private struct EvidenceSection: View {
     /// Single human count for the header ("3 sources") rather than a
     /// section-by-section readout.
     private var totalSourceCount: Int {
+        if !evidence.citations.isEmpty { return evidence.citations.count }
         if !evidence.sourceCounts.isEmpty { return evidence.sourceCounts.values.reduce(0, +) }
         return evidence.toolDetails.filter { $0.toolName == "fetch_page" }.count
     }
@@ -616,6 +623,62 @@ private struct EvidenceSection: View {
             parts.append("\(count) \(key.replacingOccurrences(of: "_", with: " "))")
         }
         return parts.joined(separator: " · ")
+    }
+}
+
+private struct CitationRows: View {
+    let items: [ChatEvidenceCitation]
+    let accent: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("SOURCES")
+                .font(Theme.mono(9.5, weight: .semibold))
+                .kerning(1.2)
+                .foregroundStyle(Theme.textFaint)
+            ForEach(items.prefix(12)) { item in
+                if let rawURL = item.url, let url = URL(string: rawURL) {
+                    Link(destination: url) {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Image(systemName: "arrow.up.right.square")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(accent)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.displayTitle)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(Theme.text)
+                                    .lineLimit(2)
+                                Text(sourceLine(for: item, url: url))
+                                    .font(Theme.mono(9.5))
+                                    .foregroundStyle(Theme.textFaint)
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Image(systemName: "doc.text")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(accent)
+                        Text(item.displayTitle)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Theme.text)
+                            .lineLimit(2)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 10)
+    }
+
+    private func sourceLine(for item: ChatEvidenceCitation, url: URL) -> String {
+        [item.source, url.host, item.publishedAt]
+            .compactMap { value in
+                guard let value, !value.isEmpty else { return nil }
+                return value
+            }
+            .joined(separator: " · ")
     }
 }
 
@@ -671,7 +734,8 @@ private struct EvidenceDetailRow: View {
     @Environment(\.openURL) private var openURL
 
     private static let searchTools: Set<String> = [
-        "web_search", "search_library", "search_my_feeds", "search_feeds"
+        "web_search", "web_context", "search_library", "search_my_feeds",
+        "search_my_feeds_timeline", "search_feeds"
     ]
 
     private var isSearch: Bool { Self.searchTools.contains(detail.toolName) }
@@ -775,9 +839,9 @@ private struct EvidenceDetailRow: View {
 
     private var searchTargetLabel: String {
         switch detail.toolName {
-        case "web_search": return "the web"
+        case "web_search", "web_context": return "the web"
         case "search_library": return "your library"
-        case "search_my_feeds", "search_feeds": return "your feeds"
+        case "search_my_feeds", "search_my_feeds_timeline", "search_feeds": return "your feeds"
         default: return "for"
         }
     }
