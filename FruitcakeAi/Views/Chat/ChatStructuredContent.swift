@@ -28,9 +28,58 @@ struct ChatStructuredContentBlockView: View {
             ChatStructuredTableBlockView(block: block, accent: accent)
         case .newsDigest:
             ChatNewsDigestBlockView(block: block, accent: accent)
+        case .statGroup:
+            ChatStatGroupBlockView(block: block, accent: accent)
         case nil:
             EmptyView()
         }
+    }
+}
+
+struct ChatStatGroupBlockView: View {
+    let block: ChatContentBlock
+    let accent: Color
+
+    private let columns = [GridItem(.adaptive(minimum: 150), spacing: 8, alignment: .topLeading)]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            HStack(spacing: 8) {
+                Image(systemName: "gauge.with.dots.needle.33percent")
+                    .foregroundStyle(accent)
+                Text((block.title ?? "Summary").uppercased())
+                    .font(Theme.mono(10.5).weight(.semibold))
+                    .tracking(1.1)
+                    .foregroundStyle(Theme.textMid)
+            }
+
+            LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
+                ForEach(block.items) { item in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(item.label.uppercased())
+                            .font(Theme.mono(9))
+                            .tracking(0.7)
+                            .foregroundStyle(Theme.textFaint)
+                        Text(item.value)
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(Theme.text)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+                    .background(Color.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 7))
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(13)
+        .background(Color.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.white.opacity(0.065), lineWidth: 1)
+        )
+        .padding(.horizontal, 13)
+        .padding(.vertical, 8)
     }
 }
 

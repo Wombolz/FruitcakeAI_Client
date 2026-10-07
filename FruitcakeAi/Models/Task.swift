@@ -357,6 +357,7 @@ struct ChatContentBlock: Codable, Hashable, Identifiable {
     let chart: ChatChartHint?
     let title: String?
     let sections: [ChatNewsSection]
+    let items: [ChatStatItem]
 
     init(
         schemaVersion: Int = 1,
@@ -369,7 +370,8 @@ struct ChatContentBlock: Codable, Hashable, Identifiable {
         rows: [[String]] = [],
         chart: ChatChartHint? = nil,
         title: String? = nil,
-        sections: [ChatNewsSection] = []
+        sections: [ChatNewsSection] = [],
+        items: [ChatStatItem] = []
     ) {
         self.schemaVersion = schemaVersion
         self.id = id
@@ -382,11 +384,12 @@ struct ChatContentBlock: Codable, Hashable, Identifiable {
         self.chart = chart
         self.title = title
         self.sections = sections
+        self.items = items
     }
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, id, type, sourceMarkdown, sourceFingerprint
-        case columns, columnAlignments, rows, chart, title, sections
+        case columns, columnAlignments, rows, chart, title, sections, items
     }
 
     init(from decoder: Decoder) throws {
@@ -402,12 +405,21 @@ struct ChatContentBlock: Codable, Hashable, Identifiable {
         chart = try container.decodeIfPresent(ChatChartHint.self, forKey: .chart)
         title = try container.decodeIfPresent(String.self, forKey: .title)
         sections = try container.decodeIfPresent([ChatNewsSection].self, forKey: .sections) ?? []
+        items = try container.decodeIfPresent([ChatStatItem].self, forKey: .items) ?? []
     }
 }
 
 enum ChatContentBlockKind: String {
     case table
     case newsDigest = "news_digest"
+    case statGroup = "stat_group"
+}
+
+struct ChatStatItem: Codable, Hashable, Identifiable {
+    let label: String
+    let value: String
+
+    var id: String { "\(label):\(value)" }
 }
 
 extension ChatContentBlock {
