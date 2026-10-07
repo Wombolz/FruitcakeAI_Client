@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.2.2
+
+- Added richer evidence-aware streaming chat with durable inline image artifacts and tool/source details that survive reloads.
+- Added native cards for tables, charts, news, metrics, timelines, workspace files, places, and code.
+- Added wider assistant responses plus resizable detached data windows with column resizing, filtering, sorting, clickable links, and CSV copy/export.
+- Added explicit context handback from tables, chart selections, place cards, and file references into the originating chat session.
+- Added account and model controls plus administrator-managed user settings.
+- Improved structured-content sizing, multi-table rendering, contextual headings, and session persistence.
+
 ## v0.2.1
 
 - fix chat model selector so the chosen model updates immediately without requiring a refresh
