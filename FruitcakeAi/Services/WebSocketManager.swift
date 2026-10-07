@@ -19,6 +19,9 @@ import Observation
 
 enum WSEvent {
     case token(String)                          // partial chunk — append to streaming buffer
+    case draftToken(String)                     // provisional model text — may be reset by a tool call
+    case draftReset                             // discard provisional narration before tool execution
+    case draftCommit                            // promote provisional text to the final response buffer
     case done(String, Int?, ChatMessageMetadata?)     // full response — store in SwiftData
     case state(ChatLiveStatePayload)
     case personaSwitched(name: String, message: String)
@@ -28,21 +31,24 @@ enum WSEvent {
 struct ChatLiveStatePayload: Decodable, Equatable {
     let state: String
     let toolNames: [String]
+    let toolDetails: [ChatLiveToolDetail]
     let retryReason: String?
     let attempt: Int?
 
     private enum CodingKeys: String, CodingKey {
-        case state, toolNames, retryReason, attempt
+        case state, toolNames, toolDetails, retryReason, attempt
     }
 
     init(
         state: String,
         toolNames: [String] = [],
+        toolDetails: [ChatLiveToolDetail] = [],
         retryReason: String? = nil,
         attempt: Int? = nil
     ) {
         self.state = state
         self.toolNames = toolNames
+        self.toolDetails = toolDetails
         self.retryReason = retryReason
         self.attempt = attempt
     }
@@ -51,8 +57,49 @@ struct ChatLiveStatePayload: Decodable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         state = (try? container.decode(String.self, forKey: .state)) ?? ""
         toolNames = (try? container.decode([String].self, forKey: .toolNames)) ?? []
+        toolDetails = (try? container.decode([ChatLiveToolDetail].self, forKey: .toolDetails)) ?? []
         retryReason = try? container.decode(String.self, forKey: .retryReason)
         attempt = try? container.decode(Int.self, forKey: .attempt)
+    }
+}
+
+struct ChatLiveToolDetail: Decodable, Equatable {
+    let toolName: String
+    let arguments: [String: String]
+
+    private enum CodingKeys: String, CodingKey {
+        case toolName, arguments
+    }
+
+    init(toolName: String, arguments: [String: String] = [:]) {
+        self.toolName = toolName
+        self.arguments = arguments
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        toolName = (try? container.decode(String.self, forKey: .toolName)) ?? ""
+        arguments = (try? container.decode([String: LiveToolArgumentValue].self, forKey: .arguments))?
+            .mapValues(\.description) ?? [:]
+    }
+}
+
+private struct LiveToolArgumentValue: Decodable {
+    let description: String
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let value = try? container.decode(String.self) {
+            description = value
+        } else if let value = try? container.decode(Int.self) {
+            description = String(value)
+        } else if let value = try? container.decode(Double.self) {
+            description = String(value)
+        } else if let value = try? container.decode(Bool.self) {
+            description = value ? "true" : "false"
+        } else {
+            description = ""
+        }
     }
 }
 
@@ -322,6 +369,15 @@ final class WebSocketManager: NSObject, URLSessionWebSocketDelegate {
         case "token":
             responseContinuation?.yield(.token(payload.content))
 
+        case "draft_token":
+            responseContinuation?.yield(.draftToken(payload.content))
+
+        case "draft_reset":
+            responseContinuation?.yield(.draftReset)
+
+        case "draft_commit":
+            responseContinuation?.yield(.draftCommit)
+
         case "state":
             if let statePayload = payload.statePayload {
                 responseContinuation?.yield(.state(statePayload))
@@ -403,7 +459,7 @@ private struct WSPayload: Decodable {
 
     private enum CodingKeys: String, CodingKey {
         case type, content, persona, messageId, metadata
-        case state, toolNames, retryReason, attempt
+        case state, toolNames, toolDetails, retryReason, attempt
     }
 
     init(from decoder: Decoder) throws {
@@ -417,11 +473,13 @@ private struct WSPayload: Decodable {
         if type == "state" {
             let state = (try? container.decode(String.self, forKey: .state)) ?? ""
             let toolNames = (try? container.decode([String].self, forKey: .toolNames)) ?? []
+            let toolDetails = (try? container.decode([ChatLiveToolDetail].self, forKey: .toolDetails)) ?? []
             let retryReason = try? container.decode(String.self, forKey: .retryReason)
             let attempt = try? container.decode(Int.self, forKey: .attempt)
             statePayload = ChatLiveStatePayload(
                 state: state,
                 toolNames: toolNames,
+                toolDetails: toolDetails,
                 retryReason: retryReason,
                 attempt: attempt
             )

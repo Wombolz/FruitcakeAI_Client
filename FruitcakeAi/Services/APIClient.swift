@@ -9,6 +9,15 @@
 
 import Foundation
 
+struct WorkspaceUploadResponse: Decodable, Hashable {
+    let path: String
+    let filename: String
+    let storedFilename: String
+    let mediaType: String
+    let sizeBytes: Int
+    let isImage: Bool
+}
+
 @MainActor
 final class APIClient {
 
@@ -75,6 +84,22 @@ final class APIClient {
         let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response, data: data)
         return data
+    }
+
+    func uploadWorkspaceFile(
+        fileData: Data,
+        fileName: String,
+        mimeType: String,
+        targetDir: String = "uploads/chat"
+    ) async throws -> WorkspaceUploadResponse {
+        let data = try await upload(
+            "/workspace/uploads",
+            fileData: fileData,
+            fileName: fileName,
+            mimeType: mimeType,
+            fields: ["target_dir": targetDir]
+        )
+        return try decode(WorkspaceUploadResponse.self, from: data)
     }
 
     // MARK: - Private helpers
@@ -409,6 +434,114 @@ final class APIClient {
             method: "PATCH",
             body: ChatRoutingPreferenceBody(chatRoutingPreference: preference)
         )
+    }
+
+    // MARK: - User settings and integrations
+
+    func fetchUserAssistantSettings() async throws -> UserAssistantSettings {
+        try await request("/settings/me")
+    }
+
+    func updateUserAssistantSettings(
+        _ patch: UserAssistantSettingsPatch
+    ) async throws -> UserAssistantSettings {
+        try await request("/settings/me", method: "PATCH", body: patch)
+    }
+
+    func fetchAssistantModelProfiles() async throws -> [AssistantModelProfile] {
+        let response: AssistantModelListResponse = try await request("/llm/models")
+        return response.models
+    }
+
+    func fetchAdminModelProfiles() async throws -> [AssistantModelProfile] {
+        let response: AdminModelProfileListResponse = try await request("/admin/model-profiles")
+        return response.profiles
+    }
+
+    func updateAdminModelProfile(
+        _ profileID: String,
+        patch: AdminModelProfilePatch
+    ) async throws -> AssistantModelProfile {
+        try await request(
+            "/admin/model-profiles/\(profileID)",
+            method: "PATCH",
+            body: patch
+        )
+    }
+
+    func fetchAdminUsers() async throws -> [AdminUserProfile] {
+        try await request("/admin/users")
+    }
+
+    func createAdminUser(_ body: AdminUserCreate) async throws -> AdminUserProfile {
+        try await request("/admin/users", method: "POST", body: body)
+    }
+
+    func updateAdminUser(_ userID: Int, patch: AdminUserPatch) async throws -> AdminUserProfile {
+        try await request("/admin/users/\(userID)", method: "PATCH", body: patch)
+    }
+
+    func fetchAdminUserModelAccess(_ userID: Int) async throws -> AdminUserModelAccess {
+        try await request("/admin/users/\(userID)/model-access")
+    }
+
+    func updateAdminUserModelAccess(
+        _ userID: Int,
+        allowedProfileIDs: [String]
+    ) async throws -> AdminUserModelAccess {
+        try await request(
+            "/admin/users/\(userID)/model-access",
+            method: "PUT",
+            body: AdminUserModelAccessPatch(allowedProfileIds: allowedProfileIDs)
+        )
+    }
+
+    func fetchUserIntegrations() async throws -> [UserIntegrationSummary] {
+        let response: UserIntegrationListResponse = try await request("/integrations")
+        return response.integrations
+    }
+
+    func connectAppleCalendar(
+        _ connection: AppleCalendarConnectionRequest
+    ) async throws -> UserIntegrationSummary {
+        try await request(
+            "/integrations/apple/calendar/connect",
+            method: "POST",
+            body: connection,
+            timeout: 30
+        )
+    }
+
+    func beginGoogleCalendarAuthorization(
+        codeChallenge: String
+    ) async throws -> GoogleCalendarAuthorizationResponse {
+        let encoded = codeChallenge.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? codeChallenge
+        return try await request("/integrations/google/calendar/auth-url?code_challenge=\(encoded)")
+    }
+
+    func completeGoogleCalendarAuthorization(
+        code: String,
+        state: String,
+        codeVerifier: String
+    ) async throws -> UserIntegrationSummary {
+        try await request(
+            "/integrations/google/calendar/callback",
+            method: "POST",
+            body: GoogleCalendarCallbackRequest(
+                code: code,
+                state: state,
+                codeVerifier: codeVerifier
+            ),
+            timeout: 30
+        )
+    }
+
+    func refreshIntegration(_ id: String) async throws -> UserIntegrationSummary {
+        try await request("/integrations/\(id)/refresh", method: "POST")
+    }
+
+    func disconnectIntegration(_ id: String) async throws -> UserIntegrationSummary {
+        try await request("/integrations/\(id)/disconnect", method: "POST")
     }
 
     // MARK: - Graph Memory (Phase 7.3)

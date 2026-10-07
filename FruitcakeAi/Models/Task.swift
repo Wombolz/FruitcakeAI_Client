@@ -319,9 +319,12 @@ struct ChatMessageMetadata: Decodable {
     let toolCalls: [String]?
     let evidence: ChatEvidenceMetadata?
     let recalledMemoryIds: [Int]?
+    let contentBlocks: [ChatContentBlock]?
+    let activity: [ChatActivityItem]?
 
     private enum CodingKeys: String, CodingKey {
         case taskDraft, taskDraftStatus, createdTaskId, toolCalls, evidence, recalledMemoryIds
+        case contentBlocks, activity
     }
 
     init(from decoder: Decoder) throws {
@@ -337,6 +340,231 @@ struct ChatMessageMetadata: Decodable {
         toolCalls = try container.decodeIfPresent([String].self, forKey: .toolCalls)
         evidence = try container.decodeIfPresent(ChatEvidenceMetadata.self, forKey: .evidence)
         recalledMemoryIds = try container.decodeIfPresent([Int].self, forKey: .recalledMemoryIds)
+        contentBlocks = try container.decodeIfPresent([ChatContentBlock].self, forKey: .contentBlocks)
+        activity = try container.decodeIfPresent([ChatActivityItem].self, forKey: .activity)
+    }
+}
+
+struct ChatContentBlock: Codable, Hashable, Identifiable {
+    let schemaVersion: Int
+    let id: String
+    let type: String
+    let sourceMarkdown: String
+    let sourceFingerprint: String?
+    let columns: [String]
+    let columnAlignments: [String]
+    let rows: [[String]]
+    let chart: ChatChartHint?
+    let title: String?
+    let sections: [ChatNewsSection]
+    let items: [ChatStatItem]
+    let events: [ChatTimelineEvent]
+    let file: ChatFileArtifact?
+    let code: ChatCodeArtifact?
+    let provider: String?
+    let places: [ChatPlace]
+
+    init(
+        schemaVersion: Int = 1,
+        id: String,
+        type: String,
+        sourceMarkdown: String,
+        sourceFingerprint: String? = nil,
+        columns: [String] = [],
+        columnAlignments: [String] = [],
+        rows: [[String]] = [],
+        chart: ChatChartHint? = nil,
+        title: String? = nil,
+        sections: [ChatNewsSection] = [],
+        items: [ChatStatItem] = [],
+        events: [ChatTimelineEvent] = [],
+        file: ChatFileArtifact? = nil,
+        code: ChatCodeArtifact? = nil,
+        provider: String? = nil,
+        places: [ChatPlace] = []
+    ) {
+        self.schemaVersion = schemaVersion
+        self.id = id
+        self.type = type
+        self.sourceMarkdown = sourceMarkdown
+        self.sourceFingerprint = sourceFingerprint
+        self.columns = columns
+        self.columnAlignments = columnAlignments
+        self.rows = rows
+        self.chart = chart
+        self.title = title
+        self.sections = sections
+        self.items = items
+        self.events = events
+        self.file = file
+        self.code = code
+        self.provider = provider
+        self.places = places
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, id, type, sourceMarkdown, sourceFingerprint
+        case columns, columnAlignments, rows, chart, title, sections, items, events, file, code, provider, places
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        id = try container.decode(String.self, forKey: .id)
+        type = try container.decode(String.self, forKey: .type)
+        sourceMarkdown = try container.decodeIfPresent(String.self, forKey: .sourceMarkdown) ?? ""
+        sourceFingerprint = try container.decodeIfPresent(String.self, forKey: .sourceFingerprint)
+        columns = try container.decodeIfPresent([String].self, forKey: .columns) ?? []
+        columnAlignments = try container.decodeIfPresent([String].self, forKey: .columnAlignments) ?? []
+        rows = try container.decodeIfPresent([[String]].self, forKey: .rows) ?? []
+        chart = try container.decodeIfPresent(ChatChartHint.self, forKey: .chart)
+        title = try container.decodeIfPresent(String.self, forKey: .title)
+        sections = try container.decodeIfPresent([ChatNewsSection].self, forKey: .sections) ?? []
+        items = try container.decodeIfPresent([ChatStatItem].self, forKey: .items) ?? []
+        events = try container.decodeIfPresent([ChatTimelineEvent].self, forKey: .events) ?? []
+        file = try container.decodeIfPresent(ChatFileArtifact.self, forKey: .file)
+        code = try container.decodeIfPresent(ChatCodeArtifact.self, forKey: .code)
+        provider = try container.decodeIfPresent(String.self, forKey: .provider)
+        places = try container.decodeIfPresent([ChatPlace].self, forKey: .places) ?? []
+    }
+}
+
+/// Explicit, user-selected context handed back from a native content surface.
+/// This is intentionally ephemeral and bounded; it is serialized into the
+/// outgoing user message only after the user chooses to attach and send it.
+struct ChatNativeContextAttachment: Identifiable, Hashable {
+    let id = UUID()
+    let blockId: String
+    let sourceFingerprint: String?
+    let title: String
+    let kind: String
+    let selectionSummary: String
+    let content: String
+
+    var promptAppendix: String {
+        var lines = [
+            "---",
+            "**Attached native context (selected by me)**",
+            "- Title: \(title)",
+            "- Type: \(kind)",
+            "- Selection: \(selectionSummary)",
+            "- Block: \(blockId)",
+        ]
+        if let sourceFingerprint, !sourceFingerprint.isEmpty {
+            lines.append("- Source fingerprint: \(sourceFingerprint)")
+        }
+        lines.append("")
+        lines.append(content)
+        lines.append("---")
+        return lines.joined(separator: "\n")
+    }
+}
+
+enum ChatContentBlockKind: String {
+    case table
+    case newsDigest = "news_digest"
+    case statGroup = "stat_group"
+    case timeline
+    case fileArtifact = "file_artifact"
+    case placeGroup = "place_group"
+    case codeArtifact = "code_artifact"
+}
+
+struct ChatStatItem: Codable, Hashable, Identifiable {
+    let label: String
+    let value: String
+
+    var id: String { "\(label):\(value)" }
+}
+
+struct ChatTimelineEvent: Codable, Hashable, Identifiable {
+    let label: String
+    let detail: String
+
+    var id: String { "\(label):\(detail)" }
+}
+
+struct ChatFileArtifact: Codable, Hashable {
+    let path: String
+    let filename: String
+    let mediaType: String
+    let operation: String
+}
+
+struct ChatCodeArtifact: Codable, Hashable {
+    let language: String
+    let filename: String?
+    let content: String
+    let path: String?
+}
+
+struct ChatPlace: Codable, Hashable, Identifiable {
+    let name: String
+    let address: String?
+    let latitude: Double?
+    let longitude: Double?
+    let category: String?
+    let categories: [String]?
+    let url: String?
+    let phone: String?
+    let rating: Double?
+    let ratingMax: Double?
+    let reviewCount: Int?
+    let priceRange: String?
+    let distance: Double?
+    let distanceUnit: String?
+    let provider: String?
+
+    var id: String {
+        "\(name):\(address ?? ""):\(latitude ?? 0):\(longitude ?? 0)"
+    }
+}
+
+extension ChatContentBlock {
+    var kind: ChatContentBlockKind? {
+        guard schemaVersion == 1 else { return nil }
+        return ChatContentBlockKind(rawValue: type)
+    }
+}
+
+struct ChatNewsSection: Codable, Hashable, Identifiable {
+    let title: String
+    let items: [ChatNewsItem]
+
+    var id: String { title }
+}
+
+struct ChatNewsItem: Codable, Hashable, Identifiable {
+    let title: String
+    let summary: String
+    let sources: [ChatNewsSource]
+
+    var id: String { "\(title):\(sources.first?.url ?? "")" }
+}
+
+struct ChatNewsSource: Codable, Hashable, Identifiable {
+    let label: String
+    let url: String
+
+    var id: String { "\(label):\(url)" }
+}
+
+struct ChatChartHint: Codable, Hashable {
+    let kind: String
+    let categoryColumn: Int
+    let valueColumns: [Int]
+}
+
+struct ChatActivityItem: Codable, Hashable, Identifiable {
+    let toolName: String
+    let label: String
+    let value: String?
+
+    var id: String { "\(toolName):\(label):\(value ?? "")" }
+
+    var displayText: String {
+        guard let value, !value.isEmpty else { return label }
+        return "\(label) · \(value)"
     }
 }
 
@@ -346,9 +574,11 @@ struct ChatEvidenceMetadata: Codable, Hashable {
     let sourceKinds: [String]
     let sourceCounts: [String: Int]
     let toolDetails: [ChatEvidenceToolDetail]
+    let citations: [ChatEvidenceCitation]
+    let imageArtifacts: [ChatImageArtifact]
 
     private enum CodingKeys: String, CodingKey {
-        case grounded, toolNames, sourceKinds, sourceCounts, toolDetails
+        case grounded, toolNames, sourceKinds, sourceCounts, toolDetails, citations, imageArtifacts
     }
 
     init(
@@ -356,13 +586,17 @@ struct ChatEvidenceMetadata: Codable, Hashable {
         toolNames: [String] = [],
         sourceKinds: [String] = [],
         sourceCounts: [String: Int] = [:],
-        toolDetails: [ChatEvidenceToolDetail] = []
+        toolDetails: [ChatEvidenceToolDetail] = [],
+        citations: [ChatEvidenceCitation] = [],
+        imageArtifacts: [ChatImageArtifact] = []
     ) {
         self.grounded = grounded
         self.toolNames = toolNames
         self.sourceKinds = sourceKinds
         self.sourceCounts = sourceCounts
         self.toolDetails = toolDetails
+        self.citations = citations
+        self.imageArtifacts = imageArtifacts
     }
 
     init(from decoder: Decoder) throws {
@@ -372,11 +606,48 @@ struct ChatEvidenceMetadata: Codable, Hashable {
         sourceKinds = try container.decodeIfPresent([String].self, forKey: .sourceKinds) ?? []
         sourceCounts = try container.decodeIfPresent([String: Int].self, forKey: .sourceCounts) ?? [:]
         toolDetails = try container.decodeIfPresent([ChatEvidenceToolDetail].self, forKey: .toolDetails) ?? []
+        citations = try container.decodeIfPresent([ChatEvidenceCitation].self, forKey: .citations) ?? []
+        imageArtifacts = try container.decodeIfPresent([ChatImageArtifact].self, forKey: .imageArtifacts) ?? []
     }
 
     var isMeaningful: Bool {
-        grounded || !toolNames.isEmpty || !sourceKinds.isEmpty || !sourceCounts.isEmpty || !toolDetails.isEmpty
+        grounded || !toolNames.isEmpty || !sourceKinds.isEmpty || !sourceCounts.isEmpty || !toolDetails.isEmpty || !citations.isEmpty || !imageArtifacts.isEmpty
     }
+}
+
+struct ChatEvidenceCitation: Codable, Hashable, Identifiable {
+    let url: String?
+    let title: String?
+    let label: String?
+    let source: String?
+    let publishedAt: String?
+    let document: String?
+    let path: String?
+
+    var id: String { url ?? path ?? document ?? displayTitle }
+    var displayTitle: String {
+        let preferred = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let preferred, !preferred.isEmpty { return preferred }
+        let fallback = label?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let fallback, !fallback.isEmpty { return fallback }
+        if let document, !document.isEmpty { return document }
+        if let path, !path.isEmpty { return path }
+        if let url, !url.isEmpty { return URL(string: url)?.host ?? url }
+        return "Source"
+    }
+}
+
+struct ChatImageArtifact: Codable, Hashable, Identifiable {
+    let path: String
+    let title: String?
+    let prompt: String?
+    let workflow: String?
+    let seed: Int?
+    let width: Int?
+    let height: Int?
+    let sourceTool: String?
+
+    var id: String { path }
 }
 
 struct ChatEvidenceToolDetail: Codable, Hashable {

@@ -4,9 +4,8 @@
 //
 //  Animated indicator shown in the message thread between the user's
 //  message and the first streamed token. Signals that the agent is
-//  working (tool call, generation, etc.) without naming a specific
-//  tool — no live tool-name transport exists yet. `label` and `accent`
-//  are the upgrade seam for when that becomes available.
+//  working (tool call, generation, etc.) while showing bounded live
+//  tool activity supplied by the backend.
 //
 //  Styled as the same speaker mid-response: same bubble fill + accent
 //  rail as MessageBubble's assistant bubble, so the live-run state reads
@@ -20,6 +19,7 @@ struct ToolCallIndicator: View {
     var label: String = "Working…"
     var detail: String? = nil
     var chips: [String] = []
+    var activities: [String] = []
     var accent: Color = Theme.textDim
 
     var body: some View {
@@ -57,6 +57,22 @@ struct ToolCallIndicator: View {
                         }
                     }
                 }
+                if !activities.isEmpty {
+                    VStack(alignment: .leading, spacing: 5) {
+                        ForEach(activities, id: \.self) { activity in
+                            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                                Circle()
+                                    .fill(accent.opacity(0.8))
+                                    .frame(width: 4, height: 4)
+                                Text(activity)
+                                    .font(Theme.mono(10.5))
+                                    .foregroundStyle(Theme.textDim)
+                                    .lineLimit(2)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                    }
+                }
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
@@ -69,7 +85,7 @@ struct ToolCallIndicator: View {
             .overlay(
                 RoundedRectangle(cornerRadius: 14).stroke(Theme.stroke, lineWidth: 1)
             )
-            .frame(maxWidth: 560, alignment: .leading)
+            .frame(maxWidth: Theme.chatAssistantMaxWidth, alignment: .leading)
 
             Spacer(minLength: 48)
         }

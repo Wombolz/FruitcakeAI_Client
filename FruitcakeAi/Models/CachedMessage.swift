@@ -36,6 +36,8 @@ final class CachedMessage {
     var taskDraftStatus: String?       // "draft" | "accepted" | "denied"
     var createdTaskId: Int?
     private var evidenceData: Data?
+    private var contentBlocksData: Data?
+    private var activityData: Data?
 
     var taskDraft: TaskDraft? {
         get {
@@ -54,6 +56,26 @@ final class CachedMessage {
         }
         set {
             evidenceData = newValue.flatMap { try? Self.encoder.encode($0) }
+        }
+    }
+
+    var contentBlocks: [ChatContentBlock] {
+        get {
+            guard let contentBlocksData else { return [] }
+            return (try? Self.decoder.decode([ChatContentBlock].self, from: contentBlocksData)) ?? []
+        }
+        set {
+            contentBlocksData = newValue.isEmpty ? nil : try? Self.encoder.encode(newValue)
+        }
+    }
+
+    var activity: [ChatActivityItem] {
+        get {
+            guard let activityData else { return [] }
+            return (try? Self.decoder.decode([ChatActivityItem].self, from: activityData)) ?? []
+        }
+        set {
+            activityData = newValue.isEmpty ? nil : try? Self.encoder.encode(newValue)
         }
     }
 
@@ -84,6 +106,8 @@ final class CachedMessage {
         taskDraftStatus: String? = nil,
         createdTaskId: Int? = nil,
         evidence: ChatEvidenceMetadata? = nil,
+        contentBlocks: [ChatContentBlock] = [],
+        activity: [ChatActivityItem] = [],
         recalledMemoryIds: [Int]? = nil
     ) {
         self.id = id
@@ -97,6 +121,8 @@ final class CachedMessage {
         self.createdTaskId = createdTaskId
         self.taskDraft = taskDraft
         self.evidence = evidence
+        self.contentBlocks = contentBlocks
+        self.activity = activity
         self.recalledMemoryIds = recalledMemoryIds
     }
 

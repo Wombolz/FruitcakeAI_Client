@@ -27,6 +27,9 @@ The repository is public, but it is not being actively pushed as a broad launch.
 
 - native chat, inbox, library, and settings UI
 - WebSocket and REST connectivity to the FruitcakeAI backend
+- evidence-aware streaming chat with durable inline images and native tables, charts, news, metrics, timelines, files, places, and code
+- resizable detached data windows with filtering, sorting, CSV export, and explicit handback of selected content to chat
+- account, model, integration, and administrator-managed user settings
 - on-device AI fallback via Apple FoundationModels
 - local Calendar, Reminders, and Contacts tools
 - optional APNs push notification support

@@ -10,6 +10,13 @@
 //
 
 import SwiftUI
+#if os(macOS)
+import AppKit
+private typealias PlatformImage = NSImage
+#else
+import UIKit
+private typealias PlatformImage = UIImage
+#endif
 
 struct ChatThreadMessage: Identifiable, Hashable {
     let id: UUID
@@ -24,6 +31,8 @@ struct ChatThreadMessage: Identifiable, Hashable {
     var taskDraftStatus: String?
     var createdTaskId: Int?
     var evidence: ChatEvidenceMetadata?
+    var contentBlocks: [ChatContentBlock]
+    var activity: [ChatActivityItem]
 
     init(_ cached: CachedMessage) {
         self.id = cached.id
@@ -38,10 +47,106 @@ struct ChatThreadMessage: Identifiable, Hashable {
         self.taskDraftStatus = cached.taskDraftStatus
         self.createdTaskId = cached.createdTaskId
         self.evidence = cached.evidence
+        self.contentBlocks = cached.contentBlocks
+        self.activity = cached.activity
     }
 
     var isUser: Bool { role == "user" }
     var isAssistant: Bool { role == "assistant" }
+}
+
+// Keeps assistant prose and generated workspace images in the order supplied
+// by the response. Unreferenced artifacts remain available as a fallback.
+private enum ChatRichContentBlock: Hashable {
+    case text(String)
+    case image(ChatImageArtifact)
+    case structured(ChatContentBlock)
+}
+
+private enum ChatRichContentParser {
+    private struct Candidate {
+        let range: Range<String.Index>
+        let block: ChatRichContentBlock
+    }
+
+    static func blocks(
+        content: String,
+        artifacts: [ChatImageArtifact],
+        structuredBlocks: [ChatContentBlock]
+    ) -> [ChatRichContentBlock] {
+        var candidates: [Candidate] = []
+        let pattern = #"!\[([^\]]*)\]\(([^)]+)\)"#
+        if let expression = try? NSRegularExpression(pattern: pattern) {
+            let range = NSRange(content.startIndex..<content.endIndex, in: content)
+            for match in expression.matches(in: content, range: range) {
+                guard let fullRange = Range(match.range, in: content),
+                      let targetRange = Range(match.range(at: 2), in: content),
+                      let artifact = matchArtifact(target: String(content[targetRange]), artifacts: artifacts)
+                else { continue }
+                candidates.append(Candidate(range: fullRange, block: .image(artifact)))
+            }
+        }
+
+        for block in structuredBlocks where !block.sourceMarkdown.isEmpty {
+            guard let tableRange = content.range(of: block.sourceMarkdown) else { continue }
+            guard block.kind != nil else { continue }
+            candidates.append(Candidate(range: tableRange, block: .structured(block)))
+        }
+
+        candidates.sort { lhs, rhs in
+            if lhs.range.lowerBound == rhs.range.lowerBound {
+                return lhs.range.upperBound < rhs.range.upperBound
+            }
+            return lhs.range.lowerBound < rhs.range.lowerBound
+        }
+
+        var blocks: [ChatRichContentBlock] = []
+        var cursor = content.startIndex
+        var consumedPaths = Set<String>()
+
+        for candidate in candidates where candidate.range.lowerBound >= cursor {
+            let before = String(content[cursor..<candidate.range.lowerBound])
+            if !before.isEmpty { blocks.append(.text(before)) }
+            blocks.append(candidate.block)
+            if case .image(let artifact) = candidate.block {
+                consumedPaths.insert(artifact.path)
+            }
+            cursor = candidate.range.upperBound
+        }
+
+        if cursor < content.endIndex {
+            blocks.append(.text(String(content[cursor...])))
+        }
+        if blocks.isEmpty { blocks.append(.text(content)) }
+
+        // Older responses may expose artifacts only in metadata. Preserve
+        // those images rather than dropping them when no inline marker exists.
+        for artifact in artifacts where !consumedPaths.contains(artifact.path) {
+            blocks.append(.image(artifact))
+        }
+        return blocks
+    }
+
+    private static func matchArtifact(target: String, artifacts: [ChatImageArtifact]) -> ChatImageArtifact? {
+        let decodedTarget = target.removingPercentEncoding ?? target
+        let targetURL = URL(string: decodedTarget)
+        let targetPath: String
+        if let queryPath = URLComponents(string: decodedTarget)?.queryItems?.first(where: { $0.name == "path" })?.value {
+            targetPath = queryPath
+        } else {
+            targetPath = targetURL?.path ?? decodedTarget
+        }
+        let targetName = URL(fileURLWithPath: targetPath).lastPathComponent
+
+        return artifacts.first { artifact in
+            let artifactPath = artifact.path.removingPercentEncoding ?? artifact.path
+            let artifactName = URL(fileURLWithPath: artifactPath).lastPathComponent
+            return decodedTarget == artifactPath
+                || targetPath == artifactPath
+                || targetName == artifactName
+                || targetPath.hasSuffix("/\(artifactPath.trimmingCharacters(in: CharacterSet(charactersIn: "/")))")
+        }
+    }
 }
 
 struct MessageBubble: View {
@@ -50,6 +155,7 @@ struct MessageBubble: View {
     var personaKey: String = ""
     var personaDisplayName: String = ""    // shown as label above assistant messages
     @Binding var evidenceExpanded: Bool
+    var onContextHandback: ((ChatNativeContextAttachment) -> Void)? = nil
 
     private var isUser: Bool { message.isUser }
     private var accent: Color { PersonaAccent.color(for: personaKey) }
@@ -92,7 +198,10 @@ struct MessageBubble: View {
                 .foregroundStyle(message.isLocal ? Theme.onDevice : Theme.textFaint)
                 .padding(.horizontal, 4)
             }
-            .frame(maxWidth: isUser ? 460 : 560, alignment: isUser ? .trailing : .leading)
+            .frame(
+                maxWidth: isUser ? Theme.chatUserMaxWidth : Theme.chatAssistantMaxWidth,
+                alignment: isUser ? .trailing : .leading
+            )
 
             if !isUser { Spacer(minLength: 48) }
         }
@@ -103,7 +212,7 @@ struct MessageBubble: View {
     @ViewBuilder
     private var bubbleContent: some View {
         if isUser {
-            markdownText
+            markdownText(text: message.content)
                 .font(.system(size: 13.5))
                 .foregroundStyle(Theme.text)
                 .lineSpacing(4)
@@ -121,10 +230,28 @@ struct MessageBubble: View {
             // (when present) fused onto the bottom behind a hairline divider
             // — reads as part of the response, not a separate debug card.
             VStack(alignment: .leading, spacing: 0) {
-                prose
+                ForEach(Array(richContentBlocks.enumerated()), id: \.offset) { _, block in
+                    switch block {
+                    case .text(let text):
+                        prose(text: text)
+                    case .image(let artifact):
+                        ChatImageAttachmentSection(artifacts: [artifact], accent: accent)
+                    case .structured(let block):
+                        ChatStructuredContentBlockView(
+                            block: block,
+                            accent: accent,
+                            onContextHandback: onContextHandback
+                        )
+                    }
+                }
                 if let evidence {
                     Rectangle().fill(Theme.stroke).frame(height: 1)
-                    EvidenceSection(evidence: evidence, expanded: $evidenceExpanded, accent: accent)
+                    EvidenceSection(
+                        evidence: evidence,
+                        activity: message.activity,
+                        expanded: $evidenceExpanded,
+                        accent: accent
+                    )
                 }
             }
             .background(Theme.bubble)
@@ -139,13 +266,26 @@ struct MessageBubble: View {
         }
     }
 
-    private var prose: some View {
-        markdownText
+    private func prose(text: String) -> some View {
+        markdownText(text: text)
             .font(.system(size: 13.5))
             .foregroundStyle(Theme.textMid)
             .lineSpacing(4)
+            .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 15)
             .padding(.vertical, 12)
+    }
+
+    private var imageArtifacts: [ChatImageArtifact] {
+        evidence?.imageArtifacts ?? []
+    }
+
+    private var richContentBlocks: [ChatRichContentBlock] {
+        ChatRichContentParser.blocks(
+            content: message.content,
+            artifacts: imageArtifacts,
+            structuredBlocks: message.contentBlocks
+        )
     }
 
     /// Muted source/tool line under assistant replies. Only renders when the
@@ -180,17 +320,193 @@ struct MessageBubble: View {
     }
 
     @ViewBuilder
-    private var markdownText: some View {
+    private func markdownText(text: String) -> some View {
         if let attributed = try? AttributedString(
-            markdown: message.content,
+            markdown: text,
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         ) {
             Text(attributed)
                 .textSelection(.enabled)
         } else {
-            Text(message.content)
+            Text(text)
                 .textSelection(.enabled)
         }
+    }
+}
+
+
+// MARK: - Image attachments
+
+/// Reusable assistant image artifact zone. It is intentionally independent
+/// from ComfyUI: any tool that returns workspace-relative image artifacts can
+/// render through the same card once the backend emits `imageArtifacts`.
+private struct ChatImageAttachmentSection: View {
+    let artifacts: [ChatImageArtifact]
+    let accent: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(artifacts) { artifact in
+                ChatImageAttachmentCard(artifact: artifact, accent: accent)
+            }
+        }
+        .padding(.horizontal, 13)
+        .padding(.bottom, 12)
+    }
+}
+
+private struct ChatImageAttachmentCard: View {
+    let artifact: ChatImageArtifact
+    let accent: Color
+
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            AuthenticatedWorkspaceImageView(path: artifact.path)
+                .frame(maxWidth: .infinity)
+                .frame(height: 260)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                )
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(artifact.title ?? artifact.prompt ?? artifact.path)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(Theme.text)
+                    .lineLimit(2)
+                if let prompt = artifact.prompt, prompt != (artifact.title ?? "") {
+                    Text(prompt)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Theme.textDim)
+                        .lineLimit(2)
+                }
+                HStack(spacing: 7) {
+                    if let workflow = artifact.workflow, !workflow.isEmpty {
+                        metadataChip(workflow)
+                    }
+                    if let seed = artifact.seed {
+                        metadataChip("seed \(seed)")
+                    }
+                    if let width = artifact.width, let height = artifact.height {
+                        metadataChip("\(width)x\(height)")
+                    }
+                    Spacer(minLength: 8)
+                    Button(copied ? "Copied" : "Copy path") {
+                        #if os(macOS)
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(artifact.path, forType: .string)
+                        #else
+                        UIPasteboard.general.string = artifact.path
+                        #endif
+                        copied = true
+                    }
+                    .buttonStyle(.plain)
+                    .font(Theme.mono(10.5))
+                    .foregroundStyle(copied ? Theme.ok : accent)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.bottom, 10)
+        }
+        .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func metadataChip(_ value: String) -> some View {
+        Text(value)
+            .font(Theme.mono(10))
+            .foregroundStyle(Theme.textMid)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(Color.black.opacity(0.22), in: RoundedRectangle(cornerRadius: 5))
+    }
+}
+
+private struct AuthenticatedWorkspaceImageView: View {
+    let path: String
+
+    @Environment(AuthManager.self) private var authManager
+    @State private var image: PlatformImage?
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        ZStack {
+            if let image {
+                #if os(macOS)
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.black.opacity(0.35))
+                #else
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.black.opacity(0.35))
+                #endif
+            } else if isLoading {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(Theme.textMid)
+            } else {
+                VStack(spacing: 7) {
+                    Image(systemName: "photo")
+                        .font(.system(size: 24))
+                    Text(errorMessage ?? "Image unavailable")
+                        .font(Theme.mono(10.5))
+                    Text(path)
+                        .font(Theme.mono(9.5))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(Theme.textFaint)
+                .padding(12)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.black.opacity(0.35))
+        .task(id: path) { await load() }
+    }
+
+    private func load() async {
+        guard image == nil else { return }
+        guard let request = imageRequest() else {
+            errorMessage = "Not connected"
+            return
+        }
+        isLoading = true
+        errorMessage = nil
+        defer { isLoading = false }
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                errorMessage = "Image load failed"
+                return
+            }
+            guard let loaded = PlatformImage(data: data) else {
+                errorMessage = "Invalid image"
+                return
+            }
+            image = loaded
+        } catch {
+            errorMessage = "Image load failed"
+        }
+    }
+
+    private func imageRequest() -> URLRequest? {
+        guard let baseURL = authManager.serverURL,
+              let token = try? authManager.token() else { return nil }
+        let url = baseURL.appendingPathComponent("workspace/images")
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "path", value: path)]
+        guard let finalURL = components?.url else { return nil }
+        var request = URLRequest(url: finalURL)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 30
+        return request
     }
 }
 
@@ -202,6 +518,7 @@ struct MessageBubble: View {
 /// from a demoted tier of raw tool-name tags below a hairline.
 private struct EvidenceSection: View {
     let evidence: ChatEvidenceMetadata
+    let activity: [ChatActivityItem]
     @Binding var expanded: Bool
     let accent: Color
 
@@ -210,11 +527,23 @@ private struct EvidenceSection: View {
             header
             if expanded {
                 VStack(alignment: .leading, spacing: 0) {
+                    if !activity.isEmpty {
+                        ActivityRows(items: activity, accent: accent)
+                        if !evidence.toolDetails.isEmpty {
+                            Rectangle().fill(Color.white.opacity(0.045)).frame(height: 1)
+                        }
+                    }
                     ForEach(Array(evidence.toolDetails.enumerated()), id: \.offset) { index, detail in
                         if index > 0 {
                             Rectangle().fill(Color.white.opacity(0.045)).frame(height: 1)
                         }
                         EvidenceDetailRow(detail: detail, accent: accent)
+                    }
+                    if !evidence.citations.isEmpty {
+                        if !evidence.toolDetails.isEmpty {
+                            Rectangle().fill(Color.white.opacity(0.045)).frame(height: 1)
+                        }
+                        CitationRows(items: evidence.citations, accent: accent)
                     }
                     if !evidence.toolNames.isEmpty || !lowSignalSummary.isEmpty {
                         lowSignalRow
@@ -279,6 +608,7 @@ private struct EvidenceSection: View {
     /// Single human count for the header ("3 sources") rather than a
     /// section-by-section readout.
     private var totalSourceCount: Int {
+        if !evidence.citations.isEmpty { return evidence.citations.count }
         if !evidence.sourceCounts.isEmpty { return evidence.sourceCounts.values.reduce(0, +) }
         return evidence.toolDetails.filter { $0.toolName == "fetch_page" }.count
     }
@@ -298,6 +628,89 @@ private struct EvidenceSection: View {
             parts.append("\(count) \(key.replacingOccurrences(of: "_", with: " "))")
         }
         return parts.joined(separator: " · ")
+    }
+}
+
+private struct CitationRows: View {
+    let items: [ChatEvidenceCitation]
+    let accent: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("SOURCES")
+                .font(Theme.mono(9.5, weight: .semibold))
+                .kerning(1.2)
+                .foregroundStyle(Theme.textFaint)
+            ForEach(items.prefix(12)) { item in
+                if let rawURL = item.url, let url = URL(string: rawURL) {
+                    Link(destination: url) {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Image(systemName: "arrow.up.right.square")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(accent)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.displayTitle)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(Theme.text)
+                                    .lineLimit(2)
+                                Text(sourceLine(for: item, url: url))
+                                    .font(Theme.mono(9.5))
+                                    .foregroundStyle(Theme.textFaint)
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Image(systemName: "doc.text")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(accent)
+                        Text(item.displayTitle)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Theme.text)
+                            .lineLimit(2)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 10)
+    }
+
+    private func sourceLine(for item: ChatEvidenceCitation, url: URL) -> String {
+        [item.source, url.host, item.publishedAt]
+            .compactMap { value in
+                guard let value, !value.isEmpty else { return nil }
+                return value
+            }
+            .joined(separator: " · ")
+    }
+}
+
+private struct ActivityRows: View {
+    let items: [ChatActivityItem]
+    let accent: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("ACTIVITY")
+                .font(Theme.mono(9.5, weight: .semibold))
+                .kerning(1.2)
+                .foregroundStyle(Theme.textFaint)
+            ForEach(items.prefix(8)) { item in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Circle()
+                        .fill(accent.opacity(0.8))
+                        .frame(width: 4, height: 4)
+                    Text(item.displayText)
+                        .font(Theme.mono(10.5))
+                        .foregroundStyle(Theme.textDim)
+                        .lineLimit(2)
+                        .textSelection(.enabled)
+                }
+            }
+        }
+        .padding(.vertical, 10)
     }
 }
 
@@ -326,7 +739,8 @@ private struct EvidenceDetailRow: View {
     @Environment(\.openURL) private var openURL
 
     private static let searchTools: Set<String> = [
-        "web_search", "search_library", "search_my_feeds", "search_feeds"
+        "web_search", "web_context", "search_library", "search_my_feeds",
+        "search_my_feeds_timeline", "search_feeds"
     ]
 
     private var isSearch: Bool { Self.searchTools.contains(detail.toolName) }
@@ -430,9 +844,9 @@ private struct EvidenceDetailRow: View {
 
     private var searchTargetLabel: String {
         switch detail.toolName {
-        case "web_search": return "the web"
+        case "web_search", "web_context": return "the web"
         case "search_library": return "your library"
-        case "search_my_feeds", "search_feeds": return "your feeds"
+        case "search_my_feeds", "search_my_feeds_timeline", "search_feeds": return "your feeds"
         default: return "for"
         }
     }
@@ -481,14 +895,17 @@ private struct FlowChips: View {
         toolCalls: ["web_search", "fetch_page"],
         evidence: ChatEvidenceMetadata(
             grounded: true,
-            toolNames: ["web_search", "fetch_page"],
-            sourceKinds: ["web"],
-            sourceCounts: ["web": 2],
+            toolNames: ["web_search", "fetch_page", "generate_image"],
+            sourceKinds: ["web", "image"],
+            sourceCounts: ["web": 2, "image": 1],
             toolDetails: [
                 ChatEvidenceToolDetail(toolName: "web_search", detailKind: "query", label: "Query", value: "September rate cut odds"),
                 ChatEvidenceToolDetail(toolName: "fetch_page", detailKind: "url", label: "Page", value: "https://www.cmegroup.com/markets/interest-rates/fed-funds.html", sourceTitle: "CME FedWatch Tool", sourceKind: "web"),
                 ChatEvidenceToolDetail(toolName: "fetch_page", detailKind: "url", label: "Page", value: "https://www.reuters.com/markets/rates-bonds/fed-cut-odds", sourceKind: "web"),
                 ChatEvidenceToolDetail(toolName: "fetch_page", detailKind: "url", label: "Page", value: "https://en.wikipedia.org/wiki/Federal_funds_rate", sourceTitle: "Federal funds rate", sourceKind: "wiki")
+            ],
+            imageArtifacts: [
+                ChatImageArtifact(path: "generated_images/example.png", title: "Generated image", prompt: "A tiny robot baking a cake", workflow: "sdxl_basic", seed: 123, width: 1024, height: 1024, sourceTool: "generate_image")
             ]
         )
     )

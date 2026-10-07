@@ -20,6 +20,11 @@ extension Color {
 }
 
 enum Theme {
+    // Chat layout. User prompts remain compact while assistant responses can
+    // use the reading pane for tables, charts, images, and other rich blocks.
+    static let chatUserMaxWidth: CGFloat = 460
+    static let chatAssistantMaxWidth: CGFloat = 1_100
+
     // Surfaces (back-to-front)
     static let bg       = Color(hex: 0x0F1113)   // detail pane background
     static let sidebar  = Color(hex: 0x141618)
@@ -71,6 +76,9 @@ enum PersonaAccent {
     ]
 
     static func color(for personaKey: String) -> Color {
+        if personaKey == "family_assistant" {
+            return Color(hex: 0x3F8C8F)
+        }
         guard !personaKey.isEmpty else { return palette[0] }
         let hash = personaKey.unicodeScalars.reduce(UInt64(5381)) { acc, scalar in
             acc &* 33 &+ UInt64(scalar.value)
