@@ -359,6 +359,7 @@ struct ChatContentBlock: Codable, Hashable, Identifiable {
     let sections: [ChatNewsSection]
     let items: [ChatStatItem]
     let events: [ChatTimelineEvent]
+    let file: ChatFileArtifact?
 
     init(
         schemaVersion: Int = 1,
@@ -373,7 +374,8 @@ struct ChatContentBlock: Codable, Hashable, Identifiable {
         title: String? = nil,
         sections: [ChatNewsSection] = [],
         items: [ChatStatItem] = [],
-        events: [ChatTimelineEvent] = []
+        events: [ChatTimelineEvent] = [],
+        file: ChatFileArtifact? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.id = id
@@ -388,11 +390,12 @@ struct ChatContentBlock: Codable, Hashable, Identifiable {
         self.sections = sections
         self.items = items
         self.events = events
+        self.file = file
     }
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, id, type, sourceMarkdown, sourceFingerprint
-        case columns, columnAlignments, rows, chart, title, sections, items, events
+        case columns, columnAlignments, rows, chart, title, sections, items, events, file
     }
 
     init(from decoder: Decoder) throws {
@@ -410,6 +413,7 @@ struct ChatContentBlock: Codable, Hashable, Identifiable {
         sections = try container.decodeIfPresent([ChatNewsSection].self, forKey: .sections) ?? []
         items = try container.decodeIfPresent([ChatStatItem].self, forKey: .items) ?? []
         events = try container.decodeIfPresent([ChatTimelineEvent].self, forKey: .events) ?? []
+        file = try container.decodeIfPresent(ChatFileArtifact.self, forKey: .file)
     }
 }
 
@@ -418,6 +422,7 @@ enum ChatContentBlockKind: String {
     case newsDigest = "news_digest"
     case statGroup = "stat_group"
     case timeline
+    case fileArtifact = "file_artifact"
 }
 
 struct ChatStatItem: Codable, Hashable, Identifiable {
@@ -432,6 +437,13 @@ struct ChatTimelineEvent: Codable, Hashable, Identifiable {
     let detail: String
 
     var id: String { "\(label):\(detail)" }
+}
+
+struct ChatFileArtifact: Codable, Hashable {
+    let path: String
+    let filename: String
+    let mediaType: String
+    let operation: String
 }
 
 extension ChatContentBlock {

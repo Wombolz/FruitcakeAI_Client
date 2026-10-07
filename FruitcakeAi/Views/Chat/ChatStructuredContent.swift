@@ -32,9 +32,154 @@ struct ChatStructuredContentBlockView: View {
             ChatStatGroupBlockView(block: block, accent: accent)
         case .timeline:
             ChatTimelineBlockView(block: block, accent: accent)
+        case .fileArtifact:
+            ChatFileArtifactBlockView(block: block, accent: accent)
         case nil:
             EmptyView()
         }
+    }
+}
+
+struct ChatFileArtifactBlockView: View {
+    let block: ChatContentBlock
+    let accent: Color
+
+    @Environment(AuthManager.self) private var authManager
+    @State private var copied = false
+    @State private var isOpening = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        if let artifact = block.file {
+            HStack(spacing: 12) {
+                Image(systemName: fileIcon(for: artifact))
+                    .font(.system(size: 20, weight: .medium))
+                    .foregroundStyle(accent)
+                    .frame(width: 38, height: 38)
+                    .background(accent.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(artifact.filename)
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .foregroundStyle(Theme.text)
+                        .lineLimit(1)
+
+                    HStack(spacing: 7) {
+                        Text(artifact.operation == "appended" ? "UPDATED" : "CREATED")
+                            .font(Theme.mono(9).weight(.semibold))
+                            .tracking(0.6)
+                            .foregroundStyle(accent)
+                        Text(artifact.path)
+                            .font(Theme.mono(9.5))
+                            .foregroundStyle(Theme.textFaint)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .font(Theme.mono(9.5))
+                            .foregroundStyle(Theme.onDevice)
+                    }
+                }
+
+                Spacer(minLength: 10)
+
+                Button(copied ? "Copied" : "Copy Path") {
+                    copyPath(artifact.path)
+                    copied = true
+                }
+                .buttonStyle(.plain)
+                .font(Theme.mono(10.5))
+                .foregroundStyle(copied ? Theme.ok : accent)
+
+                Button {
+                    Task { await open(artifact) }
+                } label: {
+                    if isOpening {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Label("Open", systemImage: "arrow.up.forward.app")
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(isOpening)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(13)
+            .background(Color.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 10))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(Color.white.opacity(0.065), lineWidth: 1)
+            )
+            .padding(.horizontal, 13)
+            .padding(.vertical, 8)
+        }
+    }
+
+    private func fileIcon(for artifact: ChatFileArtifact) -> String {
+        if artifact.mediaType == "application/pdf" { return "doc.richtext" }
+        if artifact.mediaType.contains("spreadsheet") || artifact.mediaType == "text/csv" {
+            return "tablecells"
+        }
+        if artifact.mediaType.hasPrefix("image/") { return "photo" }
+        if artifact.mediaType.hasPrefix("text/") { return "doc.text" }
+        return "doc"
+    }
+
+    private func copyPath(_ path: String) {
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(path, forType: .string)
+        #else
+        UIPasteboard.general.string = path
+        #endif
+    }
+
+    @MainActor
+    private func open(_ artifact: ChatFileArtifact) async {
+        guard !isOpening else { return }
+        guard let request = fileRequest(path: artifact.path) else {
+            errorMessage = "Not connected"
+            return
+        }
+        isOpening = true
+        errorMessage = nil
+        defer { isOpening = false }
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                errorMessage = "File download failed"
+                return
+            }
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("FruitcakeArtifacts", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let safeName = (artifact.filename as NSString).lastPathComponent
+            let localURL = directory.appendingPathComponent(safeName.isEmpty ? "artifact" : safeName)
+            try data.write(to: localURL, options: .atomic)
+            #if os(macOS)
+            NSWorkspace.shared.open(localURL)
+            #else
+            await UIApplication.shared.open(localURL)
+            #endif
+        } catch {
+            errorMessage = "File download failed"
+        }
+    }
+
+    private func fileRequest(path: String) -> URLRequest? {
+        guard let baseURL = authManager.serverURL,
+              let token = try? authManager.token() else { return nil }
+        let url = baseURL.appendingPathComponent("workspace/files")
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "path", value: path)]
+        guard let finalURL = components?.url else { return nil }
+        var request = URLRequest(url: finalURL)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 60
+        return request
     }
 }
 
