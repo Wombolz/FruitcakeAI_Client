@@ -464,7 +464,7 @@ struct ChatNativeContextAttachment: Identifiable, Hashable {
     }
 }
 
-enum ChatContentBlockKind: String {
+enum ArtifactRendererKind: String {
     case table
     case newsDigest = "news_digest"
     case statGroup = "stat_group"
@@ -472,6 +472,43 @@ enum ChatContentBlockKind: String {
     case fileArtifact = "file_artifact"
     case placeGroup = "place_group"
     case codeArtifact = "code_artifact"
+}
+
+struct ArtifactTypeDefinition: Hashable {
+    let type: String
+    let legacyTypes: Set<String>
+    let schemaVersions: Set<Int>
+    let renderer: ArtifactRendererKind
+    let preferredPresentation: String
+}
+
+enum ArtifactRendererRegistry {
+    static let definitions: [ArtifactTypeDefinition] = [
+        .init(type: "core.table", legacyTypes: ["table"], schemaVersions: [1], renderer: .table, preferredPresentation: "inline"),
+        .init(type: "fruitcake.news_digest", legacyTypes: ["news_digest"], schemaVersions: [1], renderer: .newsDigest, preferredPresentation: "inline"),
+        .init(type: "fruitcake.stat_group", legacyTypes: ["stat_group"], schemaVersions: [1], renderer: .statGroup, preferredPresentation: "inline"),
+        .init(type: "core.timeline", legacyTypes: ["timeline"], schemaVersions: [1], renderer: .timeline, preferredPresentation: "inline"),
+        .init(type: "core.file", legacyTypes: ["file_artifact"], schemaVersions: [1], renderer: .fileArtifact, preferredPresentation: "inspector"),
+        .init(type: "core.places", legacyTypes: ["place_group"], schemaVersions: [1], renderer: .placeGroup, preferredPresentation: "inline"),
+        .init(type: "core.code", legacyTypes: ["code_artifact"], schemaVersions: [1], renderer: .codeArtifact, preferredPresentation: "inspector"),
+    ]
+
+    private static let definitionsByType: [String: ArtifactTypeDefinition] = {
+        var lookup: [String: ArtifactTypeDefinition] = [:]
+        for definition in definitions {
+            lookup[definition.type] = definition
+            for legacyType in definition.legacyTypes {
+                lookup[legacyType] = definition
+            }
+        }
+        return lookup
+    }()
+
+    static func resolve(type: String, schemaVersion: Int) -> ArtifactTypeDefinition? {
+        guard let definition = definitionsByType[type],
+              definition.schemaVersions.contains(schemaVersion) else { return nil }
+        return definition
+    }
 }
 
 struct ChatStatItem: Codable, Hashable, Identifiable {
@@ -543,9 +580,12 @@ struct ChatPlace: Codable, Hashable, Identifiable {
 }
 
 extension ChatContentBlock {
-    var kind: ChatContentBlockKind? {
-        guard schemaVersion == 1 else { return nil }
-        return ChatContentBlockKind(rawValue: type)
+    var artifactDefinition: ArtifactTypeDefinition? {
+        ArtifactRendererRegistry.resolve(type: type, schemaVersion: schemaVersion)
+    }
+
+    var kind: ArtifactRendererKind? {
+        artifactDefinition?.renderer
     }
 }
 
