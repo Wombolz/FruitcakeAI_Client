@@ -49,9 +49,32 @@ private struct SessionHistoryResponse: Decodable {
     let messages: [HistoryMessage]
 }
 
-private struct ChatSessionStatusResponse: Codable {
+private struct ChatSessionStatusResponse: Decodable {
     let sessionId: Int
     let active: Bool
+    let runId: String?
+    let status: String?
+    let phase: String?
+    let waitingApproval: ChatWaitingApprovalPayload?
+}
+
+private struct ChatRunStopResponse: Decodable {
+    let stopped: Bool
+    let runId: String
+    let sessionId: Int
+    let status: String
+    let phase: String
+}
+
+private struct ChatRunActionResponse: Decodable {
+    let runId: String?
+    let state: String?
+    let status: String?
+    let waitingApproval: ChatWaitingApprovalPayload?
+}
+
+private struct ChatApprovalDecisionBody: Encodable {
+    let approved: Bool
 }
 
 private struct ReorderSessionsBody: Encodable {
@@ -187,6 +210,10 @@ struct ChatView: View {
     @State private var isSending: Bool = false
     @State private var sendClaimed: Bool = false
     @State private var activeClientSendID: String?
+    @State private var activeChatRunID: String?
+    @State private var waitingApproval: ChatWaitingApprovalPayload?
+    @State private var isStoppingChat: Bool = false
+    @State private var isDecidingApproval: Bool = false
     @State private var activeSendTask: Task<Void, Never>?
     @State private var sessionStatusTask: Task<Void, Never>?
     @State private var sendTraceSequence: Int = 0
@@ -330,6 +357,14 @@ struct ChatView: View {
                     chips: toolNames,
                     activities: activities,
                     accent: Theme.onDevice
+                )
+            case "stopping", "cancelling":
+                return LiveIndicatorPresentation(
+                    label: "Stopping…",
+                    detail: nil,
+                    chips: toolNames,
+                    activities: activities,
+                    accent: Color.red.opacity(0.75)
                 )
             case "completed":
                 return nil
@@ -999,6 +1034,10 @@ struct ChatView: View {
     private func inputBar(sessionId: Int, currentModelID: String?, personaKey: String, personaDisplayName: String) -> some View {
         let accent = PersonaAccent.color(for: personaKey)
         VStack(alignment: .leading, spacing: 10) {
+            if let waitingApproval {
+                chatApprovalCard(waitingApproval, sessionId: sessionId, accent: accent)
+            }
+
             TextField("Message \(personaDisplayName)…", text: $inputText, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13.5))
@@ -1009,7 +1048,7 @@ struct ChatView: View {
                 .background(Theme.field)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.strokeUp, lineWidth: 1))
-                .disabled(isSending)
+                .disabled(isSending || waitingApproval != nil)
                 .onSubmit { sendIfReady(sessionId: sessionId) }
 
             if !pendingAttachments.isEmpty || pendingNativeContextBySession[sessionId] != nil {
@@ -1037,24 +1076,106 @@ struct ChatView: View {
                 .disabled(isSending || isUploadingAttachment)
                 .help("Attach a file")
 
-                Button {
-                    sendIfReady(sessionId: sessionId)
-                } label: {
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(Theme.bg)
+                if canStopCurrentRun {
+                    Button {
+                        Task { await stopCurrentChatRun(sessionId: sessionId) }
+                    } label: {
+                        Group {
+                            if isStoppingChat {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Image(systemName: "stop.fill")
+                                    .font(.system(size: 11, weight: .bold))
+                            }
+                        }
+                        .foregroundStyle(Theme.text)
                         .frame(width: 32, height: 32)
-                        .background(canSend ? accent : Theme.textFaint, in: Circle())
-                        .shadow(color: canSend ? accent.opacity(0.45) : .clear, radius: 8)
+                        .background(Color.red.opacity(0.72), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isStoppingChat || isDecidingApproval)
+                    .help(isStoppingChat ? "Stopping…" : "Stop response")
+                } else {
+                    Button {
+                        sendIfReady(sessionId: sessionId)
+                    } label: {
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(Theme.bg)
+                            .frame(width: 32, height: 32)
+                            .background(canSend ? accent : Theme.textFaint, in: Circle())
+                            .shadow(color: canSend ? accent.opacity(0.45) : .clear, radius: 8)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canSend)
                 }
-                .buttonStyle(.plain)
-                .disabled(!canSend)
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
         .background(Theme.composer)
         .overlay(Rectangle().fill(Theme.stroke).frame(height: 1), alignment: .top)
+    }
+
+    private func chatApprovalCard(
+        _ approval: ChatWaitingApprovalPayload,
+        sessionId: Int,
+        accent: Color
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 7) {
+                Image(systemName: "hand.raised.fill")
+                    .foregroundStyle(Theme.onDevice)
+                Text("Approval required")
+                    .font(.system(size: 12.5, weight: .semibold))
+                Spacer()
+                Text(approval.blockedTool.replacingOccurrences(of: "_", with: " "))
+                    .font(Theme.mono(10))
+                    .foregroundStyle(Theme.textDim)
+            }
+
+            if !approval.reason.isEmpty {
+                Text(approval.reason)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.textMid)
+            }
+
+            let argumentSummary = approval.arguments
+                .sorted { $0.key < $1.key }
+                .prefix(3)
+                .map { "\($0.key): \($0.value.prefix(120))" }
+                .joined(separator: " · ")
+            if !argumentSummary.isEmpty {
+                Text(argumentSummary)
+                    .font(Theme.mono(9.5))
+                    .foregroundStyle(Theme.textFaint)
+                    .lineLimit(3)
+            }
+
+            HStack(spacing: 8) {
+                Button("Allow") {
+                    Task { await decideChatApproval(approved: true, sessionId: sessionId) }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(accent)
+
+                Button("Deny") {
+                    Task { await decideChatApproval(approved: false, sessionId: sessionId) }
+                }
+                .buttonStyle(.bordered)
+
+                Spacer()
+
+                if isDecidingApproval {
+                    ProgressView().controlSize(.small)
+                }
+            }
+            .disabled(isDecidingApproval || isStoppingChat)
+        }
+        .padding(12)
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.onDevice.opacity(0.35), lineWidth: 1))
     }
 
     private func pendingAttachmentStrip(sessionId: Int) -> some View {
@@ -1193,6 +1314,10 @@ struct ChatView: View {
         !inputText.trimmingCharacters(in: .whitespaces).isEmpty && !isSending && !sendClaimed && !isUploadingAttachment
     }
 
+    private var canStopCurrentRun: Bool {
+        isSending || waitingApproval != nil
+    }
+
     private func trace(_ message: String) {
         print("[ChatTrace] \(message)")
     }
@@ -1241,6 +1366,81 @@ struct ChatView: View {
             await sendMessage(text, sessionId: sessionId, clientSendID: clientSendID, sendSequence: sendSeq)
         }
         trace("active_send_task_assigned seq=\(sendSeq) session=\(sessionId) client_send_id=\(clientSendID)")
+    }
+
+    @MainActor
+    private func stopCurrentChatRun(sessionId: Int) async {
+        guard !isStoppingChat else { return }
+        isStoppingChat = true
+        loadingError = nil
+        defer { isStoppingChat = false }
+
+        do {
+            let api = APIClient(authManager: authManager)
+            if let runID = activeChatRunID {
+                let response: ChatRunStopResponse = try await api.request(
+                    "/chat/runs/\(runID)/stop",
+                    method: "POST"
+                )
+                if response.status == "cancelled" {
+                    activeSendTask?.cancel()
+                    activeSendTask = nil
+                    activeChatRunID = nil
+                    waitingApproval = nil
+                    isSending = false
+                    sendClaimed = false
+                    showToolIndicator = false
+                    liveState = nil
+                    streamingContent = ""
+                    _ = try? await loadSessionHistory(sessionId: sessionId)
+                } else if !response.stopped {
+                    let status = try await loadSessionStatus(sessionId: sessionId)
+                    applySessionStatus(status)
+                }
+            } else {
+                try await wsManager.sendStop()
+            }
+        } catch {
+            loadingError = "Could not stop this response: \(error.localizedDescription)"
+        }
+    }
+
+    @MainActor
+    private func decideChatApproval(approved: Bool, sessionId: Int) async {
+        guard let runID = activeChatRunID, !isDecidingApproval else { return }
+        isDecidingApproval = true
+        loadingError = nil
+        if approved {
+            isSending = true
+            liveState = ChatLiveStatePayload(state: "thinking")
+            showToolIndicator = true
+        }
+        defer { isDecidingApproval = false }
+
+        do {
+            let api = APIClient(authManager: authManager)
+            let response: ChatRunActionResponse = try await api.request(
+                "/chat/runs/\(runID)/approval",
+                method: "POST",
+                body: ChatApprovalDecisionBody(approved: approved),
+                timeout: 300
+            )
+            _ = try await loadSessionHistory(sessionId: sessionId)
+            let status = try await loadSessionStatus(sessionId: sessionId)
+            applySessionStatus(status)
+            if response.state == "waiting_approval", let nextApproval = response.waitingApproval {
+                activeChatRunID = response.runId ?? runID
+                waitingApproval = nextApproval
+                isSending = false
+                showToolIndicator = false
+                liveState = ChatLiveStatePayload(state: "waiting_approval")
+            }
+        } catch {
+            isSending = false
+            showToolIndicator = false
+            liveState = waitingApproval == nil ? nil : ChatLiveStatePayload(state: "waiting_approval")
+            loadingError = "Could not resolve approval: \(error.localizedDescription)"
+        }
     }
 
     private func composedMessageText(
@@ -1815,6 +2015,10 @@ struct ChatView: View {
         showToolIndicator = false
         liveState = nil
         isSending = false
+        activeChatRunID = nil
+        waitingApproval = nil
+        isStoppingChat = false
+        isDecidingApproval = false
         loadingError = nil
 
         // Find or create SwiftData conversation. Incognito sessions never get
@@ -1838,11 +2042,8 @@ struct ChatView: View {
         do {
             let history = try await loadSessionHistory(sessionId: sessionId)
             let status = try await loadSessionStatus(sessionId: sessionId)
-            let hasDetachedRun = status.active && activeSendTask == nil
-            isSending = hasDetachedRun
-            showToolIndicator = hasDetachedRun && history.messages.last?.role != "assistant"
-            liveState = hasDetachedRun ? ChatLiveStatePayload(state: "thinking") : nil
-            if hasDetachedRun {
+            applySessionStatus(status, hasTrailingAssistant: history.messages.last?.role == "assistant")
+            if status.active && activeSendTask == nil {
                 startDetachedRunPolling(sessionId: sessionId)
             }
         } catch {
@@ -1912,26 +2113,46 @@ struct ChatView: View {
     }
 
     @MainActor
+    private func applySessionStatus(
+        _ status: ChatSessionStatusResponse,
+        hasTrailingAssistant: Bool = false
+    ) {
+        activeChatRunID = status.runId
+        waitingApproval = status.waitingApproval
+        if status.status == "waiting_approval", status.waitingApproval != nil {
+            isSending = false
+            showToolIndicator = false
+            liveState = ChatLiveStatePayload(state: "waiting_approval")
+            return
+        }
+        if status.active {
+            isSending = true
+            showToolIndicator = !hasTrailingAssistant
+            if liveState == nil {
+                liveState = ChatLiveStatePayload(state: status.phase ?? "thinking")
+            }
+            return
+        }
+        isSending = false
+        showToolIndicator = false
+        liveState = nil
+        if ["completed", "failed", "cancelled"].contains(status.status ?? "") {
+            activeChatRunID = nil
+        }
+    }
+
+    @MainActor
     private func startDetachedRunPolling(sessionId: Int) {
         sessionStatusTask?.cancel()
         sessionStatusTask = Task {
             while !Task.isCancelled, selectedSession?.id == sessionId {
                 do {
                     let status = try await loadSessionStatus(sessionId: sessionId)
-                    _ = try await loadSessionHistory(sessionId: sessionId)
+                    let history = try await loadSessionHistory(sessionId: sessionId)
+                    applySessionStatus(status, hasTrailingAssistant: history.messages.last?.role == "assistant")
                     if !status.active {
-                        isSending = false
-                        showToolIndicator = false
-                        liveState = nil
                         sessionStatusTask = nil
                         break
-                    }
-                    isSending = true
-                    if messages.last?.role != "assistant" {
-                        showToolIndicator = true
-                        if liveState == nil {
-                            liveState = ChatLiveStatePayload(state: "thinking")
-                        }
                     }
                 } catch {
                     loadingError = error.localizedDescription
@@ -1962,6 +2183,9 @@ struct ChatView: View {
         showToolIndicator = true
         streamingContent = ""
         liveState = ChatLiveStatePayload(state: "thinking")
+        activeChatRunID = nil
+        waitingApproval = nil
+        isStoppingChat = false
         loadingError = nil
         trace("send_message_enter seq=\(sendSequence) session=\(sessionId) client_send_id=\(clientSendID) ws_state=\(wsManager.stateLabel)")
         let overrides = sessionToolOverrides[sessionId] ?? SessionToolOverrides()
@@ -2006,7 +2230,8 @@ struct ChatView: View {
             text,
             clientSendID: clientSendID,
             allowedTools: overrides.allowedTools,
-            blockedTools: overrides.blockedTools
+            blockedTools: overrides.blockedTools,
+            approvalMode: true
         )
 
         // Consume events for this response. The stream finishes after
@@ -2019,6 +2244,10 @@ struct ChatView: View {
                 break eventLoop
             }
             switch event {
+            case .runStarted(let runID):
+                activeChatRunID = runID
+                trace("send_message_event seq=\(sendSequence) session=\(sessionId) client_send_id=\(clientSendID) type=run_started run_id=\(runID)")
+
             case .state(let payload):
                 trace("send_message_event seq=\(sendSequence) session=\(sessionId) client_send_id=\(clientSendID) type=state state=\(payload.state)")
                 liveState = mergeLiveState(payload)
@@ -2069,7 +2298,34 @@ struct ChatView: View {
                     recalledMemoryIds: metadata?.recalledMemoryIds
                 )
                 appendMessage(assistantMsg)
+                activeChatRunID = nil
+                waitingApproval = nil
 
+                break eventLoop
+
+            case .approvalRequired(let runID, _, let approval):
+                activeChatRunID = runID
+                waitingApproval = approval
+                isSending = false
+                showToolIndicator = false
+                liveState = ChatLiveStatePayload(state: "waiting_approval")
+                streamingContent = ""
+                _ = try? await loadSessionHistory(sessionId: sessionId)
+                break eventLoop
+
+            case .stopRequested:
+                isStoppingChat = true
+                liveState = ChatLiveStatePayload(state: "stopping")
+
+            case .stopped:
+                activeChatRunID = nil
+                waitingApproval = nil
+                isStoppingChat = false
+                isSending = false
+                showToolIndicator = false
+                liveState = nil
+                streamingContent = ""
+                _ = try? await loadSessionHistory(sessionId: sessionId)
                 break eventLoop
 
             case .personaSwitched(let name, let message):
@@ -2098,6 +2354,7 @@ struct ChatView: View {
             case .error(let msg):
                 trace("send_message_event seq=\(sendSequence) session=\(sessionId) client_send_id=\(clientSendID) type=error message=\(msg)")
                 loadingError = msg
+                activeChatRunID = nil
                 break eventLoop
             }
         }
@@ -2128,12 +2385,16 @@ struct ChatView: View {
             let clientSendId: String
             let allowedTools: [String]?
             let blockedTools: [String]?
+            let approvalMode: Bool
         }
         struct SendResponse: Decodable {
             let messageId: Int?
             let role: String
             let content: String
             let metadata: ChatMessageMetadata?
+            let runId: String?
+            let state: String?
+            let waitingApproval: ChatWaitingApprovalPayload?
         }
         let api = APIClient(authManager: authManager)
         trace("rest_send_start session=\(sessionId) client_send_id=\(clientSendID) chars=\(text.count)")
@@ -2145,11 +2406,14 @@ struct ChatView: View {
                     content: text,
                     clientSendId: clientSendID,
                     allowedTools: overrides.allowedTools.isEmpty ? nil : overrides.allowedTools,
-                    blockedTools: overrides.blockedTools.isEmpty ? nil : overrides.blockedTools
+                    blockedTools: overrides.blockedTools.isEmpty ? nil : overrides.blockedTools,
+                    approvalMode: true
                 ),
                 timeout: 120
             )
             trace("rest_send_done session=\(sessionId) client_send_id=\(clientSendID) response_chars=\(resp.content.count)")
+            activeChatRunID = resp.runId
+            waitingApproval = resp.waitingApproval
             let msg = CachedMessage(
                 serverMessageId: resp.messageId,
                 role: resp.role,
@@ -2164,6 +2428,9 @@ struct ChatView: View {
                 recalledMemoryIds: resp.metadata?.recalledMemoryIds
             )
             appendMessage(msg)
+            if resp.state != "waiting_approval" {
+                activeChatRunID = nil
+            }
         } catch {
             trace("rest_send_error session=\(sessionId) client_send_id=\(clientSendID) error=\(error.localizedDescription)")
             loadingError = error.localizedDescription
