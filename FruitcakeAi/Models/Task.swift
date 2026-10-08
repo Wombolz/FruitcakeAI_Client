@@ -320,11 +320,12 @@ struct ChatMessageMetadata: Decodable {
     let evidence: ChatEvidenceMetadata?
     let recalledMemoryIds: [Int]?
     let contentBlocks: [ChatContentBlock]?
+    let artifacts: [ChatArtifactEnvelope]?
     let activity: [ChatActivityItem]?
 
     private enum CodingKeys: String, CodingKey {
         case taskDraft, taskDraftStatus, createdTaskId, toolCalls, evidence, recalledMemoryIds
-        case contentBlocks, activity
+        case contentBlocks, artifacts, activity
     }
 
     init(from decoder: Decoder) throws {
@@ -341,8 +342,57 @@ struct ChatMessageMetadata: Decodable {
         evidence = try container.decodeIfPresent(ChatEvidenceMetadata.self, forKey: .evidence)
         recalledMemoryIds = try container.decodeIfPresent([Int].self, forKey: .recalledMemoryIds)
         contentBlocks = try container.decodeIfPresent([ChatContentBlock].self, forKey: .contentBlocks)
+        artifacts = try container.decodeIfPresent([ChatArtifactEnvelope].self, forKey: .artifacts)
         activity = try container.decodeIfPresent([ChatActivityItem].self, forKey: .activity)
     }
+}
+
+struct ChatArtifactResource: Codable, Hashable {
+    let uri: String
+    let mediaType: String
+    let title: String?
+    let role: String?
+}
+
+struct ChatArtifactFallback: Codable, Hashable {
+    let mediaType: String
+    let content: String
+}
+
+struct ChatArtifactPresentation: Codable, Hashable {
+    let preferred: String
+    let expandable: Bool
+    let renderer: String?
+    let uiResource: String?
+}
+
+struct ChatArtifactProvenance: Codable, Hashable {
+    let provider: String
+    let server: String?
+    let tool: String?
+    let runId: String?
+}
+
+struct ChatArtifactEnvelope: Codable, Hashable {
+    let envelopeVersion: Int
+    let providerId: String?
+    let type: String
+    let schemaVersion: Int
+    let title: String
+    let summary: String?
+    let payload: [String: JSONValue]?
+    let resources: [ChatArtifactResource]
+    let provenance: ChatArtifactProvenance?
+    let presentation: ChatArtifactPresentation
+    let fallback: ChatArtifactFallback?
+
+    private enum CodingKeys: String, CodingKey {
+        case envelopeVersion
+        case providerId = "id"
+        case type, schemaVersion, title, summary, payload, resources, provenance, presentation, fallback
+    }
+
+    var content: String? { payload?["content"]?.stringValue }
 }
 
 struct ChatContentBlock: Codable, Hashable, Identifiable {
@@ -472,6 +522,8 @@ enum ArtifactRendererKind: String {
     case fileArtifact = "file_artifact"
     case placeGroup = "place_group"
     case codeArtifact = "code_artifact"
+    case html
+    case svg
 }
 
 struct ArtifactTypeDefinition: Hashable {
@@ -491,6 +543,8 @@ enum ArtifactRendererRegistry {
         .init(type: "core.file", legacyTypes: ["file_artifact"], schemaVersions: [1], renderer: .fileArtifact, preferredPresentation: "inspector"),
         .init(type: "core.places", legacyTypes: ["place_group"], schemaVersions: [1], renderer: .placeGroup, preferredPresentation: "inline"),
         .init(type: "core.code", legacyTypes: ["code_artifact"], schemaVersions: [1], renderer: .codeArtifact, preferredPresentation: "inspector"),
+        .init(type: "core.html", legacyTypes: [], schemaVersions: [1], renderer: .html, preferredPresentation: "inspector"),
+        .init(type: "core.svg", legacyTypes: [], schemaVersions: [1], renderer: .svg, preferredPresentation: "inline"),
     ]
 
     private static let definitionsByType: [String: ArtifactTypeDefinition] = {

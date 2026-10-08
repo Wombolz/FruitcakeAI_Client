@@ -297,6 +297,7 @@ struct ChatView: View {
         cached.createdTaskId = threadMessage.createdTaskId
         cached.evidence = threadMessage.evidence
         cached.contentBlocks = threadMessage.contentBlocks
+        cached.artifacts = threadMessage.artifacts
         cached.activity = threadMessage.activity
     }
 
@@ -2090,6 +2091,7 @@ struct ChatView: View {
                 createdTaskId: $0.metadata?.createdTaskId,
                 evidence: $0.metadata?.evidence,
                 contentBlocks: $0.metadata?.contentBlocks ?? [],
+                artifacts: $0.metadata?.artifacts ?? [],
                 activity: $0.metadata?.activity ?? [],
                 recalledMemoryIds: $0.metadata?.recalledMemoryIds
             )
@@ -2294,6 +2296,7 @@ struct ChatView: View {
                     createdTaskId: metadata?.createdTaskId,
                     evidence: metadata?.evidence,
                     contentBlocks: metadata?.contentBlocks ?? [],
+                    artifacts: metadata?.artifacts ?? [],
                     activity: metadata?.activity ?? [],
                     recalledMemoryIds: metadata?.recalledMemoryIds
                 )
@@ -2424,6 +2427,7 @@ struct ChatView: View {
                 createdTaskId: resp.metadata?.createdTaskId,
                 evidence: resp.metadata?.evidence,
                 contentBlocks: resp.metadata?.contentBlocks ?? [],
+                artifacts: resp.metadata?.artifacts ?? [],
                 activity: resp.metadata?.activity ?? [],
                 recalledMemoryIds: resp.metadata?.recalledMemoryIds
             )

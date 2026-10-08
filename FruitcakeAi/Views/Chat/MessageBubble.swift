@@ -32,6 +32,7 @@ struct ChatThreadMessage: Identifiable, Hashable {
     var createdTaskId: Int?
     var evidence: ChatEvidenceMetadata?
     var contentBlocks: [ChatContentBlock]
+    var artifacts: [ChatArtifactEnvelope]
     var activity: [ChatActivityItem]
 
     init(_ cached: CachedMessage) {
@@ -48,6 +49,7 @@ struct ChatThreadMessage: Identifiable, Hashable {
         self.createdTaskId = cached.createdTaskId
         self.evidence = cached.evidence
         self.contentBlocks = cached.contentBlocks
+        self.artifacts = cached.artifacts
         self.activity = cached.activity
     }
 
@@ -244,6 +246,9 @@ struct MessageBubble: View {
                             onContextHandback: onContextHandback
                         )
                     }
+                }
+                ForEach(Array(message.artifacts.enumerated()), id: \.offset) { _, artifact in
+                    ChatArtifactBlockView(artifact: artifact, accent: accent)
                 }
                 if let evidence {
                     Rectangle().fill(Theme.stroke).frame(height: 1)

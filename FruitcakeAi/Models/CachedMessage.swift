@@ -37,6 +37,7 @@ final class CachedMessage {
     var createdTaskId: Int?
     private var evidenceData: Data?
     private var contentBlocksData: Data?
+    private var artifactsData: Data?
     private var activityData: Data?
 
     var taskDraft: TaskDraft? {
@@ -79,6 +80,16 @@ final class CachedMessage {
         }
     }
 
+    var artifacts: [ChatArtifactEnvelope] {
+        get {
+            guard let artifactsData else { return [] }
+            return (try? Self.decoder.decode([ChatArtifactEnvelope].self, from: artifactsData)) ?? []
+        }
+        set {
+            artifactsData = newValue.isEmpty ? nil : try? Self.encoder.encode(newValue)
+        }
+    }
+
     private static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -107,6 +118,7 @@ final class CachedMessage {
         createdTaskId: Int? = nil,
         evidence: ChatEvidenceMetadata? = nil,
         contentBlocks: [ChatContentBlock] = [],
+        artifacts: [ChatArtifactEnvelope] = [],
         activity: [ChatActivityItem] = [],
         recalledMemoryIds: [Int]? = nil
     ) {
@@ -122,6 +134,7 @@ final class CachedMessage {
         self.taskDraft = taskDraft
         self.evidence = evidence
         self.contentBlocks = contentBlocks
+        self.artifacts = artifacts
         self.activity = activity
         self.recalledMemoryIds = recalledMemoryIds
     }

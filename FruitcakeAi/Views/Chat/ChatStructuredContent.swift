@@ -58,6 +58,8 @@ struct ChatStructuredContentBlockView: View {
             )
         case .codeArtifact:
             ChatCodeArtifactBlockView(block: block, accent: accent)
+        case .html, .svg:
+            EmptyView()
         case nil:
             EmptyView()
         }
