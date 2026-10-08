@@ -240,6 +240,7 @@ struct MessageBubble: View {
                         ChatStructuredContentBlockView(
                             block: block,
                             accent: accent,
+                            fallbackSources: timelineFallbackSources,
                             onContextHandback: onContextHandback
                         )
                     }
@@ -278,6 +279,17 @@ struct MessageBubble: View {
 
     private var imageArtifacts: [ChatImageArtifact] {
         evidence?.imageArtifacts ?? []
+    }
+
+    private var timelineFallbackSources: [ChatNewsSource] {
+        var seen = Set<String>()
+        return (evidence?.citations ?? []).compactMap { citation in
+            guard let url = citation.url?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !url.isEmpty,
+                  seen.insert(url).inserted
+            else { return nil }
+            return ChatNewsSource(label: citation.displayTitle, url: url)
+        }
     }
 
     private var richContentBlocks: [ChatRichContentBlock] {

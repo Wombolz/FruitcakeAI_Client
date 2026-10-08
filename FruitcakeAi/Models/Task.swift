@@ -359,6 +359,7 @@ struct ChatContentBlock: Codable, Hashable, Identifiable {
     let sections: [ChatNewsSection]
     let items: [ChatStatItem]
     let events: [ChatTimelineEvent]
+    let sources: [ChatNewsSource]
     let file: ChatFileArtifact?
     let code: ChatCodeArtifact?
     let provider: String?
@@ -378,6 +379,7 @@ struct ChatContentBlock: Codable, Hashable, Identifiable {
         sections: [ChatNewsSection] = [],
         items: [ChatStatItem] = [],
         events: [ChatTimelineEvent] = [],
+        sources: [ChatNewsSource] = [],
         file: ChatFileArtifact? = nil,
         code: ChatCodeArtifact? = nil,
         provider: String? = nil,
@@ -396,6 +398,7 @@ struct ChatContentBlock: Codable, Hashable, Identifiable {
         self.sections = sections
         self.items = items
         self.events = events
+        self.sources = sources
         self.file = file
         self.code = code
         self.provider = provider
@@ -404,7 +407,7 @@ struct ChatContentBlock: Codable, Hashable, Identifiable {
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, id, type, sourceMarkdown, sourceFingerprint
-        case columns, columnAlignments, rows, chart, title, sections, items, events, file, code, provider, places
+        case columns, columnAlignments, rows, chart, title, sections, items, events, sources, file, code, provider, places
     }
 
     init(from decoder: Decoder) throws {
@@ -422,6 +425,7 @@ struct ChatContentBlock: Codable, Hashable, Identifiable {
         sections = try container.decodeIfPresent([ChatNewsSection].self, forKey: .sections) ?? []
         items = try container.decodeIfPresent([ChatStatItem].self, forKey: .items) ?? []
         events = try container.decodeIfPresent([ChatTimelineEvent].self, forKey: .events) ?? []
+        sources = try container.decodeIfPresent([ChatNewsSource].self, forKey: .sources) ?? []
         file = try container.decodeIfPresent(ChatFileArtifact.self, forKey: .file)
         code = try container.decodeIfPresent(ChatCodeArtifact.self, forKey: .code)
         provider = try container.decodeIfPresent(String.self, forKey: .provider)
@@ -480,6 +484,24 @@ struct ChatStatItem: Codable, Hashable, Identifiable {
 struct ChatTimelineEvent: Codable, Hashable, Identifiable {
     let label: String
     let detail: String
+    let sources: [ChatNewsSource]
+
+    init(label: String, detail: String, sources: [ChatNewsSource] = []) {
+        self.label = label
+        self.detail = detail
+        self.sources = sources
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case label, detail, sources
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        label = try container.decode(String.self, forKey: .label)
+        detail = try container.decode(String.self, forKey: .detail)
+        sources = try container.decodeIfPresent([ChatNewsSource].self, forKey: .sources) ?? []
+    }
 
     var id: String { "\(label):\(detail)" }
 }

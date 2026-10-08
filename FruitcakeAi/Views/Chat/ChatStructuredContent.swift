@@ -22,6 +22,7 @@ import UIKit
 struct ChatStructuredContentBlockView: View {
     let block: ChatContentBlock
     let accent: Color
+    var fallbackSources: [ChatNewsSource] = []
     var onContextHandback: ((ChatNativeContextAttachment) -> Void)? = nil
 
     @ViewBuilder
@@ -38,7 +39,11 @@ struct ChatStructuredContentBlockView: View {
         case .statGroup:
             ChatStatGroupBlockView(block: block, accent: accent)
         case .timeline:
-            ChatTimelineBlockView(block: block, accent: accent)
+            ChatTimelineBlockView(
+                block: block,
+                accent: accent,
+                fallbackSources: fallbackSources
+            )
         case .fileArtifact:
             ChatFileArtifactBlockView(
                 block: block,
@@ -645,6 +650,9 @@ struct ChatFileArtifactBlockView: View {
 struct ChatTimelineBlockView: View {
     let block: ChatContentBlock
     let accent: Color
+    let fallbackSources: [ChatNewsSource]
+    @Environment(\.openURL) private var openURL
+    @State private var expandedEventID: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -680,17 +688,53 @@ struct ChatTimelineBlockView: View {
                     }
                     .frame(width: 9)
 
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(event.label.uppercased())
-                            .font(Theme.mono(9.5).weight(.semibold))
-                            .tracking(0.5)
-                            .foregroundStyle(accent)
+                    VStack(alignment: .leading, spacing: 7) {
+                        let eventSources = sources(for: event)
+                        if eventSources.isEmpty {
+                            eventText(event, sourceCount: 0, usesSharedSources: false)
+                        } else {
+                            Button {
+                                openOrReveal(event, sources: eventSources)
+                            } label: {
+                                eventText(
+                                    event,
+                                    sourceCount: eventSources.count,
+                                    usesSharedSources: event.sources.isEmpty
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .contentShape(Rectangle())
+                            .help(
+                                eventSources.count == 1
+                                    ? "Open source article"
+                                    : "Show related source articles"
+                            )
+                        }
 
-                        Text(event.detail)
-                            .font(.system(size: 13))
-                            .foregroundStyle(Theme.textMid)
-                            .lineSpacing(2)
-                            .fixedSize(horizontal: false, vertical: true)
+                        if expandedEventID == event.id, eventSources.count > 1 {
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 7) {
+                                    ForEach(eventSources) { source in
+                                        if let url = URL(string: source.url) {
+                                            Link(destination: url) {
+                                                HStack(spacing: 4) {
+                                                    Text(source.label)
+                                                        .lineLimit(1)
+                                                    Image(systemName: "arrow.up.right")
+                                                        .font(.system(size: 7, weight: .bold))
+                                                }
+                                                .font(Theme.mono(9.5).weight(.medium))
+                                                .foregroundStyle(accent)
+                                                .padding(.horizontal, 8)
+                                                .padding(.vertical, 5)
+                                                .background(accent.opacity(0.09), in: Capsule())
+                                            }
+                                            .buttonStyle(.plain)
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                     .padding(.bottom, index < block.events.count - 1 ? 8 : 0)
                 }
@@ -706,6 +750,64 @@ struct ChatTimelineBlockView: View {
         )
         .padding(.horizontal, 13)
         .padding(.vertical, 8)
+    }
+
+    @ViewBuilder
+    private func eventText(
+        _ event: ChatTimelineEvent,
+        sourceCount: Int,
+        usesSharedSources: Bool
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                Text(event.label.uppercased())
+                    .font(Theme.mono(9.5).weight(.semibold))
+                    .tracking(0.5)
+                    .foregroundStyle(accent)
+
+                Spacer(minLength: 8)
+
+                if sourceCount > 0 {
+                    HStack(spacing: 4) {
+                        Text(sourceCount == 1 ? "SOURCE" : "\(sourceCount) SOURCES")
+                        Image(systemName: sourceCount == 1 ? "arrow.up.right" : "chevron.down")
+                            .rotationEffect(
+                                .degrees(sourceCount > 1 && expandedEventID == event.id ? 180 : 0)
+                            )
+                    }
+                    .font(Theme.mono(8.5).weight(.semibold))
+                    .foregroundStyle(usesSharedSources ? Theme.textFaint : accent.opacity(0.85))
+                }
+            }
+
+            Text(attributedDetail(event.detail))
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.textMid)
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func sources(for event: ChatTimelineEvent) -> [ChatNewsSource] {
+        if !event.sources.isEmpty { return event.sources }
+        return block.sources.isEmpty ? fallbackSources : block.sources
+    }
+
+    private func attributedDetail(_ value: String) -> AttributedString {
+        (try? AttributedString(
+            markdown: value,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        )) ?? AttributedString(value)
+    }
+
+    private func openOrReveal(_ event: ChatTimelineEvent, sources: [ChatNewsSource]) {
+        if sources.count == 1, let url = URL(string: sources[0].url) {
+            openURL(url)
+            return
+        }
+        withAnimation(.easeOut(duration: 0.16)) {
+            expandedEventID = expandedEventID == event.id ? nil : event.id
+        }
     }
 }
 
