@@ -459,6 +459,7 @@ struct ChatFileArtifactBlockView: View {
     var onContextHandback: ((ChatNativeContextAttachment) -> Void)? = nil
 
     @Environment(AuthManager.self) private var authManager
+    @Environment(ArtifactInspectorState.self) private var artifactInspector
     @State private var copied = false
     @State private var isOpening = false
     @State private var errorMessage: String?
@@ -519,12 +520,29 @@ struct ChatFileArtifactBlockView: View {
                 .foregroundStyle(copied ? Theme.ok : accent)
 
                 Button {
+                    artifactInspector.open(
+                        ArtifactReference(
+                            id: "chat:\(block.id):\(artifact.path)",
+                            path: artifact.path,
+                            filename: artifact.filename,
+                            mediaType: artifact.mediaType,
+                            title: artifact.filename,
+                            origin: .chat(sessionID: nil)
+                        )
+                    )
+                } label: {
+                    Label("Preview", systemImage: "sidebar.trailing")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+
+                Button {
                     Task { await open(artifact) }
                 } label: {
                     if isOpening {
                         ProgressView().controlSize(.small)
                     } else {
-                        Label("Open", systemImage: "arrow.up.forward.app")
+                        Label("External", systemImage: "arrow.up.forward.app")
                     }
                 }
                 .buttonStyle(.bordered)

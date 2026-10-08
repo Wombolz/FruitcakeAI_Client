@@ -35,6 +35,7 @@ private struct TaskDetailModelListResponse: Decodable {
 struct TaskDetailSheet: View {
 
     @Environment(AuthManager.self) private var authManager
+    @Environment(ArtifactInspectorState.self) private var artifactInspector
     @Environment(\.dismiss) private var dismiss
 
     let task: TaskSummary
@@ -247,6 +248,46 @@ struct TaskDetailSheet: View {
                                         .font(.caption)
                                         .foregroundStyle(.red)
                                 }
+                            }
+                        }
+                    }
+
+                    if !audit.viewableArtifacts.isEmpty {
+                        Section("Artifacts") {
+                            ForEach(audit.viewableArtifacts) { artifact in
+                                Button {
+                                    artifactInspector.open(
+                                        ArtifactReference(
+                                            id: "task:\(currentTask.id):\(artifact.id)",
+                                            path: artifact.path,
+                                            filename: artifact.filename,
+                                            mediaType: artifact.mediaType,
+                                            title: artifact.filename,
+                                            origin: .task(
+                                                taskID: currentTask.id,
+                                                runID: latestRun?.id
+                                            )
+                                        )
+                                    )
+                                    dismiss()
+                                } label: {
+                                    HStack(spacing: 10) {
+                                        Image(systemName: "doc.text.magnifyingglass")
+                                            .foregroundStyle(currentTask.accent)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(artifact.filename)
+                                                .foregroundStyle(.primary)
+                                            Text(artifact.path)
+                                                .font(.caption.monospaced())
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                        }
+                                        Spacer()
+                                        Text("Preview")
+                                            .font(.caption.weight(.semibold))
+                                    }
+                                }
+                                .buttonStyle(.plain)
                             }
                         }
                     }
