@@ -524,6 +524,7 @@ enum ArtifactRendererKind: String {
     case codeArtifact = "code_artifact"
     case html
     case svg
+    case mcpApp = "mcp_app"
 }
 
 struct ArtifactTypeDefinition: Hashable {
@@ -545,6 +546,7 @@ enum ArtifactRendererRegistry {
         .init(type: "core.code", legacyTypes: ["code_artifact"], schemaVersions: [1], renderer: .codeArtifact, preferredPresentation: "inspector"),
         .init(type: "core.html", legacyTypes: [], schemaVersions: [1], renderer: .html, preferredPresentation: "inspector"),
         .init(type: "core.svg", legacyTypes: [], schemaVersions: [1], renderer: .svg, preferredPresentation: "inline"),
+        .init(type: "core.mcp_app", legacyTypes: [], schemaVersions: [1], renderer: .mcpApp, preferredPresentation: "inline"),
     ]
 
     private static let definitionsByType: [String: ArtifactTypeDefinition] = {

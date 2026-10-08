@@ -18,6 +18,13 @@ struct WorkspaceUploadResponse: Decodable, Hashable {
     let isImage: Bool
 }
 
+struct MCPAppResourceResponse: Decodable, Hashable {
+    let server: String
+    let uri: String
+    let mimeType: String
+    let html: String
+}
+
 @MainActor
 final class APIClient {
 
@@ -100,6 +107,21 @@ final class APIClient {
             fields: ["target_dir": targetDir]
         )
         return try decode(WorkspaceUploadResponse.self, from: data)
+    }
+
+    func fetchMCPAppResource(server: String, uri: String) async throws -> MCPAppResourceResponse {
+        var components = URLComponents()
+        components.queryItems = [
+            URLQueryItem(name: "server", value: server),
+            URLQueryItem(name: "uri", value: uri),
+        ]
+        guard let query = components.percentEncodedQuery else {
+            throw APIError.invalidResponse
+        }
+        return try await request(
+            "/artifacts/mcp-app-resource?\(query)",
+            timeout: 30
+        )
     }
 
     // MARK: - Private helpers

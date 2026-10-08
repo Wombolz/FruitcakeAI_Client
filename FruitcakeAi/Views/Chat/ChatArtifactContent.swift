@@ -49,9 +49,16 @@ struct ChatArtifactBlockView: View {
                 case .svg:
                     RestrictedArtifactWebView(content: content, kind: .svg)
                         .frame(height: 300)
+                case .mcpApp:
+                    MCPAppArtifactView(artifact: artifact, accent: accent)
                 default:
                     fallbackView
                 }
+            } else if ArtifactRendererRegistry.resolve(
+                type: artifact.type,
+                schemaVersion: artifact.schemaVersion
+            )?.renderer == .mcpApp {
+                MCPAppArtifactView(artifact: artifact, accent: accent)
             } else {
                 fallbackView
             }
@@ -87,13 +94,323 @@ struct ChatArtifactBlockView: View {
     }
 
     private var iconName: String {
-        artifact.type == "core.svg" ? "scribble.variable" : "chevron.left.forwardslash.chevron.right"
+        if artifact.type == "core.mcp_app" { return "app.badge" }
+        return artifact.type == "core.svg" ? "scribble.variable" : "chevron.left.forwardslash.chevron.right"
     }
 
     private var typeLabel: String {
-        artifact.type == "core.svg" ? "SVG" : "STATIC HTML"
+        if artifact.type == "core.mcp_app" { return "MCP APP" }
+        return artifact.type == "core.svg" ? "SVG" : "STATIC HTML"
     }
 }
+
+private struct MCPAppArtifactView: View {
+    @Environment(AuthManager.self) private var authManager
+    let artifact: ChatArtifactEnvelope
+    let accent: Color
+
+    @State private var resource: MCPAppResourceResponse?
+    @State private var errorMessage: String?
+
+    var body: some View {
+        Group {
+            if let resource {
+                MCPAppWebView(
+                    html: restrictedMCPAppDocument(resource.html),
+                    toolInput: artifact.payload?["tool_input"] ?? .object([:]),
+                    toolResult: artifact.payload?["tool_result"] ?? .object([:])
+                )
+                .frame(minHeight: 260, idealHeight: 360, maxHeight: 520)
+            } else if let errorMessage {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Interactive view unavailable")
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(Theme.text)
+                    Text(errorMessage)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Theme.textFaint)
+                    if let fallback = artifact.fallback {
+                        Text(fallback.content)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Theme.textMid)
+                            .textSelection(.enabled)
+                    }
+                }
+                .padding(13)
+            } else {
+                HStack(spacing: 9) {
+                    ProgressView().controlSize(.small).tint(accent)
+                    Text("Loading interactive view…")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Theme.textFaint)
+                }
+                .padding(13)
+            }
+        }
+        .task(id: resourceKey) {
+            await loadResource()
+        }
+    }
+
+    private var resourceKey: String {
+        "\(artifact.provenance?.server ?? ""):\(artifact.presentation.uiResource ?? "")"
+    }
+
+    private func loadResource() async {
+        guard let server = artifact.provenance?.server, !server.isEmpty,
+              let uri = artifact.presentation.uiResource, uri.hasPrefix("ui://") else {
+            errorMessage = "This artifact is missing its MCP server or UI resource."
+            return
+        }
+        do {
+            resource = try await APIClient(authManager: authManager)
+                .fetchMCPAppResource(server: server, uri: uri)
+            errorMessage = nil
+        } catch {
+            resource = nil
+            errorMessage = "Fruitcake could not load the MCP App resource."
+        }
+    }
+}
+
+private func restrictedMCPAppDocument(_ html: String) -> String {
+    let policy = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    let meta = "<meta http-equiv=\"Content-Security-Policy\" content=\"\(policy)\">"
+    if let headRange = html.range(of: "<head", options: [.caseInsensitive]),
+       let close = html[headRange.lowerBound...].firstIndex(of: ">") {
+        var document = html
+        document.insert(contentsOf: meta, at: document.index(after: close))
+        return document
+    }
+    return "<!doctype html><html><head>\(meta)<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head><body>\(html)</body></html>"
+}
+
+private extension JSONValue {
+    var foundationValue: Any {
+        switch self {
+        case .string(let value): return value
+        case .int(let value): return value
+        case .double(let value): return value
+        case .bool(let value): return value
+        case .object(let value): return value.mapValues(\.foundationValue)
+        case .array(let value): return value.map(\.foundationValue)
+        case .null: return NSNull()
+        }
+    }
+}
+
+private final class MCPAppBridgeCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
+    weak var webView: WKWebView?
+    var toolInput: JSONValue
+    var toolResult: JSONValue
+    private var initialized = false
+
+    init(toolInput: JSONValue, toolResult: JSONValue) {
+        self.toolInput = toolInput
+        self.toolResult = toolResult
+    }
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard let request = message.body as? [String: Any],
+              let method = request["method"] as? String else { return }
+        let id = request["id"]
+        switch method {
+        case "ui/initialize":
+            guard let id else { return }
+            send([
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": [
+                    "protocolVersion": "2026-01-26",
+                    "hostCapabilities": [
+                        "openLinks": [:],
+                        "sandbox": [
+                            "permissions": [:],
+                            "csp": ["connectDomains": [], "resourceDomains": []],
+                        ],
+                    ],
+                    "hostInfo": ["name": "Fruitcake", "version": "1"],
+                    "hostContext": [
+                        "theme": "dark",
+                        "platform": "desktop",
+                        "displayMode": "inline",
+                        "locale": Locale.current.identifier,
+                        "timeZone": TimeZone.current.identifier,
+                    ],
+                ],
+            ])
+        case "ui/notifications/initialized":
+            deliverInitialStateIfNeeded()
+        case "ping":
+            if let id { send(["jsonrpc": "2.0", "id": id, "result": [:]]) }
+        case "ui/open-link":
+            handleOpenLink(request: request, id: id)
+        case "ui/notifications/size-changed", "notifications/message":
+            break
+        default:
+            if let id {
+                send([
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": ["code": -32601, "message": "Method is not available in this host"],
+                ])
+            }
+        }
+    }
+
+    func sendTeardown() {
+        send(["jsonrpc": "2.0", "id": "fruitcake-teardown", "method": "ui/resource-teardown"])
+    }
+
+    private func deliverInitialStateIfNeeded() {
+        guard !initialized else { return }
+        initialized = true
+        send([
+            "jsonrpc": "2.0",
+            "method": "ui/notifications/tool-input",
+            "params": ["arguments": toolInput.foundationValue],
+        ])
+        let result = toolResult.foundationValue
+        send([
+            "jsonrpc": "2.0",
+            "method": "ui/notifications/tool-result",
+            "params": result,
+        ])
+    }
+
+    private func handleOpenLink(request: [String: Any], id: Any?) {
+        let params = request["params"] as? [String: Any]
+        let rawURL = params?["url"] as? String
+        guard let rawURL, let url = URL(string: rawURL),
+              ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
+            if let id {
+                send(["jsonrpc": "2.0", "id": id, "error": ["code": -32602, "message": "Only HTTP(S) links are allowed"]])
+            }
+            return
+        }
+#if os(macOS)
+        NSWorkspace.shared.open(url)
+#else
+        UIApplication.shared.open(url)
+#endif
+        if let id { send(["jsonrpc": "2.0", "id": id, "result": [:]]) }
+    }
+
+    private func send(_ message: [String: Any]) {
+        guard JSONSerialization.isValidJSONObject(message),
+              let data = try? JSONSerialization.data(withJSONObject: message),
+              let json = String(data: data, encoding: .utf8) else { return }
+        let script = "window.__fruitcakeDelivering=true;try{window.dispatchEvent(new MessageEvent('message',{data:\(json)}));}finally{window.__fruitcakeDelivering=false;}"
+        webView?.evaluateJavaScript(script)
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+    ) {
+        guard navigationAction.navigationType == .linkActivated,
+              let url = navigationAction.request.url,
+              ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
+            decisionHandler(navigationAction.navigationType == .linkActivated ? .cancel : .allow)
+            return
+        }
+#if os(macOS)
+        NSWorkspace.shared.open(url)
+#else
+        UIApplication.shared.open(url)
+#endif
+        decisionHandler(.cancel)
+    }
+}
+
+private let mcpAppBridgeScript = """
+window.addEventListener('message', function(event) {
+  if (window.__fruitcakeDelivering) return;
+  try { window.webkit.messageHandlers.mcpApp.postMessage(event.data); } catch (_) {}
+});
+"""
+
+#if os(macOS)
+private struct MCPAppWebView: NSViewRepresentable {
+    let html: String
+    let toolInput: JSONValue
+    let toolResult: JSONValue
+
+    func makeCoordinator() -> MCPAppBridgeCoordinator {
+        MCPAppBridgeCoordinator(toolInput: toolInput, toolResult: toolResult)
+    }
+
+    func makeNSView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: mcpAppBridgeScript,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        ))
+        configuration.userContentController.add(context.coordinator, name: "mcpApp")
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        context.coordinator.webView = webView
+        webView.navigationDelegate = context.coordinator
+        webView.setValue(false, forKey: "drawsBackground")
+        webView.loadHTMLString(html, baseURL: nil)
+        return webView
+    }
+
+    func updateNSView(_ webView: WKWebView, context: Context) {
+        context.coordinator.toolInput = toolInput
+        context.coordinator.toolResult = toolResult
+    }
+
+    static func dismantleNSView(_ webView: WKWebView, coordinator: MCPAppBridgeCoordinator) {
+        coordinator.sendTeardown()
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "mcpApp")
+        webView.stopLoading()
+    }
+}
+#else
+private struct MCPAppWebView: UIViewRepresentable {
+    let html: String
+    let toolInput: JSONValue
+    let toolResult: JSONValue
+
+    func makeCoordinator() -> MCPAppBridgeCoordinator {
+        MCPAppBridgeCoordinator(toolInput: toolInput, toolResult: toolResult)
+    }
+
+    func makeUIView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: mcpAppBridgeScript,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        ))
+        configuration.userContentController.add(context.coordinator, name: "mcpApp")
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        context.coordinator.webView = webView
+        webView.navigationDelegate = context.coordinator
+        webView.isOpaque = false
+        webView.backgroundColor = .clear
+        webView.loadHTMLString(html, baseURL: nil)
+        return webView
+    }
+
+    func updateUIView(_ webView: WKWebView, context: Context) {
+        context.coordinator.toolInput = toolInput
+        context.coordinator.toolResult = toolResult
+    }
+
+    static func dismantleUIView(_ webView: WKWebView, coordinator: MCPAppBridgeCoordinator) {
+        coordinator.sendTeardown()
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "mcpApp")
+        webView.stopLoading()
+    }
+}
+#endif
 
 private enum RestrictedArtifactKind {
     case html
