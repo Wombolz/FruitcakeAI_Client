@@ -158,6 +158,7 @@ struct MessageBubble: View {
     var personaDisplayName: String = ""    // shown as label above assistant messages
     @Binding var evidenceExpanded: Bool
     var onContextHandback: ((ChatNativeContextAttachment) -> Void)? = nil
+    var onOpenAppArtifact: ((ChatArtifactEnvelope) -> Void)? = nil
 
     private var isUser: Bool { message.isUser }
     private var accent: Color { PersonaAccent.color(for: personaKey) }
@@ -232,6 +233,16 @@ struct MessageBubble: View {
             // (when present) fused onto the bottom behind a hairline divider
             // — reads as part of the response, not a separate debug card.
             VStack(alignment: .leading, spacing: 0) {
+                // Interactive apps are the primary response surface. Put them
+                // ahead of model-generated fallback prose/tables so they do
+                // not appear missing below a long synthesized answer.
+                ForEach(Array(interactiveArtifacts.enumerated()), id: \.offset) { _, artifact in
+                    ChatArtifactBlockView(
+                        artifact: artifact,
+                        accent: accent,
+                        onOpenMCPApp: onOpenAppArtifact
+                    )
+                }
                 ForEach(Array(richContentBlocks.enumerated()), id: \.offset) { _, block in
                     switch block {
                     case .text(let text):
@@ -247,7 +258,7 @@ struct MessageBubble: View {
                         )
                     }
                 }
-                ForEach(Array(message.artifacts.enumerated()), id: \.offset) { _, artifact in
+                ForEach(Array(supplementalArtifacts.enumerated()), id: \.offset) { _, artifact in
                     ChatArtifactBlockView(artifact: artifact, accent: accent)
                 }
                 if let evidence {
@@ -303,6 +314,14 @@ struct MessageBubble: View {
             artifacts: imageArtifacts,
             structuredBlocks: message.contentBlocks
         )
+    }
+
+    private var interactiveArtifacts: [ChatArtifactEnvelope] {
+        message.artifacts.filter { $0.type == "core.mcp_app" }
+    }
+
+    private var supplementalArtifacts: [ChatArtifactEnvelope] {
+        message.artifacts.filter { $0.type != "core.mcp_app" }
     }
 
     /// Muted source/tool line under assistant replies. Only renders when the

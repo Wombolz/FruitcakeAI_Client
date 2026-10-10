@@ -25,6 +25,48 @@ struct MCPAppResourceResponse: Decodable, Hashable {
     let html: String
 }
 
+struct MCPAppToolCallRequest: Encodable {
+    let server: String
+    let resourceURI: String
+    let tool: String
+    let arguments: JSONValue
+}
+
+struct MCPAppToolCallResponse: Decodable {
+    let state: String
+    let server: String?
+    let resourceURI: String?
+    let tool: String?
+    let result: JSONValue?
+    let approval: MCPAppToolApproval?
+
+    private enum CodingKeys: String, CodingKey {
+        case state, server, tool, result, approval
+        // The shared decoder normalizes resource_uri to resourceUri first.
+        case resourceURI = "resourceUri"
+    }
+}
+
+struct MCPAppToolApproval: Decodable {
+    let id: Int
+    let server: String
+    let resourceURI: String
+    let tool: String
+    let title: String
+    let reason: String
+    let arguments: JSONValue
+    let destructive: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case id, server, tool, title, reason, arguments, destructive
+        case resourceURI = "resourceUri"
+    }
+}
+
+private struct MCPAppToolApprovalDecision: Encodable {
+    let approved: Bool
+}
+
 @MainActor
 final class APIClient {
 
@@ -121,6 +163,37 @@ final class APIClient {
         return try await request(
             "/artifacts/mcp-app-resource?\(query)",
             timeout: 30
+        )
+    }
+
+    func callMCPAppTool(
+        server: String,
+        resourceURI: String,
+        tool: String,
+        arguments: JSONValue
+    ) async throws -> MCPAppToolCallResponse {
+        try await request(
+            "/artifacts/mcp-app-tool",
+            method: "POST",
+            body: MCPAppToolCallRequest(
+                server: server,
+                resourceURI: resourceURI,
+                tool: tool,
+                arguments: arguments
+            ),
+            timeout: 45
+        )
+    }
+
+    func resolveMCPAppToolApproval(
+        approvalID: Int,
+        approved: Bool
+    ) async throws -> MCPAppToolCallResponse {
+        try await request(
+            "/artifacts/mcp-app-tool/\(approvalID)/approval",
+            method: "POST",
+            body: MCPAppToolApprovalDecision(approved: approved),
+            timeout: 60
         )
     }
 

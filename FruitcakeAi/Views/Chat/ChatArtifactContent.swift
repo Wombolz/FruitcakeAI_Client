@@ -9,6 +9,7 @@ import UIKit
 struct ChatArtifactBlockView: View {
     let artifact: ChatArtifactEnvelope
     let accent: Color
+    var onOpenMCPApp: ((ChatArtifactEnvelope) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -37,7 +38,26 @@ struct ChatArtifactBlockView: View {
 
             Rectangle().fill(Theme.stroke).frame(height: 1)
 
-            if let content = artifact.content,
+            if artifact.type == "core.mcp_app" {
+                HStack(spacing: 10) {
+                    Button {
+                        onOpenMCPApp?(artifact)
+                    } label: {
+                        Label("Open Dashboard", systemImage: "rectangle.topthird.inset.filled")
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(accent)
+                    .disabled(onOpenMCPApp == nil)
+
+                    Spacer(minLength: 0)
+                    Text("Saved in this conversation")
+                        .font(Theme.mono(9.5))
+                        .foregroundStyle(Theme.textFaint)
+                }
+                .padding(.horizontal, 13)
+                .padding(.vertical, 11)
+            } else if let content = artifact.content,
                let definition = ArtifactRendererRegistry.resolve(
                     type: artifact.type,
                     schemaVersion: artifact.schemaVersion
@@ -49,16 +69,9 @@ struct ChatArtifactBlockView: View {
                 case .svg:
                     RestrictedArtifactWebView(content: content, kind: .svg)
                         .frame(height: 300)
-                case .mcpApp:
-                    MCPAppArtifactView(artifact: artifact, accent: accent)
                 default:
                     fallbackView
                 }
-            } else if ArtifactRendererRegistry.resolve(
-                type: artifact.type,
-                schemaVersion: artifact.schemaVersion
-            )?.renderer == .mcpApp {
-                MCPAppArtifactView(artifact: artifact, accent: accent)
             } else {
                 fallbackView
             }
@@ -104,23 +117,110 @@ struct ChatArtifactBlockView: View {
     }
 }
 
+private enum MCPAppDisplayMode {
+    case drawer
+    case window
+
+    var hostValue: String {
+        self == .window ? "fullscreen" : "inline"
+    }
+}
+
+struct MCPAppDashboardDrawer: View {
+    @Environment(AuthManager.self) private var authManager
+    let artifact: ChatArtifactEnvelope
+    let accent: Color
+    let onDismiss: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: "app.badge")
+                    .foregroundStyle(accent)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(artifact.title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Theme.text)
+                    Text("Interactive app")
+                        .font(Theme.mono(9.5))
+                        .foregroundStyle(Theme.textFaint)
+                }
+                Spacer(minLength: 12)
+                #if os(macOS)
+                Button {
+                    MCPAppWindowPresenter.open(
+                        artifact: artifact,
+                        accent: accent,
+                        authManager: authManager
+                    )
+                } label: {
+                    Label("Open Window", systemImage: "macwindow.on.rectangle")
+                }
+                .buttonStyle(.plain)
+                .font(Theme.mono(10.5))
+                .foregroundStyle(accent)
+                #endif
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(Theme.textDim)
+                        .frame(width: 26, height: 26)
+                        .background(Theme.field, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .help("Close app panel")
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+
+            Rectangle().fill(Theme.stroke).frame(height: 1)
+
+            MCPAppArtifactView(
+                artifact: artifact,
+                accent: accent,
+                displayMode: .drawer
+            )
+        }
+        .background(Theme.composer)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(accent.opacity(0.35)).frame(height: 1)
+        }
+        .clipped()
+    }
+}
+
 private struct MCPAppArtifactView: View {
     @Environment(AuthManager.self) private var authManager
     let artifact: ChatArtifactEnvelope
     let accent: Color
+    let displayMode: MCPAppDisplayMode
 
     @State private var resource: MCPAppResourceResponse?
     @State private var errorMessage: String?
+    @State private var preferredHeight: CGFloat = 360
 
     var body: some View {
         Group {
             if let resource {
-                MCPAppWebView(
-                    html: restrictedMCPAppDocument(resource.html),
-                    toolInput: artifact.payload?["tool_input"] ?? .object([:]),
-                    toolResult: artifact.payload?["tool_result"] ?? .object([:])
-                )
-                .frame(minHeight: 260, idealHeight: 360, maxHeight: 520)
+                VStack(spacing: 0) {
+                    MCPAppWebView(
+                        html: restrictedMCPAppDocument(resource.html),
+                        toolInput: artifact.payload?["tool_input"] ?? .object([:]),
+                        toolResult: artifact.payload?["tool_result"] ?? .object([:]),
+                        server: artifact.provenance?.server ?? "",
+                        resourceURI: artifact.presentation.uiResource ?? "",
+                        displayMode: displayMode,
+                        authManager: authManager,
+                        onPreferredHeight: { height in
+                            preferredHeight = min(720, max(260, height))
+                        }
+                    )
+                    .frame(
+                        minHeight: displayMode == .window ? 480 : 260,
+                        idealHeight: displayMode == .window ? 700 : preferredHeight,
+                        maxHeight: displayMode == .window ? .infinity : preferredHeight
+                    )
+                }
             } else if let errorMessage {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Interactive view unavailable")
@@ -173,6 +273,42 @@ private struct MCPAppArtifactView: View {
     }
 }
 
+#if os(macOS)
+@MainActor
+private enum MCPAppWindowPresenter {
+    private static var controllers: [NSWindowController] = []
+
+    static func open(
+        artifact: ChatArtifactEnvelope,
+        accent: Color,
+        authManager: AuthManager
+    ) {
+        let content = MCPAppArtifactView(
+            artifact: artifact,
+            accent: accent,
+            displayMode: .window
+        )
+        .environment(authManager)
+        .frame(minWidth: 820, minHeight: 560)
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1_180, height: 760),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = artifact.title
+        window.minSize = NSSize(width: 720, height: 480)
+        window.contentViewController = NSHostingController(rootView: content)
+        window.center()
+        let controller = NSWindowController(window: window)
+        controllers.append(controller)
+        controller.showWindow(nil)
+        window.makeKeyAndOrderFront(nil)
+    }
+}
+#endif
+
 private func restrictedMCPAppDocument(_ html: String) -> String {
     let policy = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
     let meta = "<meta http-equiv=\"Content-Security-Policy\" content=\"\(policy)\">"
@@ -197,17 +333,56 @@ private extension JSONValue {
         case .null: return NSNull()
         }
     }
+
+    nonisolated static func fromFoundation(_ value: Any) -> JSONValue? {
+        switch value {
+        case let value as String: return .string(value)
+        case let value as Bool: return .bool(value)
+        case let value as Int: return .int(value)
+        case let value as NSNumber: return .double(value.doubleValue)
+        case let value as [String: Any]:
+            var object: [String: JSONValue] = [:]
+            for (key, child) in value {
+                guard let converted = fromFoundation(child) else { return nil }
+                object[key] = converted
+            }
+            return .object(object)
+        case let value as [Any]:
+            let converted = value.compactMap(fromFoundation)
+            return converted.count == value.count ? .array(converted) : nil
+        case is NSNull: return .null
+        default: return nil
+        }
+    }
 }
 
 private final class MCPAppBridgeCoordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     weak var webView: WKWebView?
     var toolInput: JSONValue
     var toolResult: JSONValue
+    let server: String
+    let resourceURI: String
+    let displayMode: MCPAppDisplayMode
+    let authManager: AuthManager
+    let onPreferredHeight: (CGFloat) -> Void
     private var initialized = false
 
-    init(toolInput: JSONValue, toolResult: JSONValue) {
+    init(
+        toolInput: JSONValue,
+        toolResult: JSONValue,
+        server: String,
+        resourceURI: String,
+        displayMode: MCPAppDisplayMode,
+        authManager: AuthManager,
+        onPreferredHeight: @escaping (CGFloat) -> Void
+    ) {
         self.toolInput = toolInput
         self.toolResult = toolResult
+        self.server = server
+        self.resourceURI = resourceURI
+        self.displayMode = displayMode
+        self.authManager = authManager
+        self.onPreferredHeight = onPreferredHeight
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -224,6 +399,7 @@ private final class MCPAppBridgeCoordinator: NSObject, WKScriptMessageHandler, W
                     "protocolVersion": "2026-01-26",
                     "hostCapabilities": [
                         "openLinks": [:],
+                        "serverTools": [:],
                         "sandbox": [
                             "permissions": [:],
                             "csp": ["connectDomains": [], "resourceDomains": []],
@@ -233,8 +409,14 @@ private final class MCPAppBridgeCoordinator: NSObject, WKScriptMessageHandler, W
                     "hostContext": [
                         "theme": "dark",
                         "platform": "desktop",
-                        "displayMode": "inline",
-                        "locale": Locale.current.identifier,
+                        "displayMode": displayMode.hostValue,
+                        // The host owns drawer/window transitions. Do not advertise
+                        // app-controlled mode switching until the bridge implements it.
+                        "availableDisplayModes": [displayMode.hostValue],
+                        "containerDimensions": displayMode == .drawer
+                            ? ["maxHeight": 720, "maxWidth": 1_200]
+                            : [:],
+                        "locale": Locale.preferredLanguages.first ?? "en",
                         "timeZone": TimeZone.current.identifier,
                     ],
                 ],
@@ -245,7 +427,11 @@ private final class MCPAppBridgeCoordinator: NSObject, WKScriptMessageHandler, W
             if let id { send(["jsonrpc": "2.0", "id": id, "result": [:]]) }
         case "ui/open-link":
             handleOpenLink(request: request, id: id)
-        case "ui/notifications/size-changed", "notifications/message":
+        case "tools/call":
+            handleToolCall(request: request, id: id)
+        case "ui/notifications/size-changed":
+            handleSizeChanged(request: request)
+        case "notifications/message":
             break
         default:
             if let id {
@@ -296,6 +482,120 @@ private final class MCPAppBridgeCoordinator: NSObject, WKScriptMessageHandler, W
         if let id { send(["jsonrpc": "2.0", "id": id, "result": [:]]) }
     }
 
+    private func handleToolCall(request: [String: Any], id: Any?) {
+        guard let id,
+              let params = request["params"] as? [String: Any],
+              let name = params["name"] as? String,
+              !name.isEmpty,
+              let rawArguments = params["arguments"] as? [String: Any],
+              let arguments = JSONValue.fromFoundation(rawArguments) else {
+            if let id {
+                send(["jsonrpc": "2.0", "id": id, "error": ["code": -32602, "message": "Invalid tool call"]])
+            }
+            return
+        }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let client = APIClient(authManager: authManager)
+                var response = try await client.callMCPAppTool(
+                    server: server,
+                    resourceURI: resourceURI,
+                    tool: name,
+                    arguments: arguments
+                )
+                if response.state == "waiting_approval", let approval = response.approval {
+                    let approved = await requestMutationApproval(approval)
+                    response = try await client.resolveMCPAppToolApproval(
+                        approvalID: approval.id,
+                        approved: approved
+                    )
+                    if response.state == "denied" {
+                        send([
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": ["code": -32001, "message": "Action denied by the user"],
+                        ])
+                        return
+                    }
+                }
+                guard response.state == "completed", let result = response.result else {
+                    throw APIError.invalidResponse
+                }
+                send(["jsonrpc": "2.0", "id": id, "result": result.foundationValue])
+            } catch {
+                let detail = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+                let message = detail.isEmpty
+                    ? "Fruitcake could not complete this app tool call."
+                    : String(detail.prefix(300))
+                send([
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": ["code": -32000, "message": message],
+                ])
+            }
+        }
+    }
+
+    @MainActor
+    private func requestMutationApproval(_ approval: MCPAppToolApproval) async -> Bool {
+        let argumentText = boundedArgumentSummary(approval.arguments)
+#if os(macOS)
+        let alert = NSAlert()
+        alert.alertStyle = approval.destructive ? .critical : .warning
+        alert.messageText = approval.title
+        alert.informativeText = [approval.reason, argumentText]
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n")
+        alert.addButton(withTitle: "Deny")
+        alert.addButton(withTitle: "Approve")
+        guard let window = webView?.window else {
+            return alert.runModal() == .alertSecondButtonReturn
+        }
+        return await withCheckedContinuation { continuation in
+            alert.beginSheetModal(for: window) { response in
+                continuation.resume(returning: response == .alertSecondButtonReturn)
+            }
+        }
+#else
+        guard let presenter = webView?.window?.rootViewController else { return false }
+        return await withCheckedContinuation { continuation in
+            let alert = UIAlertController(
+                title: approval.title,
+                message: [approval.reason, argumentText].filter { !$0.isEmpty }.joined(separator: "\n\n"),
+                preferredStyle: .alert
+            )
+            alert.addAction(UIAlertAction(title: "Deny", style: .cancel) { _ in
+                continuation.resume(returning: false)
+            })
+            alert.addAction(UIAlertAction(title: "Approve", style: approval.destructive ? .destructive : .default) { _ in
+                continuation.resume(returning: true)
+            })
+            presenter.present(alert, animated: true)
+        }
+#endif
+    }
+
+    private func boundedArgumentSummary(_ arguments: JSONValue) -> String {
+        guard JSONSerialization.isValidJSONObject(arguments.foundationValue),
+              let data = try? JSONSerialization.data(
+                withJSONObject: arguments.foundationValue,
+                options: [.prettyPrinted, .sortedKeys]
+              ),
+              let text = String(data: data, encoding: .utf8),
+              text != "{}" else { return "" }
+        return "Requested parameters:\n" + String(text.prefix(800))
+    }
+
+    private func handleSizeChanged(request: [String: Any]) {
+        guard displayMode == .drawer,
+              let params = request["params"] as? [String: Any],
+              let height = (params["height"] as? NSNumber)?.doubleValue else { return }
+        DispatchQueue.main.async { [onPreferredHeight] in
+            onPreferredHeight(CGFloat(height))
+        }
+    }
+
     private func send(_ message: [String: Any]) {
         guard JSONSerialization.isValidJSONObject(message),
               let data = try? JSONSerialization.data(withJSONObject: message),
@@ -336,9 +636,22 @@ private struct MCPAppWebView: NSViewRepresentable {
     let html: String
     let toolInput: JSONValue
     let toolResult: JSONValue
+    let server: String
+    let resourceURI: String
+    let displayMode: MCPAppDisplayMode
+    let authManager: AuthManager
+    let onPreferredHeight: (CGFloat) -> Void
 
     func makeCoordinator() -> MCPAppBridgeCoordinator {
-        MCPAppBridgeCoordinator(toolInput: toolInput, toolResult: toolResult)
+        MCPAppBridgeCoordinator(
+            toolInput: toolInput,
+            toolResult: toolResult,
+            server: server,
+            resourceURI: resourceURI,
+            displayMode: displayMode,
+            authManager: authManager,
+            onPreferredHeight: onPreferredHeight
+        )
     }
 
     func makeNSView(context: Context) -> WKWebView {
@@ -375,9 +688,22 @@ private struct MCPAppWebView: UIViewRepresentable {
     let html: String
     let toolInput: JSONValue
     let toolResult: JSONValue
+    let server: String
+    let resourceURI: String
+    let displayMode: MCPAppDisplayMode
+    let authManager: AuthManager
+    let onPreferredHeight: (CGFloat) -> Void
 
     func makeCoordinator() -> MCPAppBridgeCoordinator {
-        MCPAppBridgeCoordinator(toolInput: toolInput, toolResult: toolResult)
+        MCPAppBridgeCoordinator(
+            toolInput: toolInput,
+            toolResult: toolResult,
+            server: server,
+            resourceURI: resourceURI,
+            displayMode: displayMode,
+            authManager: authManager,
+            onPreferredHeight: onPreferredHeight
+        )
     }
 
     func makeUIView(context: Context) -> WKWebView {

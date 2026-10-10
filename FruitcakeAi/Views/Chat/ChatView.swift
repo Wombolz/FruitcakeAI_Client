@@ -196,6 +196,9 @@ struct ChatView: View {
     @State private var streamingContent: String = ""
     @State private var showToolIndicator: Bool = false
     @State private var liveState: ChatLiveStatePayload?
+    @State private var activeMCPAppArtifact: ChatArtifactEnvelope?
+    @State private var mcpAppDrawerHeight: CGFloat = 380
+    @State private var mcpAppDrawerLastDragY: CGFloat?
     @SceneStorage("chat.evidence.expanded.keys") private var storedEvidenceExpandedKeys: String = ""
     @State private var evidenceExpandedKeys: Set<String> = []
 
@@ -302,7 +305,14 @@ struct ChatView: View {
     }
 
     private func appendMessage(_ cached: CachedMessage) {
-        messages.append(threadMessage(from: cached))
+        let threadMessage = threadMessage(from: cached)
+        messages.append(threadMessage)
+        if cached.role == "assistant",
+           let appArtifact = threadMessage.artifacts.last(where: { $0.type == "core.mcp_app" }) {
+            withAnimation(.easeOut(duration: 0.24)) {
+                activeMCPAppArtifact = appArtifact
+            }
+        }
         if let conversation = selectedCachedConversation {
             conversation.messages.append(cached)
             conversation.lastActivity = cached.timestamp
@@ -556,6 +566,9 @@ struct ChatView: View {
         }
         .onChange(of: selectedSession?.id) { oldId, newId in
             trace("selected_session_changed old_id=\(oldId.map(String.init) ?? "nil") new_id=\(newId.map(String.init) ?? "nil") ws_state=\(wsManager.stateLabel)")
+            if oldId != newId {
+                activeMCPAppArtifact = nil
+            }
             guard let newId else { return }
             guard oldId != newId else {
                 trace("selected_session_change_ignored_same_id session=\(newId)")
@@ -903,6 +916,47 @@ struct ChatView: View {
 
             ConnectionStatus()
 
+            if let activeMCPAppArtifact {
+                VStack(spacing: 0) {
+                    MCPAppDashboardDrawer(
+                        artifact: activeMCPAppArtifact,
+                        accent: PersonaAccent.color(for: session.persona),
+                        onDismiss: {
+                            withAnimation(.easeIn(duration: 0.18)) {
+                                self.activeMCPAppArtifact = nil
+                            }
+                        }
+                    )
+                    .frame(height: mcpAppDrawerHeight)
+
+                    ZStack {
+                        Theme.composer
+                        Capsule()
+                            .fill(Theme.textFaint.opacity(0.65))
+                            .frame(width: 44, height: 3)
+                    }
+                    .frame(height: 10)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                            .onChanged { value in
+                                let currentY = value.location.y
+                                if let previousY = mcpAppDrawerLastDragY {
+                                    let delta = currentY - previousY
+                                    mcpAppDrawerHeight = min(560, max(260, mcpAppDrawerHeight + delta))
+                                }
+                                mcpAppDrawerLastDragY = currentY
+                            }
+                            .onEnded { _ in
+                                mcpAppDrawerLastDragY = nil
+                            }
+                    )
+                    .help("Drag to resize app panel")
+                }
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .zIndex(1)
+            }
+
             // Message thread
             ScrollViewReader { proxy in
                 ScrollView {
@@ -923,6 +977,11 @@ struct ChatView: View {
                                         case "place": "Tell me more about this place."
                                         default: "Explain this data."
                                         }
+                                    }
+                                },
+                                onOpenAppArtifact: { artifact in
+                                    withAnimation(.easeOut(duration: 0.24)) {
+                                        activeMCPAppArtifact = artifact
                                     }
                                 }
                             )
