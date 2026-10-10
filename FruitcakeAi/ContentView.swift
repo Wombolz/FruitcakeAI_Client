@@ -28,36 +28,43 @@ struct ContentView: View {
 
 // MARK: - Main tab container
 
+private enum AppDestination: String, Hashable {
+    case chat
+    case tasks
+    case library
+    case settings
+}
+
 struct MainTabView: View {
 
     @Environment(ArtifactInspectorState.self) private var artifactInspector
 
     @State private var pendingApprovalCount = 0
-    @State private var selectedTab = "chat"
+    @State private var selectedDestination: AppDestination = .chat
     @State private var openSessionId: Int? = nil
     @State private var artifactInspectorWidth: CGFloat = 480
     @State private var artifactInspectorLastDragX: CGFloat?
 
     var body: some View {
         HStack(spacing: 0) {
-            TabView(selection: $selectedTab) {
-                Tab("Chat", systemImage: "bubble.left.and.bubble.right.fill", value: "chat") {
+            TabView(selection: $selectedDestination) {
+                Tab("Chat", systemImage: "bubble.left.and.bubble.right.fill", value: AppDestination.chat) {
                     ChatView(openSessionId: $openSessionId)
                 }
-                Tab("Tasks", systemImage: "envelope.badge.fill", value: "inbox") {
+                Tab("Tasks", systemImage: "envelope.badge.fill", value: AppDestination.tasks) {
                     InboxView(
                         onCountChanged: { pendingApprovalCount = $0 },
                         onReplyInChat: { sessionId in
                             openSessionId = sessionId
-                            selectedTab = "chat"
+                            selectedDestination = .chat
                         }
                     )
                 }
                 .badge(pendingApprovalCount)
-                Tab("Library", systemImage: "books.vertical.fill", value: "library") {
+                Tab("Library", systemImage: "books.vertical.fill", value: AppDestination.library) {
                     LibraryView()
                 }
-                Tab("Settings", systemImage: "gearshape.fill", value: "settings") {
+                Tab("Settings", systemImage: "gearshape.fill", value: AppDestination.settings) {
                     SettingsView()
                 }
             }
