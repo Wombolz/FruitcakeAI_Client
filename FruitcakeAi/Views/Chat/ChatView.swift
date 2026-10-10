@@ -224,6 +224,8 @@ struct ChatView: View {
     @Environment(ConnectivityMonitor.self) private var connectivity
     @Environment(OnDeviceAgent.self) private var onDeviceAgent
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.applicationToolbarState) private var applicationToolbarState
+    @Environment(\.applicationDestinationIsActive) private var applicationDestinationIsActive
 
     /// Set from InboxView's "Reply in Chat" to auto-navigate to a session.
     @Binding var openSessionId: Int?
@@ -239,6 +241,7 @@ struct ChatView: View {
     @State private var sidebarSearchText = ""
     @AppStorage("chat.projects.expanded.ids") private var storedExpandedProjectIDs = ""
     @State private var expandedProjectIDs: Set<Int> = []
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     @State private var messages: [ChatThreadMessage] = []
     @State private var streamingContent: String = ""
@@ -596,10 +599,12 @@ struct ChatView: View {
     // MARK: - Body
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebar
                 .navigationTitle("FruitcakeAI")
+                #if os(iOS)
                 .toolbar { sidebarToolbar }
+                #endif
                 // Tint just the sidebar's strip of the shared window toolbar
                 // to match the sidebar's own background, so the dark column
                 // reads as one continuous panel from the top controls down
@@ -631,6 +636,9 @@ struct ChatView: View {
             .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
             #endif
         }
+        #if os(macOS)
+        .toolbar(removing: .sidebarToggle)
+        #endif
         .preferredColorScheme(.dark)
         // The system toolbar and our content meet at a hard color seam
         // right behind the traffic lights that toolbarBackground alone
@@ -642,8 +650,18 @@ struct ChatView: View {
         .task {
             hydrateEvidenceExpandedStateIfNeeded()
             hydrateExpandedProjectStateIfNeeded()
+            updateApplicationToolbarState()
             await loadNavigation()
             await loadChatCapabilities()
+        }
+        .onChange(of: applicationDestinationIsActive) { _, _ in
+            updateApplicationToolbarState()
+        }
+        .onChange(of: applicationToolbarState.commandSequence) { _, _ in
+            handleApplicationToolbarCommand()
+        }
+        .onChange(of: selectedSession?.id) { _, _ in
+            updateApplicationToolbarState()
         }
         .onChange(of: connectivity.isBackendReachable) { _, reachable in
             guard reachable else { return }
@@ -825,6 +843,30 @@ struct ChatView: View {
             allowsMultipleSelection: true
         ) { result in
             handleAttachmentImport(result)
+        }
+    }
+
+    private func updateApplicationToolbarState() {
+        guard applicationDestinationIsActive else { return }
+        applicationToolbarState.chatProfileAvailable = selectedSession != nil
+    }
+
+    private func handleApplicationToolbarCommand() {
+        guard applicationDestinationIsActive, let command = applicationToolbarState.command else { return }
+        switch command {
+        case .toggleContextSidebar:
+            columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
+        case .chatNewConversation:
+            Task { await createSession() }
+        case .chatNewIncognitoConversation:
+            guard authManager.currentUser?.isAdmin == true else { return }
+            Task { await createSession(incognito: true) }
+        case .chatEditProfile:
+            guard selectedSession != nil else { return }
+            prepareProfileEditor()
+            showProfileSheet = true
+        default:
+            break
         }
     }
 

@@ -9,6 +9,7 @@
 
 import SwiftUI
 import SwiftData
+import Observation
 #if os(macOS)
 import AppKit
 #endif
@@ -27,6 +28,51 @@ struct ContentView: View {
 }
 
 // MARK: - Main navigation shell
+
+enum ApplicationToolbarCommand: Equatable {
+    case toggleContextSidebar
+    case chatNewConversation
+    case chatNewIncognitoConversation
+    case chatEditProfile
+    case tasksCreate
+    case libraryUpload
+    case libraryLinkSource
+    case librarySemanticSearch
+}
+
+@Observable
+final class ApplicationToolbarState {
+    private(set) var commandSequence = 0
+    private(set) var command: ApplicationToolbarCommand?
+    var chatProfileAvailable = false
+    var librarySearchAvailable = false
+    var backendReachable = false
+
+    func send(_ command: ApplicationToolbarCommand) {
+        self.command = command
+        commandSequence += 1
+    }
+}
+
+private struct ApplicationToolbarStateKey: EnvironmentKey {
+    static let defaultValue = ApplicationToolbarState()
+}
+
+private struct ApplicationDestinationActiveKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    var applicationToolbarState: ApplicationToolbarState {
+        get { self[ApplicationToolbarStateKey.self] }
+        set { self[ApplicationToolbarStateKey.self] = newValue }
+    }
+
+    var applicationDestinationIsActive: Bool {
+        get { self[ApplicationDestinationActiveKey.self] }
+        set { self[ApplicationDestinationActiveKey.self] = newValue }
+    }
+}
 
 private enum AppDestination: String, CaseIterable, Hashable, Identifiable {
     case chat
@@ -57,11 +103,13 @@ private enum AppDestination: String, CaseIterable, Hashable, Identifiable {
 
 struct MainTabView: View {
 
+    @Environment(AuthManager.self) private var authManager
     @Environment(ArtifactInspectorState.self) private var artifactInspector
 
     @State private var pendingApprovalCount = 0
     @State private var selectedDestination: AppDestination = .chat
     @State private var visitedDestinations: Set<AppDestination> = [.chat]
+    @State private var applicationToolbarState = ApplicationToolbarState()
     @State private var openSessionId: Int? = nil
     @State private var artifactInspectorWidth: CGFloat = 480
     @State private var artifactInspectorLastDragX: CGFloat?
@@ -86,6 +134,10 @@ struct MainTabView: View {
             }
             #endif
         }
+        .environment(\.applicationToolbarState, applicationToolbarState)
+        #if os(macOS)
+        .toolbar { applicationToolbar }
+        #endif
         .onChange(of: selectedDestination) { _, destination in
             visitedDestinations.insert(destination)
         }
@@ -140,10 +192,129 @@ struct MainTabView: View {
     #endif
 
     #if os(macOS)
+    @ToolbarContentBuilder
+    private var applicationToolbar: some ToolbarContent {
+        ToolbarItem(placement: .principal) {
+            Text(selectedDestination.title)
+                .font(Theme.mono(11, weight: .semibold))
+                .foregroundStyle(Theme.textDim)
+        }
+
+        if selectedDestination == .chat || selectedDestination == .settings {
+            ToolbarItem(placement: .navigation) {
+                Button {
+                    applicationToolbarState.send(.toggleContextSidebar)
+                } label: {
+                    Image(systemName: "sidebar.left")
+                }
+                .help("Show or hide sidebar")
+                .accessibilityLabel("Show or hide sidebar")
+            }
+        }
+
+        switch selectedDestination {
+        case .chat:
+            ToolbarItem(placement: .primaryAction) {
+                if authManager.currentUser?.isAdmin == true {
+                    Menu {
+                        Button("New Conversation", systemImage: "plus") {
+                            applicationToolbarState.send(.chatNewConversation)
+                        }
+                        Button("New Incognito Session", systemImage: "eyeglasses.slash") {
+                            applicationToolbarState.send(.chatNewIncognitoConversation)
+                        }
+                    } label: {
+                        Label("New Conversation", systemImage: "plus")
+                    } primaryAction: {
+                        applicationToolbarState.send(.chatNewConversation)
+                    }
+                    .help("New conversation")
+                } else {
+                    Button {
+                        applicationToolbarState.send(.chatNewConversation)
+                    } label: {
+                        Label("New Conversation", systemImage: "plus")
+                    }
+                    .help("New conversation")
+                }
+            }
+            ToolbarItem(placement: .automatic) {
+                Button {
+                    applicationToolbarState.send(.chatEditProfile)
+                } label: {
+                    Label("Conversation Profile", systemImage: "slider.horizontal.3")
+                }
+                .disabled(!applicationToolbarState.chatProfileAvailable)
+                .help("Conversation profile")
+            }
+
+        case .tasks:
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    applicationToolbarState.send(.tasksCreate)
+                } label: {
+                    Label("New Task", systemImage: "plus")
+                }
+                .help("New task")
+            }
+
+        case .library:
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Button("Upload Document", systemImage: "doc.badge.plus") {
+                        applicationToolbarState.send(.libraryUpload)
+                    }
+                    .disabled(!applicationToolbarState.backendReachable)
+
+                    Button("Link Source", systemImage: "point.3.connected.trianglepath.dotted") {
+                        applicationToolbarState.send(.libraryLinkSource)
+                    }
+                    .disabled(!applicationToolbarState.backendReachable)
+                } label: {
+                    Label("Add to Library", systemImage: "plus")
+                }
+                .help("Add to library")
+            }
+            ToolbarItem(placement: .automatic) {
+                Button {
+                    applicationToolbarState.send(.librarySemanticSearch)
+                } label: {
+                    Label("Semantic Search", systemImage: "sparkle.magnifyingglass")
+                }
+                .disabled(!applicationToolbarState.librarySearchAvailable)
+                .help("Semantic search")
+            }
+
+        case .settings:
+            ToolbarItem(placement: .automatic) {
+                EmptyView()
+            }
+        }
+
+        if artifactInspector.selected != nil {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    if artifactInspector.isVisible {
+                        artifactInspector.close()
+                    } else if let selected = artifactInspector.selected {
+                        artifactInspector.open(selected)
+                    }
+                } label: {
+                    Label(
+                        artifactInspector.isVisible ? "Hide Inspector" : "Show Inspector",
+                        systemImage: "sidebar.right"
+                    )
+                }
+                .help(artifactInspector.isVisible ? "Hide inspector" : "Show inspector")
+            }
+        }
+    }
+
     private var destinationHost: some View {
         ZStack {
             ForEach(AppDestination.allCases.filter { visitedDestinations.contains($0) }) { destination in
                 destinationContent(destination)
+                    .environment(\.applicationDestinationIsActive, selectedDestination == destination)
                     .opacity(selectedDestination == destination ? 1 : 0)
                     .allowsHitTesting(selectedDestination == destination)
                     .accessibilityHidden(selectedDestination != destination)

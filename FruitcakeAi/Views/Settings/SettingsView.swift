@@ -13,6 +13,8 @@ struct SettingsView: View {
     @Environment(AuthManager.self) private var authManager
     @Environment(ConnectivityMonitor.self) private var connectivity
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.applicationToolbarState) private var applicationToolbarState
+    @Environment(\.applicationDestinationIsActive) private var applicationDestinationIsActive
 
     @Query private var savedServers: [ServerConfig]
 
@@ -21,23 +23,32 @@ struct SettingsView: View {
     @State private var selection: SettingsDestination? = .profile
     @State private var isSendingPushTest = false
     @State private var pushTestMessage: String?
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     enum URLSaveState { case idle, saved, error }
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             settingsSidebar
         } detail: {
             NavigationStack {
                 settingsDetail
             }
         }
+        #if os(macOS)
+        .toolbar(removing: .sidebarToggle)
+        #endif
         .onAppear {
             serverURLInput = authManager.serverURL?.absoluteString ?? ""
             normalizeSelection()
         }
         .onChange(of: authManager.currentUser?.isAdmin == true) { _, _ in
             normalizeSelection()
+        }
+        .onChange(of: applicationToolbarState.commandSequence) { _, _ in
+            guard applicationDestinationIsActive,
+                  applicationToolbarState.command == .toggleContextSidebar else { return }
+            columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
         }
     }
 
