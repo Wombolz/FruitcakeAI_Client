@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.3
+
+- Added transient, resizable MCP App dashboards with detached macOS windows and compact durable launchers in chat history.
+- Added standard MCP App lifecycle, read-only tool bridging, and native approval sheets for consequential app actions.
+- Added safe one-shot approval and denial handling without exposing backend or extension credentials to embedded app content.
+- Improved dashboard sizing, teardown, reopening, and host capability reporting for interactive companion apps.
+
 ## v0.2.2
 
 - Added richer evidence-aware streaming chat with durable inline image artifacts and tool/source details that survive reloads.

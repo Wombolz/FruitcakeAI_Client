@@ -24,8 +24,39 @@ enum WSEvent {
     case draftCommit                            // promote provisional text to the final response buffer
     case done(String, Int?, ChatMessageMetadata?)     // full response — store in SwiftData
     case state(ChatLiveStatePayload)
+    case runStarted(String)
+    case approvalRequired(String, Int?, ChatWaitingApprovalPayload)
+    case stopRequested
+    case stopped
     case personaSwitched(name: String, message: String)
     case error(String)
+}
+
+struct ChatWaitingApprovalPayload: Decodable, Equatable {
+    let kind: String
+    let blockedTool: String
+    let reason: String
+    let arguments: [String: String]
+
+    private enum CodingKeys: String, CodingKey {
+        case kind, blockedTool, reason, arguments
+    }
+
+    init(kind: String, blockedTool: String, reason: String, arguments: [String: String]) {
+        self.kind = kind
+        self.blockedTool = blockedTool
+        self.reason = reason
+        self.arguments = arguments
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        kind = (try? container.decode(String.self, forKey: .kind)) ?? "tool"
+        blockedTool = (try? container.decode(String.self, forKey: .blockedTool)) ?? ""
+        reason = (try? container.decode(String.self, forKey: .reason)) ?? ""
+        arguments = (try? container.decode([String: LiveToolArgumentValue].self, forKey: .arguments))?
+            .mapValues(\.description) ?? [:]
+    }
 }
 
 struct ChatLiveStatePayload: Decodable, Equatable {
@@ -212,7 +243,8 @@ final class WebSocketManager: NSObject, URLSessionWebSocketDelegate {
         _ content: String,
         clientSendID: String,
         allowedTools: [String]? = nil,
-        blockedTools: [String]? = nil
+        blockedTools: [String]? = nil,
+        approvalMode: Bool = true
     ) async -> AsyncStream<WSEvent> {
         guard let task = webSocketTask else {
             return AsyncStream { $0.finish() }
@@ -229,6 +261,7 @@ final class WebSocketManager: NSObject, URLSessionWebSocketDelegate {
         responseContinuation = continuation
 
         var payload: [String: Any] = ["content": content, "client_send_id": clientSendID]
+        payload["approval_mode"] = approvalMode
         if let allowedTools, !allowedTools.isEmpty {
             payload["allowed_tools"] = allowedTools
         }
@@ -257,6 +290,15 @@ final class WebSocketManager: NSObject, URLSessionWebSocketDelegate {
         }
 
         return stream
+    }
+
+    func sendStop() async throws {
+        guard let task = webSocketTask, case .connected = connectionState else {
+            throw URLError(.notConnectedToInternet)
+        }
+        let data = try JSONSerialization.data(withJSONObject: ["type": "stop"], options: [])
+        let text = String(decoding: data, as: UTF8.self)
+        try await task.send(.string(text))
     }
 
     // MARK: - Disconnect
@@ -383,6 +425,26 @@ final class WebSocketManager: NSObject, URLSessionWebSocketDelegate {
                 responseContinuation?.yield(.state(statePayload))
             }
 
+        case "run_started":
+            if let runID = payload.runId, !runID.isEmpty {
+                responseContinuation?.yield(.runStarted(runID))
+            }
+
+        case "approval_required":
+            if let runID = payload.runId, let approval = payload.waitingApproval {
+                responseContinuation?.yield(.approvalRequired(runID, payload.messageId, approval))
+            }
+            responseContinuation?.finish()
+            responseContinuation = nil
+
+        case "stop_requested":
+            responseContinuation?.yield(.stopRequested)
+
+        case "stopped":
+            responseContinuation?.yield(.stopped)
+            responseContinuation?.finish()
+            responseContinuation = nil
+
         case "done":
             responseContinuation?.yield(.done(payload.content, payload.messageId, payload.metadata))
             responseContinuation?.finish()
@@ -454,11 +516,13 @@ private struct WSPayload: Decodable {
     let content: String
     let persona: String?
     let messageId: Int?
+    let runId: String?
     let metadata: ChatMessageMetadata?
     let statePayload: ChatLiveStatePayload?
+    let waitingApproval: ChatWaitingApprovalPayload?
 
     private enum CodingKeys: String, CodingKey {
-        case type, content, persona, messageId, metadata
+        case type, content, persona, messageId, runId, metadata, waitingApproval
         case state, toolNames, toolDetails, retryReason, attempt
     }
 
@@ -468,7 +532,9 @@ private struct WSPayload: Decodable {
         content = (try? container.decode(String.self, forKey: .content)) ?? ""
         persona = try? container.decode(String.self, forKey: .persona)
         messageId = try? container.decode(Int.self, forKey: .messageId)
+        runId = try? container.decode(String.self, forKey: .runId)
         metadata = try? container.decode(ChatMessageMetadata.self, forKey: .metadata)
+        waitingApproval = try? container.decode(ChatWaitingApprovalPayload.self, forKey: .waitingApproval)
 
         if type == "state" {
             let state = (try? container.decode(String.self, forKey: .state)) ?? ""

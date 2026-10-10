@@ -22,6 +22,7 @@ struct FruitcakeAiApp: App {
     @State private var authManager = AuthManager()
     @State private var connectivityMonitor: ConnectivityMonitor
     @State private var onDeviceAgent = OnDeviceAgent()
+    @State private var artifactInspector = ArtifactInspectorState()
 
     // MARK: - SwiftData
 
@@ -55,6 +56,7 @@ struct FruitcakeAiApp: App {
                 .environment(authManager)
                 .environment(connectivityMonitor)
                 .environment(onDeviceAgent)
+                .environment(artifactInspector)
                 .task {
                     // Restore session from Keychain on launch
                     await authManager.restoreSession()

@@ -9,6 +9,9 @@
 
 import SwiftUI
 import SwiftData
+#if os(macOS)
+import AppKit
+#endif
 
 struct ContentView: View {
 
@@ -27,33 +30,90 @@ struct ContentView: View {
 
 struct MainTabView: View {
 
+    @Environment(ArtifactInspectorState.self) private var artifactInspector
+
     @State private var pendingApprovalCount = 0
     @State private var selectedTab = "chat"
     @State private var openSessionId: Int? = nil
+    @State private var artifactInspectorWidth: CGFloat = 480
+    @State private var artifactInspectorLastDragX: CGFloat?
 
     var body: some View {
-        TabView(selection: $selectedTab) {
-            Tab("Chat", systemImage: "bubble.left.and.bubble.right.fill", value: "chat") {
-                ChatView(openSessionId: $openSessionId)
+        HStack(spacing: 0) {
+            TabView(selection: $selectedTab) {
+                Tab("Chat", systemImage: "bubble.left.and.bubble.right.fill", value: "chat") {
+                    ChatView(openSessionId: $openSessionId)
+                }
+                Tab("Tasks", systemImage: "envelope.badge.fill", value: "inbox") {
+                    InboxView(
+                        onCountChanged: { pendingApprovalCount = $0 },
+                        onReplyInChat: { sessionId in
+                            openSessionId = sessionId
+                            selectedTab = "chat"
+                        }
+                    )
+                }
+                .badge(pendingApprovalCount)
+                Tab("Library", systemImage: "books.vertical.fill", value: "library") {
+                    LibraryView()
+                }
+                Tab("Settings", systemImage: "gearshape.fill", value: "settings") {
+                    SettingsView()
+                }
             }
-            Tab("Tasks", systemImage: "envelope.badge.fill", value: "inbox") {
-                InboxView(
-                    onCountChanged: { pendingApprovalCount = $0 },
-                    onReplyInChat: { sessionId in
-                        openSessionId = sessionId
-                        selectedTab = "chat"
-                    }
-                )
+            #if os(macOS)
+            if artifactInspector.isVisible {
+                artifactInspectorResizeHandle
+                ArtifactInspectorView()
+                    .frame(width: artifactInspectorWidth)
             }
-            .badge(pendingApprovalCount)
-            Tab("Library", systemImage: "books.vertical.fill", value: "library") {
-                LibraryView()
-            }
-            Tab("Settings", systemImage: "gearshape.fill", value: "settings") {
-                SettingsView()
+            #endif
+        }
+        #if os(iOS)
+        .sheet(isPresented: Binding(
+            get: { artifactInspector.isVisible },
+            set: { if !$0 { artifactInspector.close() } }
+        )) {
+            ArtifactInspectorView()
+        }
+        #endif
+    }
+
+    #if os(macOS)
+    private var artifactInspectorResizeHandle: some View {
+        ZStack {
+            Rectangle()
+                .fill(Theme.strokeUp)
+                .frame(width: 1)
+            Rectangle()
+                .fill(.clear)
+                .frame(width: 9)
+                .contentShape(Rectangle())
+        }
+        .frame(width: 9)
+        .onHover { hovering in
+            if hovering {
+                NSCursor.resizeLeftRight.push()
+            } else {
+                NSCursor.pop()
             }
         }
+        .gesture(
+            DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                .onChanged { value in
+                    let currentX = value.location.x
+                    if let previousX = artifactInspectorLastDragX {
+                        let delta = previousX - currentX
+                        artifactInspectorWidth = min(1_200, max(340, artifactInspectorWidth + delta))
+                    }
+                    artifactInspectorLastDragX = currentX
+                }
+                .onEnded { _ in
+                    artifactInspectorLastDragX = nil
+                }
+        )
     }
+    #endif
 }
 
 // MARK: - Login
@@ -157,6 +217,7 @@ struct LoginView: View {
     MainTabView()
         .environment(AuthManager())
         .environment(ConnectivityMonitor(authManager: AuthManager()))
+        .environment(ArtifactInspectorState())
         .modelContainer(
             for: [ServerConfig.self, CachedConversation.self, CachedMessage.self],
             inMemory: true

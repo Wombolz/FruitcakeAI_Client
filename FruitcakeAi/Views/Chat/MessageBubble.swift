@@ -32,6 +32,7 @@ struct ChatThreadMessage: Identifiable, Hashable {
     var createdTaskId: Int?
     var evidence: ChatEvidenceMetadata?
     var contentBlocks: [ChatContentBlock]
+    var artifacts: [ChatArtifactEnvelope]
     var activity: [ChatActivityItem]
 
     init(_ cached: CachedMessage) {
@@ -48,6 +49,7 @@ struct ChatThreadMessage: Identifiable, Hashable {
         self.createdTaskId = cached.createdTaskId
         self.evidence = cached.evidence
         self.contentBlocks = cached.contentBlocks
+        self.artifacts = cached.artifacts
         self.activity = cached.activity
     }
 
@@ -156,6 +158,7 @@ struct MessageBubble: View {
     var personaDisplayName: String = ""    // shown as label above assistant messages
     @Binding var evidenceExpanded: Bool
     var onContextHandback: ((ChatNativeContextAttachment) -> Void)? = nil
+    var onOpenAppArtifact: ((ChatArtifactEnvelope) -> Void)? = nil
 
     private var isUser: Bool { message.isUser }
     private var accent: Color { PersonaAccent.color(for: personaKey) }
@@ -230,6 +233,16 @@ struct MessageBubble: View {
             // (when present) fused onto the bottom behind a hairline divider
             // — reads as part of the response, not a separate debug card.
             VStack(alignment: .leading, spacing: 0) {
+                // Interactive apps are the primary response surface. Put them
+                // ahead of model-generated fallback prose/tables so they do
+                // not appear missing below a long synthesized answer.
+                ForEach(Array(interactiveArtifacts.enumerated()), id: \.offset) { _, artifact in
+                    ChatArtifactBlockView(
+                        artifact: artifact,
+                        accent: accent,
+                        onOpenMCPApp: onOpenAppArtifact
+                    )
+                }
                 ForEach(Array(richContentBlocks.enumerated()), id: \.offset) { _, block in
                     switch block {
                     case .text(let text):
@@ -240,9 +253,13 @@ struct MessageBubble: View {
                         ChatStructuredContentBlockView(
                             block: block,
                             accent: accent,
+                            fallbackSources: timelineFallbackSources,
                             onContextHandback: onContextHandback
                         )
                     }
+                }
+                ForEach(Array(supplementalArtifacts.enumerated()), id: \.offset) { _, artifact in
+                    ChatArtifactBlockView(artifact: artifact, accent: accent)
                 }
                 if let evidence {
                     Rectangle().fill(Theme.stroke).frame(height: 1)
@@ -280,12 +297,31 @@ struct MessageBubble: View {
         evidence?.imageArtifacts ?? []
     }
 
+    private var timelineFallbackSources: [ChatNewsSource] {
+        var seen = Set<String>()
+        return (evidence?.citations ?? []).compactMap { citation in
+            guard let url = citation.url?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !url.isEmpty,
+                  seen.insert(url).inserted
+            else { return nil }
+            return ChatNewsSource(label: citation.displayTitle, url: url)
+        }
+    }
+
     private var richContentBlocks: [ChatRichContentBlock] {
         ChatRichContentParser.blocks(
             content: message.content,
             artifacts: imageArtifacts,
             structuredBlocks: message.contentBlocks
         )
+    }
+
+    private var interactiveArtifacts: [ChatArtifactEnvelope] {
+        message.artifacts.filter { $0.type == "core.mcp_app" }
+    }
+
+    private var supplementalArtifacts: [ChatArtifactEnvelope] {
+        message.artifacts.filter { $0.type != "core.mcp_app" }
     }
 
     /// Muted source/tool line under assistant replies. Only renders when the

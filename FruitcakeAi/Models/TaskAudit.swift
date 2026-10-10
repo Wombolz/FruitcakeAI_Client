@@ -36,7 +36,32 @@ struct TaskAuditOut: Codable {
     let result: String?
     let resolvedAgent: ResolvedAgentSummary?
     let latestRun: TaskAuditRunSummary?
+    let viewableArtifacts: [TaskViewableArtifact]
     let toolCalls: [TaskAuditEntry]
+
+    enum CodingKeys: String, CodingKey {
+        case taskId, title, result, resolvedAgent, latestRun, viewableArtifacts, toolCalls
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        taskId = try c.decode(Int.self, forKey: .taskId)
+        title = try c.decode(String.self, forKey: .title)
+        result = try c.decodeIfPresent(String.self, forKey: .result)
+        resolvedAgent = try c.decodeIfPresent(ResolvedAgentSummary.self, forKey: .resolvedAgent)
+        latestRun = try c.decodeIfPresent(TaskAuditRunSummary.self, forKey: .latestRun)
+        viewableArtifacts = try c.decodeIfPresent([TaskViewableArtifact].self, forKey: .viewableArtifacts) ?? []
+        toolCalls = try c.decode([TaskAuditEntry].self, forKey: .toolCalls)
+    }
+}
+
+struct TaskViewableArtifact: Codable, Identifiable, Hashable {
+    let id: Int
+    let artifactType: String
+    let path: String
+    let filename: String
+    let mediaType: String
+    let createdAt: Date
 }
 
 struct TaskAuditRunSummary: Codable, Hashable {

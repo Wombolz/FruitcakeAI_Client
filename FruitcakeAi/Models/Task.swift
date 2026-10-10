@@ -320,11 +320,12 @@ struct ChatMessageMetadata: Decodable {
     let evidence: ChatEvidenceMetadata?
     let recalledMemoryIds: [Int]?
     let contentBlocks: [ChatContentBlock]?
+    let artifacts: [ChatArtifactEnvelope]?
     let activity: [ChatActivityItem]?
 
     private enum CodingKeys: String, CodingKey {
         case taskDraft, taskDraftStatus, createdTaskId, toolCalls, evidence, recalledMemoryIds
-        case contentBlocks, activity
+        case contentBlocks, artifacts, activity
     }
 
     init(from decoder: Decoder) throws {
@@ -341,8 +342,57 @@ struct ChatMessageMetadata: Decodable {
         evidence = try container.decodeIfPresent(ChatEvidenceMetadata.self, forKey: .evidence)
         recalledMemoryIds = try container.decodeIfPresent([Int].self, forKey: .recalledMemoryIds)
         contentBlocks = try container.decodeIfPresent([ChatContentBlock].self, forKey: .contentBlocks)
+        artifacts = try container.decodeIfPresent([ChatArtifactEnvelope].self, forKey: .artifacts)
         activity = try container.decodeIfPresent([ChatActivityItem].self, forKey: .activity)
     }
+}
+
+struct ChatArtifactResource: Codable, Hashable {
+    let uri: String
+    let mediaType: String
+    let title: String?
+    let role: String?
+}
+
+struct ChatArtifactFallback: Codable, Hashable {
+    let mediaType: String
+    let content: String
+}
+
+struct ChatArtifactPresentation: Codable, Hashable {
+    let preferred: String
+    let expandable: Bool
+    let renderer: String?
+    let uiResource: String?
+}
+
+struct ChatArtifactProvenance: Codable, Hashable {
+    let provider: String
+    let server: String?
+    let tool: String?
+    let runId: String?
+}
+
+struct ChatArtifactEnvelope: Codable, Hashable {
+    let envelopeVersion: Int
+    let providerId: String?
+    let type: String
+    let schemaVersion: Int
+    let title: String
+    let summary: String?
+    let payload: [String: JSONValue]?
+    let resources: [ChatArtifactResource]
+    let provenance: ChatArtifactProvenance?
+    let presentation: ChatArtifactPresentation
+    let fallback: ChatArtifactFallback?
+
+    private enum CodingKeys: String, CodingKey {
+        case envelopeVersion
+        case providerId = "id"
+        case type, schemaVersion, title, summary, payload, resources, provenance, presentation, fallback
+    }
+
+    var content: String? { payload?["content"]?.stringValue }
 }
 
 struct ChatContentBlock: Codable, Hashable, Identifiable {
@@ -359,6 +409,7 @@ struct ChatContentBlock: Codable, Hashable, Identifiable {
     let sections: [ChatNewsSection]
     let items: [ChatStatItem]
     let events: [ChatTimelineEvent]
+    let sources: [ChatNewsSource]
     let file: ChatFileArtifact?
     let code: ChatCodeArtifact?
     let provider: String?
@@ -378,6 +429,7 @@ struct ChatContentBlock: Codable, Hashable, Identifiable {
         sections: [ChatNewsSection] = [],
         items: [ChatStatItem] = [],
         events: [ChatTimelineEvent] = [],
+        sources: [ChatNewsSource] = [],
         file: ChatFileArtifact? = nil,
         code: ChatCodeArtifact? = nil,
         provider: String? = nil,
@@ -396,6 +448,7 @@ struct ChatContentBlock: Codable, Hashable, Identifiable {
         self.sections = sections
         self.items = items
         self.events = events
+        self.sources = sources
         self.file = file
         self.code = code
         self.provider = provider
@@ -404,7 +457,7 @@ struct ChatContentBlock: Codable, Hashable, Identifiable {
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, id, type, sourceMarkdown, sourceFingerprint
-        case columns, columnAlignments, rows, chart, title, sections, items, events, file, code, provider, places
+        case columns, columnAlignments, rows, chart, title, sections, items, events, sources, file, code, provider, places
     }
 
     init(from decoder: Decoder) throws {
@@ -422,6 +475,7 @@ struct ChatContentBlock: Codable, Hashable, Identifiable {
         sections = try container.decodeIfPresent([ChatNewsSection].self, forKey: .sections) ?? []
         items = try container.decodeIfPresent([ChatStatItem].self, forKey: .items) ?? []
         events = try container.decodeIfPresent([ChatTimelineEvent].self, forKey: .events) ?? []
+        sources = try container.decodeIfPresent([ChatNewsSource].self, forKey: .sources) ?? []
         file = try container.decodeIfPresent(ChatFileArtifact.self, forKey: .file)
         code = try container.decodeIfPresent(ChatCodeArtifact.self, forKey: .code)
         provider = try container.decodeIfPresent(String.self, forKey: .provider)
@@ -460,7 +514,7 @@ struct ChatNativeContextAttachment: Identifiable, Hashable {
     }
 }
 
-enum ChatContentBlockKind: String {
+enum ArtifactRendererKind: String {
     case table
     case newsDigest = "news_digest"
     case statGroup = "stat_group"
@@ -468,6 +522,49 @@ enum ChatContentBlockKind: String {
     case fileArtifact = "file_artifact"
     case placeGroup = "place_group"
     case codeArtifact = "code_artifact"
+    case html
+    case svg
+    case mcpApp = "mcp_app"
+}
+
+struct ArtifactTypeDefinition: Hashable {
+    let type: String
+    let legacyTypes: Set<String>
+    let schemaVersions: Set<Int>
+    let renderer: ArtifactRendererKind
+    let preferredPresentation: String
+}
+
+enum ArtifactRendererRegistry {
+    static let definitions: [ArtifactTypeDefinition] = [
+        .init(type: "core.table", legacyTypes: ["table"], schemaVersions: [1], renderer: .table, preferredPresentation: "inline"),
+        .init(type: "fruitcake.news_digest", legacyTypes: ["news_digest"], schemaVersions: [1], renderer: .newsDigest, preferredPresentation: "inline"),
+        .init(type: "fruitcake.stat_group", legacyTypes: ["stat_group"], schemaVersions: [1], renderer: .statGroup, preferredPresentation: "inline"),
+        .init(type: "core.timeline", legacyTypes: ["timeline"], schemaVersions: [1], renderer: .timeline, preferredPresentation: "inline"),
+        .init(type: "core.file", legacyTypes: ["file_artifact"], schemaVersions: [1], renderer: .fileArtifact, preferredPresentation: "inspector"),
+        .init(type: "core.places", legacyTypes: ["place_group"], schemaVersions: [1], renderer: .placeGroup, preferredPresentation: "inline"),
+        .init(type: "core.code", legacyTypes: ["code_artifact"], schemaVersions: [1], renderer: .codeArtifact, preferredPresentation: "inspector"),
+        .init(type: "core.html", legacyTypes: [], schemaVersions: [1], renderer: .html, preferredPresentation: "inspector"),
+        .init(type: "core.svg", legacyTypes: [], schemaVersions: [1], renderer: .svg, preferredPresentation: "inline"),
+        .init(type: "core.mcp_app", legacyTypes: [], schemaVersions: [1], renderer: .mcpApp, preferredPresentation: "inline"),
+    ]
+
+    private static let definitionsByType: [String: ArtifactTypeDefinition] = {
+        var lookup: [String: ArtifactTypeDefinition] = [:]
+        for definition in definitions {
+            lookup[definition.type] = definition
+            for legacyType in definition.legacyTypes {
+                lookup[legacyType] = definition
+            }
+        }
+        return lookup
+    }()
+
+    static func resolve(type: String, schemaVersion: Int) -> ArtifactTypeDefinition? {
+        guard let definition = definitionsByType[type],
+              definition.schemaVersions.contains(schemaVersion) else { return nil }
+        return definition
+    }
 }
 
 struct ChatStatItem: Codable, Hashable, Identifiable {
@@ -480,6 +577,24 @@ struct ChatStatItem: Codable, Hashable, Identifiable {
 struct ChatTimelineEvent: Codable, Hashable, Identifiable {
     let label: String
     let detail: String
+    let sources: [ChatNewsSource]
+
+    init(label: String, detail: String, sources: [ChatNewsSource] = []) {
+        self.label = label
+        self.detail = detail
+        self.sources = sources
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case label, detail, sources
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        label = try container.decode(String.self, forKey: .label)
+        detail = try container.decode(String.self, forKey: .detail)
+        sources = try container.decodeIfPresent([ChatNewsSource].self, forKey: .sources) ?? []
+    }
 
     var id: String { "\(label):\(detail)" }
 }
@@ -521,9 +636,12 @@ struct ChatPlace: Codable, Hashable, Identifiable {
 }
 
 extension ChatContentBlock {
-    var kind: ChatContentBlockKind? {
-        guard schemaVersion == 1 else { return nil }
-        return ChatContentBlockKind(rawValue: type)
+    var artifactDefinition: ArtifactTypeDefinition? {
+        ArtifactRendererRegistry.resolve(type: type, schemaVersion: schemaVersion)
+    }
+
+    var kind: ArtifactRendererKind? {
+        artifactDefinition?.renderer
     }
 }
 
