@@ -46,11 +46,23 @@ final class ApplicationToolbarState {
     private(set) var command: ApplicationToolbarCommand?
     var chatProfileAvailable = false
     var librarySearchAvailable = false
+    var libraryFilterText = ""
     var backendReachable = false
 
     func send(_ command: ApplicationToolbarCommand) {
         self.command = command
         commandSequence += 1
+    }
+}
+
+private struct LibraryToolbarSearchField: View {
+    @Bindable var state: ApplicationToolbarState
+
+    var body: some View {
+        TextField("Filter documents", text: $state.libraryFilterText)
+            .textFieldStyle(.roundedBorder)
+            .frame(width: 280)
+            .accessibilityLabel("Filter library documents")
     }
 }
 
@@ -136,6 +148,7 @@ struct MainTabView: View {
         }
         .environment(\.applicationToolbarState, applicationToolbarState)
         #if os(macOS)
+        .navigationTitle(selectedDestination.title)
         .toolbar { applicationToolbar }
         #endif
         .onChange(of: selectedDestination) { _, destination in
@@ -194,12 +207,6 @@ struct MainTabView: View {
     #if os(macOS)
     @ToolbarContentBuilder
     private var applicationToolbar: some ToolbarContent {
-        ToolbarItem(placement: .principal) {
-            Text(selectedDestination.title)
-                .font(Theme.mono(11, weight: .semibold))
-                .foregroundStyle(Theme.textDim)
-        }
-
         if selectedDestination == .chat || selectedDestination == .settings {
             ToolbarItem(placement: .navigation) {
                 Button {
@@ -259,6 +266,9 @@ struct MainTabView: View {
             }
 
         case .library:
+            ToolbarItem(placement: .automatic) {
+                LibraryToolbarSearchField(state: applicationToolbarState)
+            }
             ToolbarItem(placement: .primaryAction) {
                 Menu {
                     Button("Upload Document", systemImage: "doc.badge.plus") {

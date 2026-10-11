@@ -77,8 +77,8 @@ struct InboxView: View {
                     taskList
                 }
             }
-            .navigationTitle("Tasks")
             #if os(iOS)
+            .navigationTitle("Tasks")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button {

@@ -173,19 +173,24 @@ struct LibraryView: View {
     @State private var managingSourceID: Int?
     @State private var deleteError: String?
     @State private var sourceActionError: String?
-    @State private var searchText = ""
     @State private var showSemanticSearch = false
     @State private var pollingTask: Task<Void, Never>?
 
     var body: some View {
         NavigationStack {
             content
-                .navigationTitle("Library")
                 #if os(iOS)
+                .navigationTitle("Library")
                 .toolbar { toolbarButtons }
+                .searchable(
+                    text: Binding(
+                        get: { applicationToolbarState.libraryFilterText },
+                        set: { applicationToolbarState.libraryFilterText = $0 }
+                    ),
+                    prompt: "Filter documents"
+                )
                 #endif
                 .refreshable { await loadLibraryData() }
-                .searchable(text: $searchText, prompt: "Filter documents")
                 .sheet(isPresented: $showUpload) {
                     DocumentUpload { await loadLibraryData() }
                 }
@@ -297,6 +302,7 @@ struct LibraryView: View {
             guard let sourceID = doc.linkedSourceId else { return true }
             return !folderSourceIDs.contains(sourceID)
         }
+        let searchText = applicationToolbarState.libraryFilterText
         guard !searchText.isEmpty else { return base }
         return documents.filter {
             $0.filename.localizedCaseInsensitiveContains(searchText)
@@ -305,7 +311,8 @@ struct LibraryView: View {
     }
 
     private var documentList: some View {
-        List {
+        let searchText = applicationToolbarState.libraryFilterText
+        return List {
             if searchText.isEmpty {
                 linkedSourceSections
             }

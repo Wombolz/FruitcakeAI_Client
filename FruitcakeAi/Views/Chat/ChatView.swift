@@ -601,8 +601,8 @@ struct ChatView: View {
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebar
-                .navigationTitle("FruitcakeAI")
                 #if os(iOS)
+                .navigationTitle("FruitcakeAI")
                 .toolbar { sidebarToolbar }
                 #endif
                 // Tint just the sidebar's strip of the shared window toolbar
@@ -613,6 +613,7 @@ struct ChatView: View {
                 #if os(macOS)
                 .toolbarBackground(Theme.sidebar, for: .windowToolbar)
                 .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
+                .toolbar(removing: .sidebarToggle)
                 #endif
         } detail: {
             Group {
@@ -634,6 +635,7 @@ struct ChatView: View {
             #if os(macOS)
             .toolbarBackground(Theme.bg, for: .windowToolbar)
             .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
+            .toolbar(removing: .sidebarToggle)
             #endif
         }
         #if os(macOS)
@@ -1378,7 +1380,9 @@ struct ChatView: View {
         }
         .background(Theme.bg)
         .tint(PersonaAccent.color(for: session.persona))
+        #if os(iOS)
         .navigationTitle(session.displayTitle)
+        #endif
     }
 
     private var streamingBubble: some View {

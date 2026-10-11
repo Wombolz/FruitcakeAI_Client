@@ -30,10 +30,16 @@ struct SettingsView: View {
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             settingsSidebar
+                #if os(macOS)
+                .toolbar(removing: .sidebarToggle)
+                #endif
         } detail: {
             NavigationStack {
                 settingsDetail
             }
+            #if os(macOS)
+            .toolbar(removing: .sidebarToggle)
+            #endif
         }
         #if os(macOS)
         .toolbar(removing: .sidebarToggle)
@@ -87,7 +93,9 @@ struct SettingsView: View {
         }
         .scrollContentBackground(.hidden)
         .background(Theme.sidebar)
+        #if os(iOS)
         .navigationTitle("Settings")
+        #endif
     }
 
     private func settingsLink(_ title: String, systemImage: String, destination: SettingsDestination) -> some View {
