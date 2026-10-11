@@ -169,6 +169,7 @@ private struct GraphMemoryEntityRow: View {
 struct GraphMemoryDetailView: View {
 
     @Environment(AuthManager.self) private var authManager
+    @Environment(\.applicationDestinationIsActive) private var applicationDestinationIsActive
     @Environment(\.dismiss) private var dismiss
 
     let entityID: Int
@@ -260,7 +261,7 @@ struct GraphMemoryDetailView: View {
         }
         .navigationTitle(node?.entity.name ?? "Graph Entity")
         .toolbar {
-            if node != nil {
+            if applicationDestinationIsActive, node != nil {
                 ToolbarItemGroup(placement: .primaryAction) {
                     Button {
                         guard let entity = node?.entity else { return }

@@ -16,6 +16,8 @@ final class CachedConversation {
     var serverSessionId: Int?          // backend session ID (nil if local-only)
     var title: String
     var persona: String
+    var projectId: Int?
+    var isPinned: Bool?
     var lastActivity: Date
     var isLocal: Bool                  // true when created in on-device fallback mode
 
@@ -27,6 +29,8 @@ final class CachedConversation {
         serverSessionId: Int? = nil,
         title: String = "New conversation",
         persona: String = "family_assistant",
+        projectId: Int? = nil,
+        isPinned: Bool = false,
         lastActivity: Date = .now,
         isLocal: Bool = false
     ) {
@@ -34,6 +38,8 @@ final class CachedConversation {
         self.serverSessionId = serverSessionId
         self.title = title
         self.persona = persona
+        self.projectId = projectId
+        self.isPinned = isPinned
         self.lastActivity = lastActivity
         self.isLocal = isLocal
         self.messages = []

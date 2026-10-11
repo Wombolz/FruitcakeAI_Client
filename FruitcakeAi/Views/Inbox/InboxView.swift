@@ -29,6 +29,8 @@ private struct InboxSectionHeader: View {
 struct InboxView: View {
 
     @Environment(AuthManager.self) private var authManager
+    @Environment(\.applicationToolbarState) private var applicationToolbarState
+    @Environment(\.applicationDestinationIsActive) private var applicationDestinationIsActive
 
     /// Called after every load so the tab bar badge stays in sync.
     var onCountChanged: (Int) -> Void = { _ in }
@@ -75,6 +77,7 @@ struct InboxView: View {
                     taskList
                 }
             }
+            #if os(iOS)
             .navigationTitle("Tasks")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
@@ -85,6 +88,7 @@ struct InboxView: View {
                     }
                 }
             }
+            #endif
             .sheet(isPresented: $showCreate) {
                 TaskCreateSheet(onCreated: { _ in
                     Task { await loadTasks() }
@@ -107,6 +111,11 @@ struct InboxView: View {
             }
             .onAppear { isVisible = true }
             .onDisappear { isVisible = false }
+            .onChange(of: applicationToolbarState.commandSequence) { _, _ in
+                guard applicationDestinationIsActive,
+                      applicationToolbarState.command == .tasksCreate else { return }
+                showCreate = true
+            }
             .overlay {
                 if let error = loadError {
                     VStack {

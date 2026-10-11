@@ -159,6 +159,8 @@ struct LibraryView: View {
 
     @Environment(AuthManager.self) private var authManager
     @Environment(ConnectivityMonitor.self) private var connectivity
+    @Environment(\.applicationToolbarState) private var applicationToolbarState
+    @Environment(\.applicationDestinationIsActive) private var applicationDestinationIsActive
 
     @State private var documents: [DocumentSummary] = []
     @State private var linkedSources: [LinkedSourceSummary] = []
@@ -171,17 +173,24 @@ struct LibraryView: View {
     @State private var managingSourceID: Int?
     @State private var deleteError: String?
     @State private var sourceActionError: String?
-    @State private var searchText = ""
     @State private var showSemanticSearch = false
     @State private var pollingTask: Task<Void, Never>?
 
     var body: some View {
         NavigationStack {
             content
+                #if os(iOS)
                 .navigationTitle("Library")
                 .toolbar { toolbarButtons }
+                .searchable(
+                    text: Binding(
+                        get: { applicationToolbarState.libraryFilterText },
+                        set: { applicationToolbarState.libraryFilterText = $0 }
+                    ),
+                    prompt: "Filter documents"
+                )
+                #endif
                 .refreshable { await loadLibraryData() }
-                .searchable(text: $searchText, prompt: "Filter documents")
                 .sheet(isPresented: $showUpload) {
                     DocumentUpload { await loadLibraryData() }
                 }
@@ -222,6 +231,42 @@ struct LibraryView: View {
                     .padding(.top, 8)
                 }
         }
+        .onChange(of: applicationToolbarState.commandSequence) { _, _ in
+            handleApplicationToolbarCommand()
+        }
+        .onChange(of: applicationDestinationIsActive) { _, _ in
+            updateApplicationToolbarState()
+        }
+        .onChange(of: documents.count) { _, _ in
+            updateApplicationToolbarState()
+        }
+        .onChange(of: connectivity.isBackendReachable) { _, _ in
+            updateApplicationToolbarState()
+        }
+        .onAppear { updateApplicationToolbarState() }
+    }
+
+    private func updateApplicationToolbarState() {
+        guard applicationDestinationIsActive else { return }
+        applicationToolbarState.librarySearchAvailable = !documents.isEmpty
+        applicationToolbarState.backendReachable = connectivity.isBackendReachable
+    }
+
+    private func handleApplicationToolbarCommand() {
+        guard applicationDestinationIsActive, let command = applicationToolbarState.command else { return }
+        switch command {
+        case .libraryUpload:
+            guard connectivity.isBackendReachable else { return }
+            showUpload = true
+        case .libraryLinkSource:
+            guard connectivity.isBackendReachable else { return }
+            showLinkSource = true
+        case .librarySemanticSearch:
+            guard !documents.isEmpty else { return }
+            showSemanticSearch = true
+        default:
+            break
+        }
     }
 
     @ViewBuilder
@@ -257,6 +302,7 @@ struct LibraryView: View {
             guard let sourceID = doc.linkedSourceId else { return true }
             return !folderSourceIDs.contains(sourceID)
         }
+        let searchText = applicationToolbarState.libraryFilterText
         guard !searchText.isEmpty else { return base }
         return documents.filter {
             $0.filename.localizedCaseInsensitiveContains(searchText)
@@ -265,7 +311,8 @@ struct LibraryView: View {
     }
 
     private var documentList: some View {
-        List {
+        let searchText = applicationToolbarState.libraryFilterText
+        return List {
             if searchText.isEmpty {
                 linkedSourceSections
             }
