@@ -88,8 +88,8 @@ struct MemoriesView: View {
             Divider()
             content
         }
-        .navigationTitle("Memories")
         #if os(iOS)
+        .navigationTitle("Memories")
         .navigationBarTitleDisplayMode(.large)
         #endif
         .task { await loadAll() }

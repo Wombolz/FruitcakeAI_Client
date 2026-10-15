@@ -14,6 +14,29 @@ import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
 
+#if os(macOS)
+private struct ChatSidebarPanelBorder: Shape {
+    let radius: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - radius))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX + radius, y: rect.maxY),
+            control: CGPoint(x: rect.minX, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX - radius, y: rect.maxY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX, y: rect.maxY - radius),
+            control: CGPoint(x: rect.maxX, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        return path
+    }
+}
+#endif
+
 // MARK: - API response types
 
 private struct SessionSummary: Codable, Identifiable {
@@ -226,6 +249,7 @@ struct ChatView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.applicationToolbarState) private var applicationToolbarState
     @Environment(\.applicationDestinationIsActive) private var applicationDestinationIsActive
+    @Environment(\.workspaceLayoutState) private var workspaceLayoutState
 
     /// Set from InboxView's "Reply in Chat" to auto-navigate to a session.
     @Binding var openSessionId: Int?
@@ -241,7 +265,11 @@ struct ChatView: View {
     @State private var sidebarSearchText = ""
     @AppStorage("chat.projects.expanded.ids") private var storedExpandedProjectIDs = ""
     @State private var expandedProjectIDs: Set<Int> = []
+    #if os(iOS)
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    #else
+    @State private var sidebarDragStartWidth: CGFloat?
+    #endif
 
     @State private var messages: [ChatThreadMessage] = []
     @State private var streamingContent: String = ""
@@ -599,46 +627,40 @@ struct ChatView: View {
     // MARK: - Body
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            sidebar
-                #if os(iOS)
+        Group {
+            #if os(macOS)
+            HStack(spacing: 0) {
+                if workspaceLayoutState.chatSidebarVisible {
+                    sidebar
+                        .frame(width: workspaceLayoutState.chatSidebarWidth - 8)
+                        .background(Theme.sidebar)
+                        .clipShape(.rect(bottomLeadingRadius: 10, bottomTrailingRadius: 10))
+                        .overlay {
+                            ChatSidebarPanelBorder(radius: 10)
+                                .stroke(Theme.strokeUp, lineWidth: 1)
+                        }
+                        .overlay(alignment: .trailing) {
+                            chatSidebarResizeHandle
+                                .offset(x: 4.5)
+                        }
+                        .padding(.leading, 8)
+                        .padding(.bottom, 8)
+                }
+                chatDetail
+            }
+            #else
+            NavigationSplitView(columnVisibility: $columnVisibility) {
+                sidebar
                 .navigationTitle("FruitcakeAI")
                 .toolbar { sidebarToolbar }
-                #endif
-                // Tint just the sidebar's strip of the shared window toolbar
-                // to match the sidebar's own background, so the dark column
-                // reads as one continuous panel from the top controls down
-                // through the conversation list rather than breaking at a
-                // seam where the toolbar's color changes.
-                #if os(macOS)
-                .toolbarBackground(Theme.sidebar, for: .windowToolbar)
-                .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
-                .toolbar(removing: .sidebarToggle)
-                #endif
-        } detail: {
-            Group {
-                if let session = currentSelectedSession {
-                    detailView(session: session)
-                } else {
-                    ContentUnavailableView(
-                        "Select a conversation",
-                        systemImage: "bubble.left.and.bubble.right",
-                        description: Text("Choose a conversation from the sidebar or start a new one.")
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Theme.bg)
-                }
+            } detail: {
+                chatDetail
             }
-            // The detail side of the same toolbar gets its own tint so it
-            // stays continuous with the detail pane's background instead of
-            // inheriting the sidebar's lighter tone.
-            #if os(macOS)
-            .toolbarBackground(Theme.bg, for: .windowToolbar)
-            .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
-            .toolbar(removing: .sidebarToggle)
             #endif
         }
         #if os(macOS)
+        .toolbarBackground(Theme.bg, for: .windowToolbar)
+        .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
         .toolbar(removing: .sidebarToggle)
         #endif
         .preferredColorScheme(.dark)
@@ -857,7 +879,12 @@ struct ChatView: View {
         guard applicationDestinationIsActive, let command = applicationToolbarState.command else { return }
         switch command {
         case .toggleContextSidebar:
-            columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
+            #if os(macOS)
+            workspaceLayoutState.chatSidebarVisible.toggle()
+            #else
+            let willShowSidebar = columnVisibility == .detailOnly
+            columnVisibility = willShowSidebar ? .all : .detailOnly
+            #endif
         case .chatNewConversation:
             Task { await createSession() }
         case .chatNewIncognitoConversation:
@@ -873,6 +900,50 @@ struct ChatView: View {
     }
 
     // MARK: - Sidebar
+
+    @ViewBuilder
+    private var chatDetail: some View {
+        if let session = currentSelectedSession {
+            detailView(session: session)
+        } else {
+            ContentUnavailableView(
+                "Select a conversation",
+                systemImage: "bubble.left.and.bubble.right",
+                description: Text("Choose a conversation from the sidebar or start a new one.")
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Theme.bg)
+        }
+    }
+
+    #if os(macOS)
+    private var chatSidebarResizeHandle: some View {
+        Rectangle()
+            .fill(.clear)
+            .frame(width: 9)
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                if hovering {
+                    NSCursor.resizeLeftRight.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { value in
+                        if sidebarDragStartWidth == nil {
+                            sidebarDragStartWidth = workspaceLayoutState.chatSidebarWidth
+                        }
+                        guard let startWidth = sidebarDragStartWidth else { return }
+                        workspaceLayoutState.setChatSidebarWidth(startWidth + value.translation.width)
+                    }
+                    .onEnded { _ in
+                        sidebarDragStartWidth = nil
+                    }
+            )
+    }
+    #endif
 
     private var sidebar: some View {
         VStack(spacing: 0) {
@@ -987,34 +1058,36 @@ struct ChatView: View {
                 } label: {
                     Label("New conversation", systemImage: "plus")
                         .font(.caption)
+                        .foregroundStyle(Theme.textDim)
                 }
                 .buttonStyle(.plain)
             }
         } label: {
             Label(project.name, systemImage: project.isArchived ? "archivebox" : "folder")
-                .font(.system(size: 12.5, weight: .semibold))
+                .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(project.isArchived ? Theme.textFaint : Theme.textMid)
                 .lineLimit(1)
+                .contextMenu {
+                    if project.isArchived {
+                        Button("Restore") {
+                            Task { await setProjectArchived(project, archived: false) }
+                        }
+                    } else {
+                        Button("Rename") {
+                            projectNameInput = project.name
+                            projectError = nil
+                            projectRenameTarget = project
+                        }
+                        Button("Archive") {
+                            Task { await setProjectArchived(project, archived: true) }
+                        }
+                    }
+                    Button("Delete", role: .destructive) {
+                        projectDeleteTarget = project
+                    }
+                }
         }
-        .contextMenu {
-            if project.isArchived {
-                Button("Restore") {
-                    Task { await setProjectArchived(project, archived: false) }
-                }
-            } else {
-                Button("Rename") {
-                    projectNameInput = project.name
-                    projectError = nil
-                    projectRenameTarget = project
-                }
-                Button("Archive") {
-                    Task { await setProjectArchived(project, archived: true) }
-                }
-            }
-            Button("Delete", role: .destructive) {
-                projectDeleteTarget = project
-            }
-        }
+        .listRowSeparator(.hidden)
     }
 
     private func projectExpandedBinding(_ projectID: Int) -> Binding<Bool> {
@@ -1223,6 +1296,7 @@ struct ChatView: View {
     @ViewBuilder
     private func detailView(session: SessionSummary) -> some View {
         VStack(spacing: 0) {
+            /* Temporarily hidden while evaluating the chat layout without the info bar.
             ChatHeaderBar(
                 personaKey: session.persona,
                 personaDisplayName: personaDisplayName(session.persona),
@@ -1231,6 +1305,7 @@ struct ChatView: View {
                 reasoningLabel: currentReasoningLabel,
                 isConnected: connectivity.isBackendReachable
             )
+            */
 
             if session.incognito {
                 incognitoBanner

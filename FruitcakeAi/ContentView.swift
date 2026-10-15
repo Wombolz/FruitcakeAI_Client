@@ -48,10 +48,72 @@ final class ApplicationToolbarState {
     var librarySearchAvailable = false
     var libraryFilterText = ""
     var backendReachable = false
-
     func send(_ command: ApplicationToolbarCommand) {
         self.command = command
         commandSequence += 1
+    }
+}
+
+@Observable
+final class WorkspaceLayoutState {
+    static let destinationRailWidth: CGFloat = 58
+    static let destinationRailSeparatorWidth: CGFloat = 1
+    static let chatSidebarMinimumWidth: CGFloat = 220
+    static let chatSidebarMaximumWidth: CGFloat = 420
+    static let inspectorMinimumWidth: CGFloat = 340
+    static let inspectorMaximumWidth: CGFloat = 1_200
+
+    private static let chatSidebarWidthKey = "workspace.chat.sidebar.width"
+    private static let inspectorWidthKey = "workspace.inspector.width"
+
+    var chatSidebarVisible = true
+    var inspectorVisible = false
+
+    var chatSidebarWidth: CGFloat {
+        didSet {
+            UserDefaults.standard.set(Double(chatSidebarWidth), forKey: Self.chatSidebarWidthKey)
+        }
+    }
+
+    var inspectorWidth: CGFloat {
+        didSet {
+            UserDefaults.standard.set(Double(inspectorWidth), forKey: Self.inspectorWidthKey)
+        }
+    }
+
+    init() {
+        let storedSidebarWidth = UserDefaults.standard.double(forKey: Self.chatSidebarWidthKey)
+        let storedInspectorWidth = UserDefaults.standard.double(forKey: Self.inspectorWidthKey)
+        chatSidebarWidth = Self.clamp(
+            storedSidebarWidth > 0 ? CGFloat(storedSidebarWidth) : 280,
+            minimum: Self.chatSidebarMinimumWidth,
+            maximum: Self.chatSidebarMaximumWidth
+        )
+        inspectorWidth = Self.clamp(
+            storedInspectorWidth > 0 ? CGFloat(storedInspectorWidth) : 480,
+            minimum: Self.inspectorMinimumWidth,
+            maximum: Self.inspectorMaximumWidth
+        )
+    }
+
+    func setChatSidebarWidth(_ width: CGFloat) {
+        chatSidebarWidth = Self.clamp(
+            width,
+            minimum: Self.chatSidebarMinimumWidth,
+            maximum: Self.chatSidebarMaximumWidth
+        )
+    }
+
+    func setInspectorWidth(_ width: CGFloat) {
+        inspectorWidth = Self.clamp(
+            width,
+            minimum: Self.inspectorMinimumWidth,
+            maximum: Self.inspectorMaximumWidth
+        )
+    }
+
+    private static func clamp(_ value: CGFloat, minimum: CGFloat, maximum: CGFloat) -> CGFloat {
+        min(maximum, max(minimum, value))
     }
 }
 
@@ -74,6 +136,267 @@ private struct ApplicationDestinationActiveKey: EnvironmentKey {
     static let defaultValue = true
 }
 
+private struct WorkspaceLayoutStateKey: EnvironmentKey {
+    static let defaultValue = WorkspaceLayoutState()
+}
+
+#if os(macOS)
+private struct FixedChatTitlebarControls: View {
+    let isAdmin: Bool
+    let toggleSidebar: () -> Void
+    let newConversation: () -> Void
+    let newIncognitoConversation: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            titlebarButton(systemImage: "sidebar.left", action: toggleSidebar)
+                .help("Show or hide sidebar")
+                .accessibilityLabel("Show or hide sidebar")
+
+            if isAdmin {
+                Menu {
+                    Button("New Conversation", systemImage: "plus", action: newConversation)
+                    Button(
+                        "New Incognito Session",
+                        systemImage: "eyeglasses.slash",
+                        action: newIncognitoConversation
+                    )
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "square.and.pencil")
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8, weight: .semibold))
+                    }
+                    .frame(height: 28)
+                    .padding(.horizontal, 9)
+                    .background(.white.opacity(0.055), in: Capsule())
+                    .overlay(Capsule().stroke(.white.opacity(0.08), lineWidth: 1))
+                } primaryAction: {
+                    newConversation()
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("New conversation")
+            } else {
+                titlebarButton(systemImage: "square.and.pencil", action: newConversation)
+                    .help("New conversation")
+            }
+        }
+        .fixedSize()
+    }
+
+    private func titlebarButton(systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .frame(width: 28, height: 28)
+                .background(.white.opacity(0.055), in: Circle())
+                .overlay(Circle().stroke(.white.opacity(0.08), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct ChatTitlebarIdentity: View {
+    var body: some View {
+        HStack(spacing: 28) {
+            Rectangle()
+                .fill(Theme.strokeUp)
+                .frame(width: 1, height: 36)
+            Text("Chat")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Theme.text)
+        }
+        .fixedSize()
+    }
+}
+
+private final class TitlebarWindowProbeView: NSView {
+    var windowDidChange: ((NSWindow?) -> Void)?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        windowDidChange?(window)
+    }
+}
+
+private struct WorkspaceTitlebarHost: NSViewRepresentable {
+    let isActive: Bool
+    let isAdmin: Bool
+    let sidebarVisible: Bool
+    let sidebarWidth: CGFloat
+    let inspectorVisible: Bool
+    let inspectorWidth: CGFloat
+    let toggleSidebar: () -> Void
+    let newConversation: () -> Void
+    let newIncognitoConversation: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> TitlebarWindowProbeView {
+        let probe = TitlebarWindowProbeView(frame: .zero)
+        configure(probe, coordinator: context.coordinator)
+        return probe
+    }
+
+    func updateNSView(_ nsView: TitlebarWindowProbeView, context: Context) {
+        configure(nsView, coordinator: context.coordinator)
+    }
+
+    static func dismantleNSView(_ nsView: TitlebarWindowProbeView, coordinator: Coordinator) {
+        nsView.windowDidChange = nil
+        coordinator.remove()
+    }
+
+    private func configure(_ probe: TitlebarWindowProbeView, coordinator: Coordinator) {
+        let install: @MainActor (NSWindow?) -> Void = { window in
+            coordinator.install(
+                in: window,
+                isActive: isActive,
+                controls: controls,
+                sidebarVisible: sidebarVisible,
+                sidebarWidth: sidebarWidth,
+                inspectorVisible: inspectorVisible,
+                inspectorWidth: inspectorWidth
+            )
+        }
+        probe.windowDidChange = { window in
+            Task { @MainActor in install(window) }
+        }
+        if let window = probe.window {
+            Task { @MainActor in install(window) }
+        }
+    }
+
+    private var controls: FixedChatTitlebarControls {
+        FixedChatTitlebarControls(
+            isAdmin: isAdmin,
+            toggleSidebar: toggleSidebar,
+            newConversation: newConversation,
+            newIncognitoConversation: newIncognitoConversation
+        )
+    }
+
+    @MainActor
+    final class Coordinator {
+        private weak var window: NSWindow?
+        private var controlsView: NSHostingView<FixedChatTitlebarControls>?
+        private var identityView: NSHostingView<ChatTitlebarIdentity>?
+        private var identityLeadingConstraint: NSLayoutConstraint?
+        private var identityTrailingConstraint: NSLayoutConstraint?
+
+        func install(
+            in window: NSWindow?,
+            isActive: Bool,
+            controls: FixedChatTitlebarControls,
+            sidebarVisible: Bool,
+            sidebarWidth: CGFloat,
+            inspectorVisible: Bool,
+            inspectorWidth: CGFloat
+        ) {
+            guard isActive else {
+                remove()
+                return
+            }
+            guard let window else { return }
+
+            if self.window !== window {
+                remove()
+            }
+
+            if let controlsView {
+                controlsView.rootView = controls
+                updateLayout(
+                    sidebarVisible: sidebarVisible,
+                    sidebarWidth: sidebarWidth,
+                    inspectorVisible: inspectorVisible,
+                    inspectorWidth: inspectorWidth
+                )
+                return
+            }
+
+            guard
+                let zoomButton = window.standardWindowButton(.zoomButton),
+                let titlebar = zoomButton.superview
+            else { return }
+
+            let controlsView = NSHostingView(rootView: controls)
+            controlsView.translatesAutoresizingMaskIntoConstraints = false
+            titlebar.addSubview(controlsView)
+
+            let identityView = NSHostingView(rootView: ChatTitlebarIdentity())
+            identityView.translatesAutoresizingMaskIntoConstraints = false
+            titlebar.addSubview(identityView)
+            let identityLeadingConstraint = identityView.leadingAnchor.constraint(
+                equalTo: titlebar.leadingAnchor,
+                constant: 205
+            )
+            let identityTrailingConstraint = identityView.trailingAnchor.constraint(
+                lessThanOrEqualTo: titlebar.trailingAnchor,
+                constant: -80
+            )
+            identityTrailingConstraint.priority = .defaultHigh
+
+            NSLayoutConstraint.activate([
+                controlsView.leadingAnchor.constraint(equalTo: zoomButton.trailingAnchor, constant: 14),
+                controlsView.centerYAnchor.constraint(equalTo: zoomButton.centerYAnchor),
+                identityLeadingConstraint,
+                identityTrailingConstraint,
+                identityView.centerYAnchor.constraint(equalTo: zoomButton.centerYAnchor)
+            ])
+
+            self.window = window
+            self.controlsView = controlsView
+            self.identityView = identityView
+            self.identityLeadingConstraint = identityLeadingConstraint
+            self.identityTrailingConstraint = identityTrailingConstraint
+            updateLayout(
+                sidebarVisible: sidebarVisible,
+                sidebarWidth: sidebarWidth,
+                inspectorVisible: inspectorVisible,
+                inspectorWidth: inspectorWidth
+            )
+        }
+
+        private func updateLayout(
+            sidebarVisible: Bool,
+            sidebarWidth: CGFloat,
+            inspectorVisible: Bool,
+            inspectorWidth: CGFloat
+        ) {
+            guard
+                let titlebar = identityView?.superview,
+                let controlsView
+            else { return }
+
+            titlebar.layoutSubtreeIfNeeded()
+            let collapsedX = controlsView.frame.maxX + 18
+            let sidebarEdge = WorkspaceLayoutState.destinationRailWidth
+                + WorkspaceLayoutState.destinationRailSeparatorWidth
+                + sidebarWidth
+            let identityX = sidebarVisible ? max(sidebarEdge, collapsedX) : collapsedX
+            let trailingReservation = inspectorVisible ? inspectorWidth + 16 : 80
+
+            identityLeadingConstraint?.constant = identityX
+            identityTrailingConstraint?.constant = -trailingReservation
+            titlebar.needsLayout = true
+            titlebar.layoutSubtreeIfNeeded()
+        }
+
+        func remove() {
+            controlsView?.removeFromSuperview()
+            identityView?.removeFromSuperview()
+            controlsView = nil
+            identityView = nil
+            identityLeadingConstraint = nil
+            identityTrailingConstraint = nil
+            window = nil
+        }
+    }
+}
+#endif
+
 extension EnvironmentValues {
     var applicationToolbarState: ApplicationToolbarState {
         get { self[ApplicationToolbarStateKey.self] }
@@ -83,6 +406,11 @@ extension EnvironmentValues {
     var applicationDestinationIsActive: Bool {
         get { self[ApplicationDestinationActiveKey.self] }
         set { self[ApplicationDestinationActiveKey.self] = newValue }
+    }
+
+    var workspaceLayoutState: WorkspaceLayoutState {
+        get { self[WorkspaceLayoutStateKey.self] }
+        set { self[WorkspaceLayoutStateKey.self] = newValue }
     }
 }
 
@@ -122,8 +450,8 @@ struct MainTabView: View {
     @State private var selectedDestination: AppDestination = .chat
     @State private var visitedDestinations: Set<AppDestination> = [.chat]
     @State private var applicationToolbarState = ApplicationToolbarState()
+    @State private var workspaceLayoutState = WorkspaceLayoutState()
     @State private var openSessionId: Int? = nil
-    @State private var artifactInspectorWidth: CGFloat = 480
     @State private var artifactInspectorLastDragX: CGFloat?
 
     var body: some View {
@@ -142,17 +470,41 @@ struct MainTabView: View {
             if artifactInspector.isVisible {
                 artifactInspectorResizeHandle
                 ArtifactInspectorView()
-                    .frame(width: artifactInspectorWidth)
+                    .frame(width: workspaceLayoutState.inspectorWidth)
             }
             #endif
         }
         .environment(\.applicationToolbarState, applicationToolbarState)
+        .environment(\.workspaceLayoutState, workspaceLayoutState)
         #if os(macOS)
-        .navigationTitle(selectedDestination.title)
+        .navigationTitle(selectedDestination == .chat ? "" : selectedDestination.title)
         .toolbar { applicationToolbar }
+        .background {
+            WorkspaceTitlebarHost(
+                isActive: selectedDestination == .chat,
+                isAdmin: authManager.currentUser?.isAdmin == true,
+                sidebarVisible: workspaceLayoutState.chatSidebarVisible,
+                sidebarWidth: workspaceLayoutState.chatSidebarWidth,
+                inspectorVisible: artifactInspector.isVisible,
+                inspectorWidth: workspaceLayoutState.inspectorWidth,
+                toggleSidebar: {
+                    applicationToolbarState.send(.toggleContextSidebar)
+                },
+                newConversation: {
+                    applicationToolbarState.send(.chatNewConversation)
+                },
+                newIncognitoConversation: {
+                    applicationToolbarState.send(.chatNewIncognitoConversation)
+                }
+            )
+            .allowsHitTesting(false)
+        }
         #endif
         .onChange(of: selectedDestination) { _, destination in
             visitedDestinations.insert(destination)
+        }
+        .onChange(of: artifactInspector.isVisible, initial: true) { _, isVisible in
+            workspaceLayoutState.inspectorVisible = isVisible
         }
         #if os(iOS)
         .sheet(isPresented: Binding(
@@ -207,7 +559,7 @@ struct MainTabView: View {
     #if os(macOS)
     @ToolbarContentBuilder
     private var applicationToolbar: some ToolbarContent {
-        if selectedDestination == .chat || selectedDestination == .settings {
+        if selectedDestination == .settings {
             ToolbarItem(placement: .navigation) {
                 Button {
                     applicationToolbarState.send(.toggleContextSidebar)
@@ -221,30 +573,6 @@ struct MainTabView: View {
 
         switch selectedDestination {
         case .chat:
-            ToolbarItem(placement: .primaryAction) {
-                if authManager.currentUser?.isAdmin == true {
-                    Menu {
-                        Button("New Conversation", systemImage: "plus") {
-                            applicationToolbarState.send(.chatNewConversation)
-                        }
-                        Button("New Incognito Session", systemImage: "eyeglasses.slash") {
-                            applicationToolbarState.send(.chatNewIncognitoConversation)
-                        }
-                    } label: {
-                        Label("New Conversation", systemImage: "plus")
-                    } primaryAction: {
-                        applicationToolbarState.send(.chatNewConversation)
-                    }
-                    .help("New conversation")
-                } else {
-                    Button {
-                        applicationToolbarState.send(.chatNewConversation)
-                    } label: {
-                        Label("New Conversation", systemImage: "plus")
-                    }
-                    .help("New conversation")
-                }
-            }
             ToolbarItem(placement: .automatic) {
                 Button {
                     applicationToolbarState.send(.chatEditProfile)
@@ -353,7 +681,7 @@ struct MainTabView: View {
         }
         .padding(.vertical, 10)
         .padding(.horizontal, 8)
-        .frame(width: 58)
+            .frame(width: WorkspaceLayoutState.destinationRailWidth)
         .frame(maxHeight: .infinity)
         .background(Theme.sidebar)
     }
@@ -420,7 +748,9 @@ struct MainTabView: View {
                     let currentX = value.location.x
                     if let previousX = artifactInspectorLastDragX {
                         let delta = previousX - currentX
-                        artifactInspectorWidth = min(1_200, max(340, artifactInspectorWidth + delta))
+                        workspaceLayoutState.setInspectorWidth(
+                            workspaceLayoutState.inspectorWidth + delta
+                        )
                     }
                     artifactInspectorLastDragX = currentX
                 }

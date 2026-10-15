@@ -179,6 +179,8 @@ struct LibraryView: View {
     var body: some View {
         NavigationStack {
             content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Theme.bg)
                 #if os(iOS)
                 .navigationTitle("Library")
                 .toolbar { toolbarButtons }
@@ -231,6 +233,7 @@ struct LibraryView: View {
                     .padding(.top, 8)
                 }
         }
+        .background(Theme.bg)
         .onChange(of: applicationToolbarState.commandSequence) { _, _ in
             handleApplicationToolbarCommand()
         }
@@ -321,6 +324,7 @@ struct LibraryView: View {
                 Section(searchText.isEmpty ? "Documents" : "Search Results") {
                     ForEach(filteredDocuments) { doc in
                         DocumentRow(doc: doc)
+                            .listRowBackground(Color.clear)
                             .contextMenu {
                                 Menu("Change Scope") {
                                     Button("Personal") { Task { await updateScope(doc, scope: "personal") } }
@@ -339,6 +343,8 @@ struct LibraryView: View {
                 }
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(Theme.bg)
     }
 
     @ViewBuilder
@@ -357,6 +363,7 @@ struct LibraryView: View {
                             await excludeFolder(sourceID: source.id, path: path)
                         }
                     )
+                    .listRowBackground(Color.clear)
                 }
             }
         }

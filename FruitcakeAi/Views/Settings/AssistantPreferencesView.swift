@@ -321,7 +321,9 @@ struct SettingsPage<Content: View>: View {
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .background(Theme.bg)
+        #if os(iOS)
         .navigationTitle(title)
+        #endif
     }
 }
 
