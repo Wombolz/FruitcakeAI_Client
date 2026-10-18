@@ -94,8 +94,12 @@ final class APIClient {
 
     // MARK: - Void request (no response body expected)
 
-    func requestVoid(_ path: String, method: String) async throws {
-        let req = try await buildRequest(path, method: method)
+    func requestVoid(
+        _ path: String,
+        method: String,
+        body: (any Encodable)? = nil
+    ) async throws {
+        let req = try await buildRequest(path, method: method, body: body)
         let (data, response) = try await URLSession.shared.data(for: req)
         try validate(response, data: data)
     }
