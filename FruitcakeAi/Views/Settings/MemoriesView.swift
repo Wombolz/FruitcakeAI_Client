@@ -11,6 +11,7 @@ import UniformTypeIdentifiers
 struct MemoriesView: View {
 
     @Environment(AuthManager.self) private var authManager
+    @Environment(\.applicationDestinationIsActive) private var applicationDestinationIsActive
 
     @State private var memories: [MemorySummary] = []
     @State private var proposals: [MemoryReviewProposal] = []
@@ -87,13 +88,17 @@ struct MemoriesView: View {
             Divider()
             content
         }
-        .navigationTitle("Memories")
         #if os(iOS)
+        .navigationTitle("Memories")
         .navigationBarTitleDisplayMode(.large)
         #endif
         .task { await loadAll() }
         .refreshable { await loadAll() }
-        .toolbar { toolbarContent }
+        .toolbar {
+            if applicationDestinationIsActive {
+                toolbarContent
+            }
+        }
         .confirmationDialog(
             "Delete all memories?",
             isPresented: $showDeleteAllConfirmation,

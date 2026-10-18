@@ -27,6 +27,7 @@ private struct AgentSettingsModelListResponse: Decodable {
 
 struct AgentPresetsView: View {
     @Environment(AuthManager.self) private var authManager
+    @Environment(\.applicationDestinationIsActive) private var applicationDestinationIsActive
 
     @State private var instances: [AgentInstanceSummary] = []
     @State private var isLoading = false
@@ -109,9 +110,11 @@ struct AgentPresetsView: View {
         .refreshable { await loadInstances() }
         .navigationTitle("Agents")
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button { showingCreateSheet = true } label: {
-                    Label("New Agent", systemImage: "plus")
+            if applicationDestinationIsActive {
+                ToolbarItem(placement: .primaryAction) {
+                    Button { showingCreateSheet = true } label: {
+                        Label("New Agent", systemImage: "plus")
+                    }
                 }
             }
         }

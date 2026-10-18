@@ -14,6 +14,29 @@ import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
 
+#if os(macOS)
+private struct ChatSidebarPanelBorder: Shape {
+    let radius: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - radius))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX + radius, y: rect.maxY),
+            control: CGPoint(x: rect.minX, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX - radius, y: rect.maxY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX, y: rect.maxY - radius),
+            control: CGPoint(x: rect.maxX, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        return path
+    }
+}
+#endif
+
 // MARK: - API response types
 
 private struct SessionSummary: Codable, Identifiable {
@@ -23,9 +46,12 @@ private struct SessionSummary: Codable, Identifiable {
     let llmModel: String?
     let sortOrder: Int?
     var isIncognito: Bool? = nil
+    var projectId: Int? = nil
+    var isPinned: Bool? = nil
 
     var displayTitle: String { title ?? "Conversation \(id)" }
     var incognito: Bool { isIncognito ?? false }
+    var pinned: Bool { isPinned ?? false }
 }
 
 private struct CreateSessionResponse: Codable {
@@ -35,10 +61,13 @@ private struct CreateSessionResponse: Codable {
     let llmModel: String?
     let sortOrder: Int?
     var isIncognito: Bool? = nil
+    var projectId: Int? = nil
+    var isPinned: Bool? = nil
 }
 
 private struct CreateSessionBody: Encodable {
     let isIncognito: Bool
+    let projectId: Int?
 }
 
 private struct SessionHistoryResponse: Decodable {
@@ -46,7 +75,45 @@ private struct SessionHistoryResponse: Decodable {
     let title: String?
     let persona: String
     let llmModel: String?
+    let projectId: Int?
+    let isPinned: Bool?
     let messages: [HistoryMessage]
+}
+
+private struct ProjectSummary: Codable, Identifiable, Hashable {
+    let id: Int
+    let publicId: String
+    var name: String
+    var description: String?
+    var color: String?
+    var icon: String?
+    var sortIndex: Int
+    var archivedAt: Date?
+
+    var isArchived: Bool { archivedAt != nil }
+}
+
+private struct CreateProjectBody: Encodable {
+    let name: String
+}
+
+private struct UpdateProjectBody: Encodable {
+    let name: String?
+    let archived: Bool?
+}
+
+private struct AssignProjectBody: Encodable {
+    let projectId: Int?
+}
+
+private struct PinSessionBody: Encodable {
+    let pinned: Bool
+}
+
+private struct ChatOrganizationResponse: Decodable {
+    let sessionId: Int
+    let projectId: Int?
+    let isPinned: Bool
 }
 
 private struct ChatSessionStatusResponse: Decodable {
@@ -77,8 +144,99 @@ private struct ChatApprovalDecisionBody: Encodable {
     let approved: Bool
 }
 
-private struct ReorderSessionsBody: Encodable {
-    let sessionIds: [Int]
+private struct SidebarSessionLayoutBody: Encodable {
+    let sessionId: Int
+    let projectId: Int?
+    let isPinned: Bool
+}
+
+private struct SidebarLayoutBody: Encodable {
+    let projectIds: [Int]
+    let sessions: [SidebarSessionLayoutBody]
+}
+
+private enum SidebarDragItem: Equatable {
+    case session(Int)
+    case project(Int)
+
+    var providerValue: String {
+        switch self {
+        case .session(let id): "fruitcake-chat:\(id)"
+        case .project(let id): "fruitcake-project:\(id)"
+        }
+    }
+}
+
+private enum SidebarDropTarget: Equatable {
+    case session(Int)
+    case project(Int)
+    case unassigned
+}
+
+private enum SidebarDropPlacement: Equatable {
+    case before
+    case inside
+    case after
+}
+
+private struct SidebarDropIndicator: Equatable {
+    let target: SidebarDropTarget
+    let placement: SidebarDropPlacement
+}
+
+private struct SidebarDropDelegate: DropDelegate {
+    let target: SidebarDropTarget
+    @Binding var draggedItem: SidebarDragItem?
+    @Binding var indicator: SidebarDropIndicator?
+    let canAccept: (SidebarDragItem, SidebarDropTarget) -> Bool
+    let onEntered: (SidebarDragItem, SidebarDropTarget) -> Void
+    let onDrop: (SidebarDragItem, SidebarDropTarget, SidebarDropPlacement) -> Bool
+
+    func validateDrop(info: DropInfo) -> Bool {
+        guard let draggedItem else { return false }
+        return canAccept(draggedItem, target)
+    }
+
+    func dropEntered(info: DropInfo) {
+        guard let draggedItem, canAccept(draggedItem, target) else { return }
+        onEntered(draggedItem, target)
+        indicator = SidebarDropIndicator(target: target, placement: placement(for: info, item: draggedItem))
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        guard let draggedItem, canAccept(draggedItem, target) else {
+            return DropProposal(operation: .forbidden)
+        }
+        indicator = SidebarDropIndicator(target: target, placement: placement(for: info, item: draggedItem))
+        return DropProposal(operation: .move)
+    }
+
+    func dropExited(info: DropInfo) {
+        if indicator?.target == target {
+            indicator = nil
+        }
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        guard let draggedItem, canAccept(draggedItem, target) else { return false }
+        let accepted = onDrop(draggedItem, target, placement(for: info, item: draggedItem))
+        indicator = nil
+        self.draggedItem = nil
+        return accepted
+    }
+
+    private func placement(for info: DropInfo, item: SidebarDragItem) -> SidebarDropPlacement {
+        switch (item, target) {
+        case (.session, .project), (.session, .unassigned):
+            return .inside
+        case (.session, .session):
+            return info.location.y < 22 ? .before : .after
+        case (.project, .project):
+            return info.location.y < 10 ? .before : .after
+        default:
+            return .inside
+        }
+    }
 }
 
 private struct HistoryMessage: Decodable {
@@ -180,6 +338,9 @@ struct ChatView: View {
     @Environment(ConnectivityMonitor.self) private var connectivity
     @Environment(OnDeviceAgent.self) private var onDeviceAgent
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.applicationToolbarState) private var applicationToolbarState
+    @Environment(\.applicationDestinationIsActive) private var applicationDestinationIsActive
+    @Environment(\.workspaceLayoutState) private var workspaceLayoutState
 
     /// Set from InboxView's "Reply in Chat" to auto-navigate to a session.
     @Binding var openSessionId: Int?
@@ -190,7 +351,16 @@ struct ChatView: View {
     // MARK: State
 
     @State private var sessions: [SessionSummary] = []
+    @State private var projects: [ProjectSummary] = []
     @State private var selectedSession: SessionSummary?
+    @State private var sidebarSearchText = ""
+    @AppStorage("chat.projects.expanded.ids") private var storedExpandedProjectIDs = ""
+    @State private var expandedProjectIDs: Set<Int> = []
+    #if os(iOS)
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    #else
+    @State private var sidebarResizeLastDragX: CGFloat?
+    #endif
 
     @State private var messages: [ChatThreadMessage] = []
     @State private var streamingContent: String = ""
@@ -223,6 +393,14 @@ struct ChatView: View {
     @State private var recentSendBySession: [Int: RecentSendRecord] = [:]
     @State private var renameTarget: SessionSummary?
     @State private var renameInput: String = ""
+    @State private var showingNewProject = false
+    @State private var projectNameInput = ""
+    @State private var projectRenameTarget: ProjectSummary?
+    @State private var projectDeleteTarget: ProjectSummary?
+    @State private var projectError: String?
+    @State private var draggedSidebarItem: SidebarDragItem?
+    @State private var sidebarDropIndicator: SidebarDropIndicator?
+    @State private var isSavingSidebarLayout = false
     @State private var showProfileSheet: Bool = false
     @State private var availablePersonas: [String] = []
     @State private var availablePersonaInfo: [String: ChatPersonaInfo] = [:]
@@ -253,8 +431,38 @@ struct ChatView: View {
         return key.replacingOccurrences(of: "_", with: " ").capitalized
     }
 
-    private func sessionIndex(for session: SessionSummary) -> Int? {
-        sessions.firstIndex(where: { $0.id == session.id })
+    private var activeProjects: [ProjectSummary] {
+        projects.filter { !$0.isArchived }.sorted {
+            if $0.sortIndex != $1.sortIndex { return $0.sortIndex < $1.sortIndex }
+            return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+    }
+
+    private var archivedProjects: [ProjectSummary] {
+        projects.filter(\.isArchived).sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+    }
+
+    private var visibleSessions: [SessionSummary] {
+        let query = sidebarSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return sessions }
+        return sessions.filter {
+            $0.displayTitle.localizedCaseInsensitiveContains(query)
+                || personaDisplayName($0.persona).localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    private var pinnedSessions: [SessionSummary] {
+        visibleSessions.filter(\.pinned)
+    }
+
+    private var unassignedSessions: [SessionSummary] {
+        visibleSessions.filter { !$0.pinned && $0.projectId == nil }
+    }
+
+    private func sessions(in projectID: Int) -> [SessionSummary] {
+        visibleSessions.filter { !$0.pinned && $0.projectId == projectID }
     }
 
     private var currentSelectedSession: SessionSummary? {
@@ -509,41 +717,42 @@ struct ChatView: View {
     // MARK: - Body
 
     var body: some View {
-        NavigationSplitView {
-            sidebar
+        Group {
+            #if os(macOS)
+            HStack(spacing: 0) {
+                if workspaceLayoutState.chatSidebarVisible {
+                    sidebar
+                        .frame(width: workspaceLayoutState.chatSidebarWidth - 8)
+                        .background(Theme.sidebar)
+                        .clipShape(.rect(bottomLeadingRadius: 10, bottomTrailingRadius: 10))
+                        .overlay {
+                            ChatSidebarPanelBorder(radius: 10)
+                                .stroke(Theme.strokeUp, lineWidth: 1)
+                        }
+                        .overlay(alignment: .trailing) {
+                            chatSidebarResizeHandle
+                                .offset(x: 4.5)
+                        }
+                        .padding(.leading, 8)
+                        .padding(.bottom, 8)
+                }
+                chatDetail
+            }
+            #else
+            NavigationSplitView(columnVisibility: $columnVisibility) {
+                sidebar
                 .navigationTitle("FruitcakeAI")
                 .toolbar { sidebarToolbar }
-                // Tint just the sidebar's strip of the shared window toolbar
-                // to match the sidebar's own background, so the dark column
-                // reads as one continuous panel from the top controls down
-                // through the conversation list rather than breaking at a
-                // seam where the toolbar's color changes.
-                #if os(macOS)
-                .toolbarBackground(Theme.sidebar, for: .windowToolbar)
-                .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
-                #endif
-        } detail: {
-            Group {
-                if let session = currentSelectedSession {
-                    detailView(session: session)
-                } else {
-                    ContentUnavailableView(
-                        "Select a conversation",
-                        systemImage: "bubble.left.and.bubble.right",
-                        description: Text("Choose a conversation from the sidebar or start a new one.")
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Theme.bg)
-                }
+            } detail: {
+                chatDetail
             }
-            // The detail side of the same toolbar gets its own tint so it
-            // stays continuous with the detail pane's background instead of
-            // inheriting the sidebar's lighter tone.
-            #if os(macOS)
-            .toolbarBackground(Theme.bg, for: .windowToolbar)
-            .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
             #endif
         }
+        #if os(macOS)
+        .toolbarBackground(Theme.bg, for: .windowToolbar)
+        .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
+        .toolbar(removing: .sidebarToggle)
+        #endif
         .preferredColorScheme(.dark)
         // The system toolbar and our content meet at a hard color seam
         // right behind the traffic lights that toolbarBackground alone
@@ -554,13 +763,24 @@ struct ChatView: View {
         }
         .task {
             hydrateEvidenceExpandedStateIfNeeded()
-            await loadSessions()
+            hydrateExpandedProjectStateIfNeeded()
+            updateApplicationToolbarState()
+            await loadNavigation()
             await loadChatCapabilities()
+        }
+        .onChange(of: applicationDestinationIsActive) { _, _ in
+            updateApplicationToolbarState()
+        }
+        .onChange(of: applicationToolbarState.commandSequence) { _, _ in
+            handleApplicationToolbarCommand()
+        }
+        .onChange(of: selectedSession?.id) { _, _ in
+            updateApplicationToolbarState()
         }
         .onChange(of: connectivity.isBackendReachable) { _, reachable in
             guard reachable else { return }
             Task {
-                await loadSessions()
+                await loadNavigation()
                 await loadChatCapabilities()
             }
         }
@@ -590,7 +810,7 @@ struct ChatView: View {
             openSessionId = nil
             // Reload sessions then select the new one
             Task {
-                await loadSessions()
+                await loadNavigation()
                 if let match = sessions.first(where: { $0.id == id }) {
                     selectedSession = match
                 }
@@ -638,6 +858,32 @@ struct ChatView: View {
                     }
                 }
             }
+        }
+        .sheet(isPresented: $showingNewProject) {
+            projectEditor(title: "New Project", confirmationTitle: "Create") {
+                await createProject()
+            }
+        }
+        .sheet(item: $projectRenameTarget) { project in
+            projectEditor(title: "Rename Project", confirmationTitle: "Save") {
+                await renameProject(project)
+            }
+        }
+        .confirmationDialog(
+            "Delete Project?",
+            isPresented: Binding(
+                get: { projectDeleteTarget != nil },
+                set: { if !$0 { projectDeleteTarget = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete Project", role: .destructive) {
+                guard let project = projectDeleteTarget else { return }
+                Task { await deleteProject(project) }
+            }
+            Button("Cancel", role: .cancel) { projectDeleteTarget = nil }
+        } message: {
+            Text("The project will be removed. Its conversations will remain under Unassigned Chats.")
         }
         .sheet(item: $editingTaskDraft) { draft in
             TaskCreateSheet(initialDraft: draft, onCreated: { created in
@@ -714,36 +960,510 @@ struct ChatView: View {
         }
     }
 
+    private func updateApplicationToolbarState() {
+        guard applicationDestinationIsActive else { return }
+        applicationToolbarState.chatProfileAvailable = selectedSession != nil
+    }
+
+    private func handleApplicationToolbarCommand() {
+        guard applicationDestinationIsActive, let command = applicationToolbarState.command else { return }
+        switch command {
+        case .toggleContextSidebar:
+            #if os(macOS)
+            workspaceLayoutState.chatSidebarVisible.toggle()
+            #else
+            let willShowSidebar = columnVisibility == .detailOnly
+            columnVisibility = willShowSidebar ? .all : .detailOnly
+            #endif
+        case .chatNewConversation:
+            Task { await createSession() }
+        case .chatNewIncognitoConversation:
+            guard authManager.currentUser?.isAdmin == true else { return }
+            Task { await createSession(incognito: true) }
+        case .chatEditProfile:
+            guard selectedSession != nil else { return }
+            prepareProfileEditor()
+            showProfileSheet = true
+        default:
+            break
+        }
+    }
+
     // MARK: - Sidebar
 
-    private var sidebar: some View {
-        // Plain List (no `selection:` binding) — macOS paints its own
-        // system-blue highlight for List(selection:) selected rows, which
-        // overrides .listRowBackground entirely and stomps the persona-tint
-        // design. Driving `selectedSession` manually via tap keeps the List
-        // (so .onDelete/swipe stays intact) while letting our own
-        // accent-tinted background be the only thing rendered as "selected".
-        List {
-            ForEach(sessions) { session in
-                sessionRow(session)
-                    .listRowBackground(sidebarRowBackground(for: session))
-                    .listRowSeparator(.hidden)
-            }
-            .onDelete { offsets in
-                Task { await deleteSessions(sessions, at: offsets) }
-            }
+    @ViewBuilder
+    private var chatDetail: some View {
+        if let session = currentSelectedSession {
+            detailView(session: session)
+        } else {
+            ContentUnavailableView(
+                "Select a conversation",
+                systemImage: "bubble.left.and.bubble.right",
+                description: Text("Choose a conversation from the sidebar or start a new one.")
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Theme.bg)
         }
-        .scrollContentBackground(.hidden)
+    }
+
+    #if os(macOS)
+    private var chatSidebarResizeHandle: some View {
+        Rectangle()
+            .fill(.clear)
+            .frame(width: 9)
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                if hovering {
+                    NSCursor.resizeLeftRight.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                    .onChanged { value in
+                        let currentX = value.location.x
+                        if let previousX = sidebarResizeLastDragX {
+                            workspaceLayoutState.setChatSidebarWidth(
+                                workspaceLayoutState.chatSidebarWidth + currentX - previousX
+                            )
+                        }
+                        sidebarResizeLastDragX = currentX
+                    }
+                    .onEnded { _ in
+                        sidebarResizeLastDragX = nil
+                    }
+            )
+    }
+    #endif
+
+    private var sidebar: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 7) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Theme.textFaint)
+                TextField("Search conversations", text: $sidebarSearchText)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+                if !sidebarSearchText.isEmpty {
+                    Button {
+                        sidebarSearchText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(Theme.textFaint)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 11)
+            .frame(height: 34)
+            .background(Theme.bg.opacity(0.55))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+
+            Divider()
+                .overlay(Theme.strokeUp)
+
+            List {
+                if !pinnedSessions.isEmpty {
+                    Section("Pinned") {
+                        ForEach(pinnedSessions) { session in
+                            sidebarSessionRow(session)
+                        }
+                    }
+                }
+
+                Section("Projects") {
+                    Button {
+                        projectNameInput = ""
+                        projectError = nil
+                        showingNewProject = true
+                    } label: {
+                        Label("New Project", systemImage: "folder.badge.plus")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Theme.textDim)
+                    }
+                    .buttonStyle(.plain)
+
+                    ForEach(activeProjects) { project in
+                        projectDisclosure(project)
+                    }
+                }
+
+                Section {
+                    ForEach(unassignedSessions) { session in
+                        sidebarSessionRow(session)
+                    }
+                    if unassignedSessions.isEmpty {
+                        Text("No unassigned conversations")
+                            .font(Theme.mono(10.5))
+                            .foregroundStyle(Theme.textFaint)
+                    }
+                } header: {
+                    Text("Unassigned Chats")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                        .onDrop(
+                            of: [.utf8PlainText],
+                            delegate: sidebarDropDelegate(for: .unassigned)
+                        )
+                        .overlay { sidebarDropOverlay(for: .unassigned) }
+                }
+
+                if !archivedProjects.isEmpty {
+                    Section("Archived Projects") {
+                        ForEach(archivedProjects) { project in
+                            projectDisclosure(project)
+                        }
+                    }
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(Theme.sidebar)
+        }
         .background(Theme.sidebar)
         .overlay {
-            if sessions.isEmpty && connectivity.isBackendReachable {
+            if sessions.isEmpty && activeProjects.isEmpty && connectivity.isBackendReachable {
                 ContentUnavailableView(
-                    "No conversations",
-                    systemImage: "bubble.left",
-                    description: Text("Tap + to start a new conversation.")
+                    "No conversations or projects",
+                    systemImage: "folder.badge.plus",
+                    description: Text("Start a conversation or create a project.")
                 )
             }
         }
+    }
+
+    @ViewBuilder
+    private func sidebarSessionRow(_ session: SessionSummary) -> some View {
+        sessionRow(session)
+            .listRowBackground(sidebarRowBackground(for: session))
+            .listRowSeparator(.hidden)
+            .opacity(draggedSidebarItem == .session(session.id) ? 0.55 : 1)
+            .onDrag {
+                beginSidebarDrag(.session(session.id))
+            }
+            .onDrop(
+                of: [.utf8PlainText],
+                delegate: sidebarDropDelegate(for: .session(session.id))
+            )
+            .overlay { sidebarDropOverlay(for: .session(session.id)) }
+    }
+
+    private func projectDisclosure(_ project: ProjectSummary) -> some View {
+        DisclosureGroup(isExpanded: projectExpandedBinding(project.id)) {
+            let projectSessions = sessions(in: project.id)
+            ForEach(projectSessions) { session in
+                sidebarSessionRow(session)
+            }
+            if projectSessions.isEmpty {
+                Text("No conversations")
+                    .font(Theme.mono(10.5))
+                    .foregroundStyle(Theme.textFaint)
+            }
+            if !project.isArchived {
+                Button {
+                    Task { await createSession(projectId: project.id) }
+                } label: {
+                    Label("New conversation", systemImage: "plus")
+                        .font(.caption)
+                        .foregroundStyle(Theme.textDim)
+                }
+                .buttonStyle(.plain)
+            }
+        } label: {
+            Label(project.name, systemImage: project.isArchived ? "archivebox" : "folder")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(project.isArchived ? Theme.textFaint : Theme.textMid)
+                .lineLimit(1)
+                .opacity(draggedSidebarItem == .project(project.id) ? 0.55 : 1)
+                .onDrag {
+                    beginSidebarDrag(.project(project.id), enabled: !project.isArchived)
+                }
+                .onDrop(
+                    of: [.utf8PlainText],
+                    delegate: sidebarDropDelegate(for: .project(project.id))
+                )
+                .overlay { sidebarDropOverlay(for: .project(project.id)) }
+                .contextMenu {
+                    if project.isArchived {
+                        Button("Restore") {
+                            Task { await setProjectArchived(project, archived: false) }
+                        }
+                    } else {
+                        Button("Rename") {
+                            projectNameInput = project.name
+                            projectError = nil
+                            projectRenameTarget = project
+                        }
+                        Button("Archive") {
+                            Task { await setProjectArchived(project, archived: true) }
+                        }
+                    }
+                    Button("Delete", role: .destructive) {
+                        projectDeleteTarget = project
+                    }
+                }
+        }
+        .listRowSeparator(.hidden)
+    }
+
+    private var sidebarReorderingEnabled: Bool {
+        sidebarSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !isSavingSidebarLayout
+    }
+
+    private func beginSidebarDrag(_ item: SidebarDragItem, enabled: Bool = true) -> NSItemProvider {
+        guard enabled, sidebarReorderingEnabled else {
+            draggedSidebarItem = nil
+            sidebarDropIndicator = nil
+            return NSItemProvider()
+        }
+        draggedSidebarItem = item
+        sidebarDropIndicator = nil
+        return NSItemProvider(object: item.providerValue as NSString)
+    }
+
+    private func sidebarDropDelegate(for target: SidebarDropTarget) -> SidebarDropDelegate {
+        SidebarDropDelegate(
+            target: target,
+            draggedItem: $draggedSidebarItem,
+            indicator: $sidebarDropIndicator,
+            canAccept: canAcceptSidebarDrop,
+            onEntered: sidebarDropEntered,
+            onDrop: performSidebarDrop
+        )
+    }
+
+    @ViewBuilder
+    private func sidebarDropOverlay(for target: SidebarDropTarget) -> some View {
+        if let indicator = sidebarDropIndicator, indicator.target == target {
+            switch indicator.placement {
+            case .before:
+                VStack(spacing: 0) {
+                    Rectangle().fill(Color.accentColor).frame(height: 2)
+                    Spacer(minLength: 0)
+                }
+                .allowsHitTesting(false)
+            case .inside:
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color.accentColor, lineWidth: 1.5)
+                    .allowsHitTesting(false)
+            case .after:
+                VStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    Rectangle().fill(Color.accentColor).frame(height: 2)
+                }
+                .allowsHitTesting(false)
+            }
+        }
+    }
+
+    private func canAcceptSidebarDrop(_ item: SidebarDragItem, _ target: SidebarDropTarget) -> Bool {
+        guard sidebarReorderingEnabled else { return false }
+
+        switch (item, target) {
+        case let (.project(sourceID), .project(targetID)):
+            return sourceID != targetID
+                && activeProjects.contains(where: { $0.id == sourceID })
+                && activeProjects.contains(where: { $0.id == targetID })
+
+        case let (.session(sourceID), .session(targetID)):
+            guard sourceID != targetID,
+                  let source = sessions.first(where: { $0.id == sourceID }),
+                  let targetSession = sessions.first(where: { $0.id == targetID })
+            else { return false }
+            if source.pinned || targetSession.pinned {
+                return source.pinned && targetSession.pinned
+            }
+            if let projectID = targetSession.projectId,
+               projects.first(where: { $0.id == projectID })?.isArchived == true {
+                return false
+            }
+            return true
+
+        case let (.session(sourceID), .project(projectID)):
+            guard let source = sessions.first(where: { $0.id == sourceID }), !source.pinned else {
+                return false
+            }
+            return activeProjects.contains(where: { $0.id == projectID })
+
+        case let (.session(sourceID), .unassigned):
+            return sessions.first(where: { $0.id == sourceID })?.pinned == false
+
+        default:
+            return false
+        }
+    }
+
+    private func sidebarDropEntered(_ item: SidebarDragItem, _ target: SidebarDropTarget) {
+        guard case .session = item, case .project(let projectID) = target else { return }
+        if expandedProjectIDs.insert(projectID).inserted {
+            persistExpandedProjectState()
+        }
+    }
+
+    private func performSidebarDrop(
+        _ item: SidebarDragItem,
+        _ target: SidebarDropTarget,
+        _ placement: SidebarDropPlacement
+    ) -> Bool {
+        guard canAcceptSidebarDrop(item, target) else { return false }
+        switch (item, target) {
+        case let (.project(sourceID), .project(targetID)):
+            reorderProject(sourceID, relativeTo: targetID, placement: placement)
+        case let (.session(sourceID), .session(targetID)):
+            reorderSession(sourceID, relativeTo: targetID, placement: placement)
+        case let (.session(sourceID), .project(projectID)):
+            moveSession(sourceID, toProject: projectID)
+        case let (.session(sourceID), .unassigned):
+            moveSession(sourceID, toProject: nil)
+        default:
+            return false
+        }
+        return true
+    }
+
+    private func reorderProject(
+        _ sourceID: Int,
+        relativeTo targetID: Int,
+        placement: SidebarDropPlacement
+    ) {
+        let previousProjects = projects
+        let previousSessions = sessions
+        var ordered = activeProjects
+        guard let sourceIndex = ordered.firstIndex(where: { $0.id == sourceID }) else { return }
+        let moved = ordered.remove(at: sourceIndex)
+        guard let targetIndex = ordered.firstIndex(where: { $0.id == targetID }) else { return }
+        let insertionIndex = placement == .after ? targetIndex + 1 : targetIndex
+        ordered.insert(moved, at: insertionIndex)
+
+        for (index, project) in ordered.enumerated() {
+            if let storedIndex = projects.firstIndex(where: { $0.id == project.id }) {
+                projects[storedIndex].sortIndex = index
+            }
+        }
+        sessions = canonicalSessionOrder(sessions)
+        persistSidebarLayout(previousSessions: previousSessions, previousProjects: previousProjects)
+    }
+
+    private func reorderSession(
+        _ sourceID: Int,
+        relativeTo targetID: Int,
+        placement: SidebarDropPlacement
+    ) {
+        let previousProjects = projects
+        let previousSessions = sessions
+        guard let sourceIndex = sessions.firstIndex(where: { $0.id == sourceID }),
+              let target = sessions.first(where: { $0.id == targetID })
+        else { return }
+
+        var reordered = sessions
+        var moved = reordered.remove(at: sourceIndex)
+        if !moved.pinned {
+            moved.projectId = target.projectId
+        }
+        guard let targetIndex = reordered.firstIndex(where: { $0.id == targetID }) else { return }
+        let insertionIndex = placement == .after ? targetIndex + 1 : targetIndex
+        reordered.insert(moved, at: insertionIndex)
+        applySessionList(canonicalSessionOrder(reordered))
+        if let projectID = moved.projectId {
+            expandedProjectIDs.insert(projectID)
+            persistExpandedProjectState()
+        }
+        persistSidebarLayout(previousSessions: previousSessions, previousProjects: previousProjects)
+    }
+
+    private func moveSession(_ sessionID: Int, toProject projectID: Int?) {
+        let previousProjects = projects
+        let previousSessions = sessions
+        guard let sourceIndex = sessions.firstIndex(where: { $0.id == sessionID }) else { return }
+        var reordered = sessions
+        var moved = reordered.remove(at: sourceIndex)
+        moved.projectId = projectID
+        reordered.append(moved)
+        applySessionList(canonicalSessionOrder(reordered))
+        if let projectID {
+            expandedProjectIDs.insert(projectID)
+            persistExpandedProjectState()
+        }
+        persistSidebarLayout(previousSessions: previousSessions, previousProjects: previousProjects)
+    }
+
+    private func canonicalSessionOrder(_ source: [SessionSummary]) -> [SessionSummary] {
+        var ordered: [SessionSummary] = []
+        var included = Set<Int>()
+
+        func append(_ candidates: [SessionSummary]) {
+            for session in candidates where included.insert(session.id).inserted {
+                ordered.append(session)
+            }
+        }
+
+        append(source.filter(\.pinned))
+        for project in activeProjects {
+            append(source.filter { !$0.pinned && $0.projectId == project.id })
+        }
+        append(source.filter { !$0.pinned && $0.projectId == nil })
+        for project in archivedProjects {
+            append(source.filter { !$0.pinned && $0.projectId == project.id })
+        }
+        append(source)
+        return ordered
+    }
+
+    private func persistSidebarLayout(
+        previousSessions: [SessionSummary],
+        previousProjects: [ProjectSummary]
+    ) {
+        let body = SidebarLayoutBody(
+            projectIds: activeProjects.map(\.id),
+            sessions: sessions.map {
+                SidebarSessionLayoutBody(
+                    sessionId: $0.id,
+                    projectId: $0.projectId,
+                    isPinned: $0.pinned
+                )
+            }
+        )
+        isSavingSidebarLayout = true
+        Task { @MainActor in
+            guard connectivity.isBackendReachable else {
+                projects = previousProjects
+                applySessionList(previousSessions)
+                isSavingSidebarLayout = false
+                loadingError = "Backend is not reachable. Sidebar order was restored."
+                return
+            }
+            do {
+                try await APIClient(authManager: authManager).requestVoid(
+                    "/chat/sidebar-layout",
+                    method: "PATCH",
+                    body: body
+                )
+            } catch {
+                projects = previousProjects
+                applySessionList(previousSessions)
+                await loadNavigation()
+                loadingError = "Could not save sidebar order. The previous layout was restored."
+            }
+            isSavingSidebarLayout = false
+        }
+    }
+
+    private func projectExpandedBinding(_ projectID: Int) -> Binding<Bool> {
+        Binding(
+            get: { expandedProjectIDs.contains(projectID) },
+            set: { expanded in
+                if expanded {
+                    expandedProjectIDs.insert(projectID)
+                } else {
+                    expandedProjectIDs.remove(projectID)
+                }
+                persistExpandedProjectState()
+            }
+        )
     }
 
     @ViewBuilder
@@ -792,27 +1512,10 @@ struct ChatView: View {
 
             Spacer(minLength: 8)
 
-            if let index = sessionIndex(for: session) {
-                VStack(spacing: 1) {
-                    Button {
-                        moveSession(session, by: -1)
-                    } label: {
-                        Image(systemName: "chevron.up")
-                            .font(.system(size: 9, weight: .semibold))
-                    }
-                    .buttonStyle(.borderless)
-                    .disabled(index == 0)
-
-                    Button {
-                        moveSession(session, by: 1)
-                    } label: {
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 9, weight: .semibold))
-                    }
-                    .buttonStyle(.borderless)
-                    .disabled(index == sessions.count - 1)
-                }
-                .foregroundStyle(Theme.textFaint)
+            if session.pinned {
+                Image(systemName: "pin.fill")
+                    .font(.system(size: 9))
+                    .foregroundStyle(Theme.textFaint)
             }
         }
         .padding(.vertical, 4)
@@ -821,6 +1524,20 @@ struct ChatView: View {
             selectedSession = session
         }
         .contextMenu {
+            Button(session.pinned ? "Unpin" : "Pin") {
+                Task { await setSessionPinned(session, pinned: !session.pinned) }
+            }
+            Menu("Move to Project") {
+                Button("Unassigned") {
+                    Task { await assignSession(session, to: nil) }
+                }
+                Divider()
+                ForEach(activeProjects) { project in
+                    Button(project.name) {
+                        Task { await assignSession(session, to: project.id) }
+                    }
+                }
+            }
             Button("Rename") {
                 renameInput = session.displayTitle
                 renameError = nil
@@ -830,6 +1547,46 @@ struct ChatView: View {
                 Task { await deleteSession(session) }
             }
         }
+    }
+
+    private func projectEditor(
+        title: String,
+        confirmationTitle: String,
+        action: @escaping () async -> Void
+    ) -> some View {
+        NavigationStack {
+            Form {
+                Section("Name") {
+                    TextField("Project name", text: $projectNameInput)
+                }
+                if let projectError {
+                    Section {
+                        Text(projectError)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            .navigationTitle(title)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        showingNewProject = false
+                        projectRenameTarget = nil
+                        projectError = nil
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(confirmationTitle) {
+                        Task { await action() }
+                    }
+                    .disabled(projectNameInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+        #if os(macOS)
+        .frame(width: 380, height: 210)
+        #endif
     }
 
     @ToolbarContentBuilder
@@ -901,6 +1658,7 @@ struct ChatView: View {
     @ViewBuilder
     private func detailView(session: SessionSummary) -> some View {
         VStack(spacing: 0) {
+            /* Temporarily hidden while evaluating the chat layout without the info bar.
             ChatHeaderBar(
                 personaKey: session.persona,
                 personaDisplayName: personaDisplayName(session.persona),
@@ -909,6 +1667,7 @@ struct ChatView: View {
                 reasoningLabel: currentReasoningLabel,
                 isConnected: connectivity.isBackendReachable
             )
+            */
 
             if session.incognito {
                 incognitoBanner
@@ -1058,7 +1817,9 @@ struct ChatView: View {
         }
         .background(Theme.bg)
         .tint(PersonaAccent.color(for: session.persona))
+        #if os(iOS)
         .navigationTitle(session.displayTitle)
+        #endif
     }
 
     private var streamingBubble: some View {
@@ -1599,6 +2360,30 @@ struct ChatView: View {
     // MARK: - Networking
 
     @MainActor
+    private func loadNavigation() async {
+        await loadProjects()
+        await loadSessions()
+    }
+
+    @MainActor
+    private func loadProjects() async {
+        guard connectivity.isBackendReachable,
+              let _ = try? authManager.token(),
+              let _ = authManager.serverURL else { return }
+
+        let api = APIClient(authManager: authManager)
+        do {
+            projects = try await api.request("/projects?include_archived=true")
+            if storedExpandedProjectIDs.isEmpty {
+                expandedProjectIDs = Set(activeProjects.map(\.id))
+                persistExpandedProjectState()
+            }
+        } catch {
+            loadingError = error.localizedDescription
+        }
+    }
+
+    @MainActor
     private func loadSessions() async {
         guard connectivity.isBackendReachable,
               let _ = try? authManager.token(),
@@ -1634,50 +2419,166 @@ struct ChatView: View {
         sessions = newSessions
         for session in newSessions {
             reconcileSessionModelOverride(sessionId: session.id, serverModelID: session.llmModel)
+            if let cached = cachedConversation(for: session.id) {
+                cached.title = session.displayTitle
+                cached.persona = session.persona
+                cached.projectId = session.projectId
+                cached.isPinned = session.pinned
+            }
         }
+        persistModelContext()
         if let selectedId = selectedSession?.id,
            let updated = newSessions.first(where: { $0.id == selectedId }) {
             selectedSession = updated
         }
     }
 
-    private func moveSession(_ session: SessionSummary, by offset: Int) {
-        guard let currentIndex = sessionIndex(for: session) else { return }
-        let targetIndex = currentIndex + offset
-        guard targetIndex >= 0, targetIndex < sessions.count else { return }
-
-        var reordered = sessions
-        let moved = reordered.remove(at: currentIndex)
-        reordered.insert(moved, at: targetIndex)
-        applySessionList(reordered)
-        Task { await saveSessionOrder(reordered) }
+    private func hydrateExpandedProjectStateIfNeeded() {
+        guard expandedProjectIDs.isEmpty, !storedExpandedProjectIDs.isEmpty else { return }
+        expandedProjectIDs = Set(
+            storedExpandedProjectIDs
+                .drop(while: { $0 == "|" })
+                .split(separator: ",")
+                .compactMap { Int($0) }
+        )
     }
 
-    private func deleteSessions(_ sourceSessions: [SessionSummary], at offsets: IndexSet) async {
-        let toDelete = offsets.map { sourceSessions[$0] }
-        for session in toDelete {
-            await deleteSession(session)
+    private func persistExpandedProjectState() {
+        storedExpandedProjectIDs = "|" + expandedProjectIDs.sorted().map(String.init).joined(separator: ",")
+    }
+
+    @MainActor
+    private func createProject() async {
+        let name = projectNameInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        let api = APIClient(authManager: authManager)
+        do {
+            let project: ProjectSummary = try await api.request(
+                "/projects",
+                method: "POST",
+                body: CreateProjectBody(name: name)
+            )
+            projects.append(project)
+            expandedProjectIDs.insert(project.id)
+            persistExpandedProjectState()
+            projectNameInput = ""
+            projectError = nil
+            showingNewProject = false
+        } catch {
+            projectError = error.localizedDescription
         }
     }
 
     @MainActor
-    private func saveSessionOrder(_ reorderedSessions: [SessionSummary]) async {
-        guard connectivity.isBackendReachable else {
-            loadingError = "Backend is not reachable."
-            return
-        }
-
+    private func renameProject(_ project: ProjectSummary) async {
+        let name = projectNameInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
         let api = APIClient(authManager: authManager)
         do {
-            let updated: [SessionSummary] = try await api.request(
-                "/chat/sessions/order",
+            let updated: ProjectSummary = try await api.request(
+                "/projects/\(project.id)",
                 method: "PATCH",
-                body: ReorderSessionsBody(sessionIds: reorderedSessions.map(\.id))
+                body: UpdateProjectBody(name: name, archived: nil)
             )
-            applySessionList(updated)
+            if let index = projects.firstIndex(where: { $0.id == project.id }) {
+                projects[index] = updated
+            }
+            projectNameInput = ""
+            projectError = nil
+            projectRenameTarget = nil
         } catch {
-            loadingError = "Could not save conversation order."
+            projectError = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func setProjectArchived(_ project: ProjectSummary, archived: Bool) async {
+        let api = APIClient(authManager: authManager)
+        do {
+            let updated: ProjectSummary = try await api.request(
+                "/projects/\(project.id)",
+                method: "PATCH",
+                body: UpdateProjectBody(name: nil, archived: archived)
+            )
+            if let index = projects.firstIndex(where: { $0.id == project.id }) {
+                projects[index] = updated
+            }
+            if !archived {
+                expandedProjectIDs.insert(project.id)
+                persistExpandedProjectState()
+            }
+        } catch {
+            loadingError = "Could not update project."
+        }
+    }
+
+    @MainActor
+    private func deleteProject(_ project: ProjectSummary) async {
+        let api = APIClient(authManager: authManager)
+        do {
+            try await api.requestVoid("/projects/\(project.id)", method: "DELETE")
+            projects.removeAll { $0.id == project.id }
+            expandedProjectIDs.remove(project.id)
+            persistExpandedProjectState()
+            projectDeleteTarget = nil
             await loadSessions()
+        } catch {
+            projectDeleteTarget = nil
+            loadingError = "Could not delete project."
+        }
+    }
+
+    @MainActor
+    private func assignSession(_ session: SessionSummary, to projectID: Int?) async {
+        let api = APIClient(authManager: authManager)
+        do {
+            let organization: ChatOrganizationResponse = try await api.request(
+                "/chat/sessions/\(session.id)/project",
+                method: "PATCH",
+                body: AssignProjectBody(projectId: projectID)
+            )
+            var updated = session
+            updated.projectId = organization.projectId
+            updated.isPinned = organization.isPinned
+            replaceSession(updated)
+            if let projectID {
+                expandedProjectIDs.insert(projectID)
+                persistExpandedProjectState()
+            }
+        } catch {
+            loadingError = "Could not move conversation."
+        }
+    }
+
+    @MainActor
+    private func setSessionPinned(_ session: SessionSummary, pinned: Bool) async {
+        let api = APIClient(authManager: authManager)
+        do {
+            let organization: ChatOrganizationResponse = try await api.request(
+                "/chat/sessions/\(session.id)/pin",
+                method: "PATCH",
+                body: PinSessionBody(pinned: pinned)
+            )
+            var updated = session
+            updated.projectId = organization.projectId
+            updated.isPinned = organization.isPinned
+            replaceSession(updated)
+        } catch {
+            loadingError = "Could not update pinned conversation."
+        }
+    }
+
+    private func replaceSession(_ updated: SessionSummary) {
+        if let index = sessions.firstIndex(where: { $0.id == updated.id }) {
+            sessions[index] = updated
+        }
+        if selectedSession?.id == updated.id {
+            selectedSession = updated
+        }
+        if let cached = cachedConversation(for: updated.id) {
+            cached.projectId = updated.projectId
+            cached.isPinned = updated.pinned
+            persistModelContext()
         }
     }
 
@@ -1897,7 +2798,7 @@ struct ChatView: View {
         // Optimistic local update — keep the visible control in sync immediately.
         if let idx = sessions.firstIndex(where: { $0.id == sessionId }) {
             let old = sessions[idx]
-            sessions[idx] = SessionSummary(id: old.id, title: old.title, persona: old.persona, llmModel: modelID, sortOrder: old.sortOrder, isIncognito: old.isIncognito)
+            sessions[idx] = SessionSummary(id: old.id, title: old.title, persona: old.persona, llmModel: modelID, sortOrder: old.sortOrder, isIncognito: old.isIncognito, projectId: old.projectId, isPinned: old.isPinned)
         }
 
         struct ModelBody: Encodable { let llmModel: String }
@@ -1944,13 +2845,13 @@ struct ChatView: View {
     }
 
     @MainActor
-    private func createSession(incognito: Bool = false) async {
+    private func createSession(incognito: Bool = false, projectId: Int? = nil) async {
         let api = APIClient(authManager: authManager)
         do {
             let created: CreateSessionResponse = try await api.request(
                 "/chat/sessions",
                 method: "POST",
-                body: CreateSessionBody(isIncognito: incognito)
+                body: CreateSessionBody(isIncognito: incognito, projectId: projectId)
             )
             let summary = SessionSummary(
                 id: created.id,
@@ -1958,7 +2859,9 @@ struct ChatView: View {
                 persona: created.persona,
                 llmModel: created.llmModel,
                 sortOrder: created.sortOrder,
-                isIncognito: created.isIncognito
+                isIncognito: created.isIncognito,
+                projectId: created.projectId,
+                isPinned: created.isPinned
             )
             applySessionList([summary] + sessions.filter { $0.id != summary.id })
             selectedSession = sessions.first(where: { $0.id == summary.id }) ?? summary
@@ -1971,7 +2874,9 @@ struct ChatView: View {
                 let conv = CachedConversation(
                     serverSessionId: created.id,
                     title: created.title ?? "New conversation",
-                    persona: created.persona
+                    persona: created.persona,
+                    projectId: created.projectId,
+                    isPinned: created.isPinned ?? false
                 )
                 modelContext.insert(conv)
                 persistModelContext()
@@ -2094,7 +2999,13 @@ struct ChatView: View {
                 messages = existing.sortedMessages.map(threadMessage(from:))
             }
         } else if let session = sessions.first(where: { $0.id == sessionId }), !session.incognito {
-            let conv = CachedConversation(serverSessionId: sessionId, title: session.displayTitle, persona: session.persona)
+            let conv = CachedConversation(
+                serverSessionId: sessionId,
+                title: session.displayTitle,
+                persona: session.persona,
+                projectId: session.projectId,
+                isPinned: session.pinned
+            )
             modelContext.insert(conv)
             persistModelContext()
         }
@@ -2130,7 +3041,9 @@ struct ChatView: View {
                 persona: history.persona,
                 llmModel: history.llmModel,
                 sortOrder: existing.sortOrder,
-                isIncognito: existing.isIncognito
+                isIncognito: existing.isIncognito,
+                projectId: history.projectId,
+                isPinned: history.isPinned
             )
             sessions[idx] = updated
             reconcileSessionModelOverride(sessionId: sessionId, serverModelID: history.llmModel)
@@ -2401,7 +3314,9 @@ struct ChatView: View {
                         persona: name,
                         llmModel: old.llmModel,
                         sortOrder: old.sortOrder,
-                        isIncognito: old.isIncognito
+                        isIncognito: old.isIncognito,
+                        projectId: old.projectId,
+                        isPinned: old.isPinned
                     )
                     if selectedSession?.id == sessionId {
                         selectedSession = sessions[idx]

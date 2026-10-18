@@ -3,6 +3,7 @@ import SwiftUI
 struct SecretsView: View {
 
     @Environment(AuthManager.self) private var authManager
+    @Environment(\.applicationDestinationIsActive) private var applicationDestinationIsActive
 
     @State private var secrets: [SecretSummary] = []
     @State private var isLoading = false
@@ -55,11 +56,13 @@ struct SecretsView: View {
         }
         .navigationTitle("Secrets")
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    activeSheet = .create
-                } label: {
-                    Label("Add Secret", systemImage: "plus")
+            if applicationDestinationIsActive {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        activeSheet = .create
+                    } label: {
+                        Label("Add Secret", systemImage: "plus")
+                    }
                 }
             }
         }
