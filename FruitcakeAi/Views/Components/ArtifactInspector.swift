@@ -15,17 +15,34 @@ struct ArtifactReference: Identifiable, Hashable {
     let origin: Origin
 }
 
-@Observable
+@Observable @MainActor
 final class ArtifactInspectorState {
     var selected: ArtifactReference?
+    private(set) var codingReview: CodingWorkspaceStore?
     var isVisible = false
+    var hasSelection: Bool { selected != nil || codingReview != nil }
 
     func open(_ artifact: ArtifactReference) {
+        codingReview?.releaseRepositoryInspector()
+        codingReview = nil
         selected = artifact
         isVisible = true
     }
 
+    func openCoding(_ store: CodingWorkspaceStore) {
+        if codingReview !== store { codingReview?.releaseRepositoryInspector() }
+        codingReview = store
+        isVisible = true
+    }
+
+    func closeCoding(for store: CodingWorkspaceStore) {
+        guard codingReview === store else { return }
+        close()
+    }
+
     func close() {
+        codingReview?.releaseRepositoryInspector()
+        codingReview = nil
         isVisible = false
     }
 }

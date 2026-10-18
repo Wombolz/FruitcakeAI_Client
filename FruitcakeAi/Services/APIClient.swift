@@ -809,3 +809,160 @@ enum APIError: LocalizedError {
         }
     }
 }
+
+// MARK: - Read-only coding API
+
+extension APIClient: CodingServing {
+    func codingAvailability() async throws -> CodingAvailability { try await codingRequest("/coding/status") }
+    func codingWorkspaces() async throws -> [CodingWorkspace] { try await codingRequest("/coding/workspaces") }
+    func codingModels() async throws -> [CodingModelOption] { try await codingRequest("/coding/models") }
+    func codingProjects() async throws -> [CodingProjectOption] { try await codingRequest("/projects") }
+    func codingSessions(offset: Int) async throws -> [CodingSession] {
+        try await codingRequest("/coding/sessions?limit=100&offset=\(offset)")
+    }
+    func createCodingSession(workspaceId: String, modelId: Int, projectId: Int?, title: String) async throws -> CodingSession {
+        struct Body: Encodable { let workspaceId: String; let modelProfileId: Int; let projectId: Int?; let title: String }
+        return try await codingRequest("/coding/sessions", method: "POST",
+            body: Body(workspaceId: workspaceId, modelProfileId: modelId, projectId: projectId, title: title))
+    }
+    func codingRuns(sessionId: String, offset: Int) async throws -> [CodingRun] {
+        try await codingRequest("/coding/sessions/\(sessionId)/runs?limit=100&offset=\(offset)")
+    }
+    func codingReusableCheckouts() async throws -> [CodingCheckout] { try await codingRequest("/coding/checkouts") }
+    func codingSessionPage(offset: Int, archived: Bool) async throws -> [CodingSession] {
+        try await codingRequest("/coding/sessions?limit=100&offset=\(offset)&archived=\(archived)")
+    }
+    func createCodingSessionInCheckout(workspaceId: String, modelId: Int, projectId: Int?, title: String, checkoutId: String) async throws -> CodingSession {
+        struct Body: Encodable { let workspaceId: String; let modelProfileId: Int; let projectId: Int?; let title: String; let checkoutId: String }
+        return try await codingRequest("/coding/sessions", method: "POST", body: Body(workspaceId: workspaceId, modelProfileId: modelId, projectId: projectId, title: title, checkoutId: checkoutId))
+    }
+    func changeCodingModel(sessionId: String, modelId: Int) async throws -> CodingSession {
+        struct Body: Encodable { let modelProfileId: Int }
+        return try await codingRequest("/coding/sessions/\(sessionId)/model", method: "POST", body: Body(modelProfileId: modelId))
+    }
+    func archiveCodingSession(sessionId: String, archived: Bool) async throws -> CodingSession {
+        struct Body: Encodable { let archived: Bool }
+        return try await codingRequest("/coding/sessions/\(sessionId)/archive", method: "POST", body: Body(archived: archived))
+    }
+    func deleteCodingSession(sessionId: String) async throws {
+        let request = try await buildRequest("/coding/sessions/\(sessionId)", method: "DELETE", timeout: 45)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validateCoding(response, data: data)
+    }
+    private struct CodingDeliveryBody: Encodable { let action: String; let files: [String]; let message: String; let reviewHash: String? }
+    func previewCodingDelivery(sessionId: String, action: String, files: [String], message: String) async throws -> CodingDeliveryPreview {
+        try await codingRequest("/coding/sessions/\(sessionId)/delivery", method: "POST", body: CodingDeliveryBody(action: action, files: files, message: message, reviewHash: nil), timeout: 75)
+    }
+    func confirmCodingDelivery(sessionId: String, action: String, files: [String], message: String, hash: String) async throws -> CodingDeliveryResult {
+        try await codingRequest("/coding/sessions/\(sessionId)/delivery", method: "POST", body: CodingDeliveryBody(action: action, files: files, message: message, reviewHash: hash), timeout: 75)
+    }
+    func codingRun(id: String) async throws -> CodingRun { try await codingRequest("/coding/runs/\(id)") }
+    func setCodingEditMode(sessionId: String, enabled: Bool) async throws -> CodingSession {
+        struct Body: Encodable { let enabled: Bool }
+        return try await codingRequest("/coding/sessions/\(sessionId)/edit-mode", method: "POST", body: Body(enabled: enabled))
+    }
+    func setCodingCommandMode(sessionId: String, enabled: Bool) async throws -> CodingSession {
+        struct Body: Encodable { let enabled: Bool }
+        return try await codingRequest("/coding/sessions/\(sessionId)/command-mode", method: "POST", body: Body(enabled: enabled))
+    }
+    func resolveCodingCommand(id: String, approved: Bool, commandHash: String?) async throws {
+        struct Body: Encodable { let approved: Bool; let commandHash: String? }
+        try await codingVoid("/coding/approvals/\(id)/resolve", body: Body(approved: approved, commandHash: commandHash))
+    }
+    func codingChanges(runId: String) async throws -> [CodingSavedChange] {
+        try await codingRequest("/coding/runs/\(runId)/changes")
+    }
+    func codingCheckout(sessionId: String) async throws -> CodingCheckout? {
+        try await codingRequest("/coding/sessions/\(sessionId)/checkout")
+    }
+    func createCodingCheckout(sessionId: String) async throws -> CodingCheckout {
+        try await codingRequest("/coding/sessions/\(sessionId)/checkout", method: "POST")
+    }
+    func removeCodingCheckout(sessionId: String) async throws -> CodingCheckout {
+        try await codingRequest("/coding/sessions/\(sessionId)/checkout/remove", method: "POST")
+    }
+    func codingRepository(sessionId: String) async throws -> CodingRepository {
+        try await codingRequest("/coding/sessions/\(sessionId)/repository", timeout: 20)
+    }
+    func codingRepositoryDiff(sessionId: String, path: String) async throws -> CodingRepositoryDiff {
+        let encoded = path.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
+        return try await codingRequest("/coding/sessions/\(sessionId)/repository/diff?path=\(encoded)", timeout: 20)
+    }
+    func submitCoding(sessionId: String, message: String, requestId: String) async throws -> CodingRun {
+        struct Body: Encodable { let message: String; let clientRequestId: String }
+        return try await codingRequest("/coding/sessions/\(sessionId)/runs", method: "POST",
+            body: Body(message: message, clientRequestId: requestId))
+    }
+    func stopCoding(runId: String) async throws {
+        struct Result: Decodable { let stopRequested: Bool }
+        let _: Result = try await codingRequest("/coding/runs/\(runId)/stop", method: "POST", timeout: 45)
+    }
+    func controlCoding(runId: String, action: String, message: String) async throws {
+        struct Body: Encodable { let action: String; let message: String }
+        try await codingVoid("/coding/runs/\(runId)/control", body: Body(action: action, message: message))
+    }
+    func codingApprovals(runId: String) async throws -> [CodingApproval] {
+        try await codingRequest("/coding/runs/\(runId)/approvals")
+    }
+    func resolveCodingApproval(id: String, approved: Bool, changeHash: String?) async throws {
+        struct Body: Encodable { let approved: Bool; let changeHash: String? }
+        try await codingVoid("/coding/approvals/\(id)/resolve", body: Body(approved: approved, changeHash: changeHash))
+    }
+    func closeCodingSession(id: String) async throws { try await codingVoid("/coding/sessions/\(id)/close") }
+    func grantCodingWorkspace(userId: Int, path: String) async throws -> CodingWorkspace {
+        struct Body: Encodable { let userId: Int; let path: String; let requireRepository: Bool }
+        return try await codingRequest("/coding/workspaces", method: "POST", body: Body(userId: userId, path: path, requireRepository: true))
+    }
+    func createCodingRepository(userId: Int, path: String) async throws -> CodingWorkspace {
+        struct Body: Encodable { let userId: Int; let path: String }
+        return try await codingRequest("/coding/repositories", method: "POST", body: Body(userId: userId, path: path), timeout: 45)
+    }
+
+    private func codingRequest<T: Decodable>(_ path: String, method: String = "GET", body: (any Encodable)? = nil, timeout: TimeInterval = 15) async throws -> T {
+        let request = try await buildRequest(path, method: method, body: body, timeout: timeout)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validateCoding(response, data: data)
+        return try decode(T.self, from: data)
+    }
+    private func codingVoid(_ path: String, body: (any Encodable)? = nil) async throws {
+        let request = try await buildRequest(path, method: "POST", body: body, timeout: 45)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validateCoding(response, data: data)
+    }
+    private func validateCoding(_ response: URLResponse, data: Data) throws {
+        guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
+        guard (200...299).contains(http.statusCode) else {
+            throw CodingClientError.response(status: http.statusCode, data: data)
+        }
+    }
+
+    func streamCoding(runId: String, after: Int, follow: Bool, onEvent: @escaping @MainActor (CodingEvent) async throws -> Void) async throws {
+        var request = try await buildRequest("/coding/runs/\(runId)/events?after=\(after)&follow=\(follow)", method: "GET", timeout: 60)
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
+        guard (200...299).contains(http.statusCode) else {
+            var body = Data()
+            for try await byte in bytes { body.append(byte); if body.count >= 8192 { break } }
+            throw CodingClientError.response(status: http.statusCode, data: body)
+        }
+        guard http.value(forHTTPHeaderField: "Content-Type")?.hasPrefix("text/event-stream") == true else {
+            throw CodingClientError(code: "invalid_stream", message: "The backend did not return a coding event stream.")
+        }
+        var parser = CodingSSEParser()
+        for try await byte in bytes {
+            try Task.checkCancellation()
+            guard let frame = try parser.feed(byte: byte) else { continue }
+            if frame.event == "stream.error" {
+                let fields = try JSONDecoder().decode([String: String].self, from: frame.data)
+                throw CodingClientError(code: fields["code"] ?? "stream_unavailable", message: fields["message"] ?? "Coding stream interrupted.")
+            }
+            let event = try decode(CodingEvent.self, from: frame.data)
+            guard frame.id == String(event.sequence), frame.event == event.kind, event.runId == runId else {
+                throw CodingClientError(code: "invalid_event", message: "The coding stream returned a mismatched event.")
+            }
+            try await onEvent(event)
+        }
+    }
+}

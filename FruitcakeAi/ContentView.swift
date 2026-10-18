@@ -34,6 +34,8 @@ enum ApplicationToolbarCommand: Equatable {
     case chatNewConversation
     case chatNewIncognitoConversation
     case chatEditProfile
+    case codingNewSession
+    case codingRefresh
     case tasksCreate
     case libraryUpload
     case libraryLinkSource
@@ -67,6 +69,10 @@ final class WorkspaceLayoutState {
     private static let inspectorWidthKey = "workspace.inspector.width"
 
     var chatSidebarVisible = true
+    var codingSidebarVisible = true
+    var codingSidebarWidth: CGFloat {
+        didSet { UserDefaults.standard.set(Double(codingSidebarWidth), forKey: "workspace.coding.sidebar.width") }
+    }
     var inspectorVisible = false
 
     var chatSidebarWidth: CGFloat {
@@ -82,6 +88,9 @@ final class WorkspaceLayoutState {
     }
 
     init() {
+        let codingWidth = UserDefaults.standard.double(forKey: "workspace.coding.sidebar.width")
+        codingSidebarWidth = Self.clamp(codingWidth > 0 ? CGFloat(codingWidth) : 280,
+                                       minimum: Self.chatSidebarMinimumWidth, maximum: Self.chatSidebarMaximumWidth)
         let storedSidebarWidth = UserDefaults.standard.double(forKey: Self.chatSidebarWidthKey)
         let storedInspectorWidth = UserDefaults.standard.double(forKey: Self.inspectorWidthKey)
         chatSidebarWidth = Self.clamp(
@@ -102,6 +111,10 @@ final class WorkspaceLayoutState {
             minimum: Self.chatSidebarMinimumWidth,
             maximum: Self.chatSidebarMaximumWidth
         )
+    }
+
+    func setCodingSidebarWidth(_ width: CGFloat) {
+        codingSidebarWidth = Self.clamp(width, minimum: Self.chatSidebarMinimumWidth, maximum: Self.chatSidebarMaximumWidth)
     }
 
     func setInspectorWidth(_ width: CGFloat) {
@@ -143,6 +156,7 @@ private struct WorkspaceLayoutStateKey: EnvironmentKey {
 #if os(macOS)
 private struct FixedChatTitlebarControls: View {
     let isAdmin: Bool
+    let newTitle: String
     let toggleSidebar: () -> Void
     let newConversation: () -> Void
     let newIncognitoConversation: () -> Void
@@ -179,7 +193,8 @@ private struct FixedChatTitlebarControls: View {
                 .help("New conversation")
             } else {
                 titlebarButton(systemImage: "square.and.pencil", action: newConversation)
-                    .help("New conversation")
+                    .help(newTitle)
+                    .accessibilityLabel(newTitle)
             }
         }
         .fixedSize()
@@ -197,12 +212,13 @@ private struct FixedChatTitlebarControls: View {
 }
 
 private struct ChatTitlebarIdentity: View {
+    let title: String
     var body: some View {
         HStack(spacing: 28) {
             Rectangle()
                 .fill(Theme.strokeUp)
                 .frame(width: 1, height: 36)
-            Text("Chat")
+            Text(title)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Theme.text)
         }
@@ -221,6 +237,7 @@ private final class TitlebarWindowProbeView: NSView {
 
 private struct WorkspaceTitlebarHost: NSViewRepresentable {
     let isActive: Bool
+    let title: String
     let isAdmin: Bool
     let sidebarVisible: Bool
     let sidebarWidth: CGFloat
@@ -254,6 +271,7 @@ private struct WorkspaceTitlebarHost: NSViewRepresentable {
             coordinator.install(
                 in: window,
                 isActive: isActive,
+                title: title,
                 controls: controls,
                 sidebarVisible: sidebarVisible,
                 sidebarWidth: sidebarWidth,
@@ -272,6 +290,7 @@ private struct WorkspaceTitlebarHost: NSViewRepresentable {
     private var controls: FixedChatTitlebarControls {
         FixedChatTitlebarControls(
             isAdmin: isAdmin,
+            newTitle: title == "Code" ? "New coding session" : "New conversation",
             toggleSidebar: toggleSidebar,
             newConversation: newConversation,
             newIncognitoConversation: newIncognitoConversation
@@ -289,6 +308,7 @@ private struct WorkspaceTitlebarHost: NSViewRepresentable {
         func install(
             in window: NSWindow?,
             isActive: Bool,
+            title: String,
             controls: FixedChatTitlebarControls,
             sidebarVisible: Bool,
             sidebarWidth: CGFloat,
@@ -307,6 +327,7 @@ private struct WorkspaceTitlebarHost: NSViewRepresentable {
 
             if let controlsView {
                 controlsView.rootView = controls
+                identityView?.rootView = ChatTitlebarIdentity(title: title)
                 updateLayout(
                     sidebarVisible: sidebarVisible,
                     sidebarWidth: sidebarWidth,
@@ -325,7 +346,7 @@ private struct WorkspaceTitlebarHost: NSViewRepresentable {
             controlsView.translatesAutoresizingMaskIntoConstraints = false
             titlebar.addSubview(controlsView)
 
-            let identityView = NSHostingView(rootView: ChatTitlebarIdentity())
+            let identityView = NSHostingView(rootView: ChatTitlebarIdentity(title: title))
             identityView.translatesAutoresizingMaskIntoConstraints = false
             titlebar.addSubview(identityView)
             let identityLeadingConstraint = identityView.leadingAnchor.constraint(
@@ -416,6 +437,7 @@ extension EnvironmentValues {
 
 private enum AppDestination: String, CaseIterable, Hashable, Identifiable {
     case chat
+    case coding
     case tasks
     case library
     case settings
@@ -425,6 +447,7 @@ private enum AppDestination: String, CaseIterable, Hashable, Identifiable {
     var title: String {
         switch self {
         case .chat: "Chat"
+        case .coding: "Code"
         case .tasks: "Tasks"
         case .library: "Library"
         case .settings: "Settings"
@@ -434,6 +457,7 @@ private enum AppDestination: String, CaseIterable, Hashable, Identifiable {
     var systemImage: String {
         switch self {
         case .chat: "bubble.left.and.bubble.right.fill"
+        case .coding: "chevron.left.forwardslash.chevron.right"
         case .tasks: "checklist"
         case .library: "books.vertical.fill"
         case .settings: "gearshape.fill"
@@ -469,7 +493,13 @@ struct MainTabView: View {
             #if os(macOS)
             if artifactInspector.isVisible {
                 artifactInspectorResizeHandle
-                ArtifactInspectorView()
+                Group {
+                    if let store = artifactInspector.codingReview {
+                        CodingRepositoryReview(store: store, close: { artifactInspector.close() })
+                    } else {
+                        ArtifactInspectorView()
+                    }
+                }
                     .frame(width: workspaceLayoutState.inspectorWidth)
             }
             #endif
@@ -477,21 +507,22 @@ struct MainTabView: View {
         .environment(\.applicationToolbarState, applicationToolbarState)
         .environment(\.workspaceLayoutState, workspaceLayoutState)
         #if os(macOS)
-        .navigationTitle(selectedDestination == .chat ? "" : selectedDestination.title)
+        .navigationTitle(selectedDestination == .chat || selectedDestination == .coding ? "" : selectedDestination.title)
         .toolbar { applicationToolbar }
         .background {
             WorkspaceTitlebarHost(
-                isActive: selectedDestination == .chat,
-                isAdmin: authManager.currentUser?.isAdmin == true,
-                sidebarVisible: workspaceLayoutState.chatSidebarVisible,
-                sidebarWidth: workspaceLayoutState.chatSidebarWidth,
+                isActive: selectedDestination == .chat || selectedDestination == .coding,
+                title: selectedDestination.title,
+                isAdmin: selectedDestination == .chat && authManager.currentUser?.isAdmin == true,
+                sidebarVisible: selectedDestination == .coding ? workspaceLayoutState.codingSidebarVisible : workspaceLayoutState.chatSidebarVisible,
+                sidebarWidth: selectedDestination == .coding ? workspaceLayoutState.codingSidebarWidth : workspaceLayoutState.chatSidebarWidth,
                 inspectorVisible: artifactInspector.isVisible,
                 inspectorWidth: workspaceLayoutState.inspectorWidth,
                 toggleSidebar: {
                     applicationToolbarState.send(.toggleContextSidebar)
                 },
                 newConversation: {
-                    applicationToolbarState.send(.chatNewConversation)
+                    applicationToolbarState.send(selectedDestination == .coding ? .codingNewSession : .chatNewConversation)
                 },
                 newIncognitoConversation: {
                     applicationToolbarState.send(.chatNewIncognitoConversation)
@@ -521,6 +552,12 @@ struct MainTabView: View {
         switch destination {
         case .chat:
             ChatView(openSessionId: $openSessionId)
+        case .coding:
+            #if os(macOS)
+            CodingWorkspaceView()
+            #else
+            ContentUnavailableView("Coding is available on Mac", systemImage: "desktopcomputer")
+            #endif
         case .tasks:
             InboxView(
                 onCountChanged: { pendingApprovalCount = $0 },
@@ -572,6 +609,15 @@ struct MainTabView: View {
         }
 
         switch selectedDestination {
+        case .coding:
+            ToolbarItem(placement: .automatic) {
+                Button {
+                    applicationToolbarState.send(.codingRefresh)
+                } label: {
+                    Label("Refresh Coding Workspace", systemImage: "arrow.clockwise")
+                }
+                .help("Refresh coding workspace")
+            }
         case .chat:
             ToolbarItem(placement: .automatic) {
                 Button {
@@ -629,7 +675,7 @@ struct MainTabView: View {
             }
         }
 
-        if artifactInspector.selected != nil {
+        if artifactInspector.hasSelection {
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     if artifactInspector.isVisible {
@@ -672,6 +718,9 @@ struct MainTabView: View {
                 .padding(.bottom, 4)
 
             railButton(.chat)
+            if authManager.currentUser?.isParent == true {
+                railButton(.coding)
+            }
             railButton(.tasks)
             railButton(.library)
 
