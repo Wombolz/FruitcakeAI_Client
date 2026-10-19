@@ -125,19 +125,24 @@ struct CodingTranscriptScrollView<Content: View>: View {
 
 struct CodingUserMessageBubble: View {
     let text: String
-    private var accent: Color { PersonaAccent.color(for: "family_assistant") }
+    var occurredAt: Date? = nil
+    private var accent: Color { Theme.codeAccent }
 
     var body: some View {
         HStack {
             Spacer(minLength: 48)
-            Text(text).font(.system(size: 13.5)).foregroundStyle(Theme.text)
-                .lineSpacing(4).textSelection(.enabled)
+            VStack(alignment: .trailing, spacing: 4) {
+                MessageProse(text: text).font(.system(size: 13.5)).foregroundStyle(Theme.text)
+                .lineSpacing(4)
                 .padding(.horizontal, 14).padding(.vertical, 10)
                 .background(accent.opacity(0.14))
                 .clipShape(.rect(topLeadingRadius: 14, bottomLeadingRadius: 14,
                                  bottomTrailingRadius: 4, topTrailingRadius: 14))
                 .overlay(RoundedRectangle(cornerRadius: 14).stroke(accent.opacity(0.30), lineWidth: 1))
-                .frame(maxWidth: Theme.chatUserMaxWidth, alignment: .trailing)
+                if let occurredAt {
+                    MessageTimestamp(date: occurredAt).foregroundStyle(Theme.textFaint).padding(.horizontal, 4)
+                }
+            }.frame(maxWidth: Theme.chatUserMaxWidth, alignment: .trailing)
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
     }

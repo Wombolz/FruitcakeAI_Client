@@ -166,8 +166,6 @@ struct MessageBubble: View {
         guard let evidence = message.evidence, evidence.isMeaningful else { return nil }
         return evidence
     }
-    private static let timestampFormat: Date.FormatStyle =
-        .dateTime.month(.abbreviated).day().hour().minute()
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
@@ -195,8 +193,7 @@ struct MessageBubble: View {
                         Text("On-device")
                             .font(Theme.mono(10))
                     }
-                    Text(message.timestamp.formatted(Self.timestampFormat))
-                        .font(Theme.mono(10))
+                    MessageTimestamp(date: message.timestamp)
                 }
                 .foregroundStyle(message.isLocal ? Theme.onDevice : Theme.textFaint)
                 .padding(.horizontal, 4)
@@ -357,16 +354,7 @@ struct MessageBubble: View {
 
     @ViewBuilder
     private func markdownText(text: String) -> some View {
-        if let attributed = try? AttributedString(
-            markdown: text,
-            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        ) {
-            Text(attributed)
-                .textSelection(.enabled)
-        } else {
-            Text(text)
-                .textSelection(.enabled)
-        }
+        MessageProse(text: text)
     }
 }
 

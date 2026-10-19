@@ -2,7 +2,7 @@ import Foundation
 import Observation
 
 @MainActor
-protocol CodingServing: AnyObject {
+protocol CodingServing: CodingReviewServing {
     func codingAvailability() async throws -> CodingAvailability
     func codingWorkspaces() async throws -> [CodingWorkspace]
     func codingModels() async throws -> [CodingModelOption]
@@ -27,6 +27,9 @@ protocol CodingServing: AnyObject {
     func deleteCodingSession(sessionId: String) async throws
     func previewCodingDelivery(sessionId: String, action: String, files: [String], message: String) async throws -> CodingDeliveryPreview
     func confirmCodingDelivery(sessionId: String, action: String, files: [String], message: String, hash: String) async throws -> CodingDeliveryResult
+    func codingExplorerRoot(sessionId: String) async throws -> InspectorRoot
+    func codingExplorerDirectory(sessionId: String, rootId: String, path: String, offset: Int, version: String?) async throws -> InspectorDirectoryPage
+    func codingExplorerFile(sessionId: String, rootId: String, path: String) async throws -> InspectorFileContent
     func codingRepository(sessionId: String) async throws -> CodingRepository
     func codingRepositoryDiff(sessionId: String, path: String) async throws -> CodingRepositoryDiff
     func codingCheckout(sessionId: String) async throws -> CodingCheckout?
@@ -40,6 +43,9 @@ protocol CodingServing: AnyObject {
 }
 
 extension CodingServing {
+    func codingExplorerRoot(sessionId: String) async throws -> InspectorRoot { throw CodingClientError(code: "unsupported", message: "Update the backend to use Explorer.") }
+    func codingExplorerDirectory(sessionId: String, rootId: String, path: String, offset: Int, version: String?) async throws -> InspectorDirectoryPage { throw CodingClientError(code: "unsupported", message: "Directory inspection is unavailable.") }
+    func codingExplorerFile(sessionId: String, rootId: String, path: String) async throws -> InspectorFileContent { throw CodingClientError(code: "unsupported", message: "File inspection is unavailable.") }
     func codingReusableCheckouts() async throws -> [CodingCheckout] { [] }
     func codingSessionPage(offset: Int, archived: Bool) async throws -> [CodingSession] {
         if archived { return [] }
@@ -90,6 +96,7 @@ final class CodingWorkspaceStore {
     }
 
     private let api: any CodingServing
+    let aiReview: CodingAIReviewStore
     private var observer: Task<Void, Never>?
     private var checkoutObserver: Task<Void, Never>?
     private var selectionGeneration = UUID()
@@ -137,7 +144,7 @@ final class CodingWorkspaceStore {
     var hasMoreSessions = false
     var hasMoreRuns = false
 
-    init(api: any CodingServing) { self.api = api }
+    init(api: any CodingServing) { self.api = api; aiReview = CodingAIReviewStore(api: api) }
     var selected: CodingSession? { sessions.first { $0.id == selectedId } }
     var deliveryNotice: DeliveryNotice? { selectedId.flatMap { deliveryNotices[$0] } }
 
@@ -150,12 +157,12 @@ final class CodingWorkspaceStore {
     var commandsEnabled: Bool { selected?.commandMode == true }
     var modeLabel: String { commandsEnabled ? "container commands · writable checkout · offline" : editingEnabled ? "approved edits" : "read only" }
     var canSetCommandMode: Bool {
-        supportsContainerCommands && available && checkoutLoaded && checkout?.status == "ready"
+        !aiReview.busy && supportsContainerCommands && available && checkoutLoaded && checkout?.status == "ready"
         && selected != nil && selected?.isClosed == false && activeRun == nil && workspace?.isActive == true
         && !actionInFlight && !loadingRuns && pending == nil && editModeKnown
     }
     var canSetEditMode: Bool {
-        supportsApprovedEdits && available && checkoutLoaded && checkout?.status == "ready"
+        !aiReview.busy && supportsApprovedEdits && available && checkoutLoaded && checkout?.status == "ready"
         && selected != nil && selected?.isClosed == false && activeRun == nil && workspace?.isActive == true
         && !actionInFlight && !loadingRuns && pending == nil && editModeKnown
     }
@@ -167,6 +174,7 @@ final class CodingWorkspaceStore {
         checkoutCreationBlockReason == nil
     }
     var checkoutCreationBlockReason: String? {
+        guard !aiReview.busy else { return "Finish or stop the review before changing this checkout." }
         guard available else { return "Connect to the coding backend before creating a checkout." }
         guard supportsCheckouts else { return "This backend does not support isolated checkouts. Update and restart it." }
         guard let selected else { return "Choose or create a coding session for this repository first." }
@@ -180,7 +188,7 @@ final class CodingWorkspaceStore {
         return nil
     }
     var canSubmit: Bool {
-        available && !loading && !actionInFlight && !loadingRuns && pending == nil && selected != nil
+        !aiReview.busy && available && !loading && !actionInFlight && !loadingRuns && pending == nil && selected != nil
         && deliveryAction == nil
         && selected?.isClosed == false && workspace?.isActive == true && activeRun == nil
         && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && draft.unicodeScalars.count <= 32000
@@ -197,6 +205,7 @@ final class CodingWorkspaceStore {
             supportsCheckouts = status.managedCheckouts == true
             supportsApprovedEdits = status.approvedEdits == true
             supportsContainerCommands = status.containerCommands == true
+            aiReview.setEnabled(status.aiReviews == true)
             guard status.enabled, status.eventSchemaVersion == 1, status.mode == "read_only" else {
                 available = false
                 suspend()
@@ -240,6 +249,10 @@ final class CodingWorkspaceStore {
     }
 
     func select(_ id: String) async {
+        guard aiReview.pending == nil || selectedId == id else {
+            errorMessage = "Reconcile the pending review start before switching sessions."
+            return
+        }
         guard pending == nil || pending?.sessionId == id else {
             errorMessage = "Resolve the pending submission before switching sessions. Retry uses its original request ID."
             return
@@ -255,6 +268,7 @@ final class CodingWorkspaceStore {
             if let selectedId { drafts[selectedId] = draft }
             draft = drafts[id] ?? ""
         }
+        if aiReview.sessionId != id { aiReview.reset(sessionId: id) }
         selectedId = id; runs = []; approvals = []; projections = [:]; approvalStates = [:]
         savedChanges = [:]; reviewedChanges = []; editModeKnown = !unknownEditModes.contains(id)
         connection = "Loading session"
@@ -274,6 +288,7 @@ final class CodingWorkspaceStore {
             if let activeRun { observe(activeRun.id, generation: generation) }
             else { connection = selected?.isClosed == true ? "Closed" : "Ready - \(modeLabel)" }
             if checkout?.isBusy == true { observeCheckout(sessionId: id, generation: generation) }
+            if aiReview.enabled { await aiReview.resume() }
         } catch is CancellationError { return }
         catch { if selectionGeneration == generation { errorMessage = error.localizedDescription } }
     }
@@ -284,7 +299,7 @@ final class CodingWorkspaceStore {
     }
 
     func removeCheckout() async {
-        guard let id = selectedId, selected?.isClosed == true, checkout != nil,
+        guard !aiReview.busy, let id = selectedId, selected?.isClosed == true, checkout != nil,
               checkout?.isBusy == false, !actionInFlight else { return }
         await checkoutAction(sessionId: id, removing: true)
     }
@@ -348,6 +363,55 @@ final class CodingWorkspaceStore {
     }
 
     func closeDiff() { diffVisible = false }
+
+    func makeInspectorReview(sessionID: String) -> CodingAIReviewStore {
+        let review = CodingAIReviewStore(api: api)
+        review.setEnabled(aiReview.enabled)
+        review.reset(sessionId: sessionID)
+        review.suspend()
+        return review
+    }
+
+    func inspectChangedFile(sessionID: String, path: String) async throws -> CodingRepositoryDiff {
+        guard selectedId == sessionID else { throw CancellationError() }
+        let generation = selectionGeneration
+        let value = try await api.codingRepositoryDiff(sessionId: sessionID, path: path)
+        guard !Task.isCancelled, generation == selectionGeneration, selectedId == sessionID else { throw CancellationError() }
+        guard value.basis == "current_worktree", value.path == path else {
+            throw CodingClientError(code: "invalid_repository", message: "The backend returned a mismatched file preview.")
+        }
+        return value
+    }
+
+    func showObservedDiff(_ value: CodingRepositoryDiff, sessionID: String) {
+        guard selectedId == sessionID, value.basis == "current_worktree" else { return }
+        diffGeneration = UUID(); loadingDiff = false; repositoryError = nil
+        reviewedPath = value.path; repositoryDiff = value; diffVisible = true
+        deliveryAction = nil
+    }
+
+    func showCapturedDiff(_ diff: CodingRepositoryDiff, review source: CodingAIReviewStore? = nil) {
+        let review = source ?? aiReview
+        guard let sessionID = selectedId, review.sessionId == sessionID,
+              let captureID = review.selected?.captureId,
+              diff.basis == "review_capture", diff.captureId == captureID else { return }
+        diffGeneration = UUID(); loadingDiff = false; repositoryError = nil
+        reviewedPath = diff.path; repositoryDiff = diff; diffVisible = true
+        deliveryAction = nil
+    }
+
+    func draftCorrection(_ finding: CodingReviewFinding, review source: CodingAIReviewStore? = nil) async {
+        let review = source ?? aiReview
+        guard review.sessionId == selectedId else { return }
+        let generation = selectionGeneration
+        guard let text = await review.correction(finding), generation == selectionGeneration else { return }
+        let combined = draft.isEmpty ? text : draft + "\n\n" + text
+        guard combined.unicodeScalars.count <= 32000 else {
+            review.error = "The composer has insufficient room. Your existing draft was left unchanged."
+            return
+        }
+        draft = combined
+    }
 
     func reviewChange(_ change: CodingChangePreview) {
         presentStoredDiff(path: change.path, diff: change.diff, basis: "approval", at: Date(), kind: "proposed")
@@ -427,9 +491,11 @@ final class CodingWorkspaceStore {
         if !diffVisible { dismissRepository() }
     }
 
-    func refreshRepository() async {
+    func refreshRepository(preserveDiff: Bool = false) async {
         guard let id = selectedId, available, workspace?.isActive == true, !loadingRepository else { return }
-        dismissRepository()
+        if preserveDiff {
+            reviewGeneration = UUID(); repository = nil; repositoryError = nil
+        } else { dismissRepository() }
         let generation = reviewGeneration
         loadingRepository = true
         defer { if reviewGeneration == generation { loadingRepository = false } }
@@ -441,7 +507,12 @@ final class CodingWorkspaceStore {
             }
             repository = result
         } catch is CancellationError { return }
-        catch { if reviewGeneration == generation { repositoryError = repositoryMessage(error) } }
+        catch {
+            if reviewGeneration == generation {
+                if let status = (error as? CodingClientError)?.status, [401, 403, 404].contains(status) { dismissRepository() }
+                repositoryError = repositoryMessage(error)
+            }
+        }
     }
 
     func reviewFile(_ file: CodingChangedFile) async {
@@ -596,7 +667,7 @@ final class CodingWorkspaceStore {
     }
 
     func closeSelected() async {
-        guard let id = selectedId, activeRun == nil, !actionInFlight, pending == nil else { return }
+        guard !aiReview.busy, let id = selectedId, activeRun == nil, !actionInFlight, pending == nil else { return }
         actionInFlight = true
         defer { actionInFlight = false }
         do {
@@ -606,7 +677,7 @@ final class CodingWorkspaceStore {
     }
 
     var canManageWorkspace: Bool {
-        available && selected != nil && !actionInFlight && !loading && !loadingRuns
+        !aiReview.busy && available && selected != nil && !actionInFlight && !loading && !loadingRuns
         && activeRun == nil && pending == nil && checkout?.isBusy != true
         && ["idle", "interrupted", "closed"].contains(selected?.status ?? "")
     }
@@ -641,6 +712,7 @@ final class CodingWorkspaceStore {
     }
 
     private func clearSelectedConversation() {
+        aiReview.reset(sessionId: nil)
         observer?.cancel(); checkoutObserver?.cancel()
         selectionGeneration = UUID()
         selectedId = nil; runs = []; approvals = []; projections = [:]
@@ -651,7 +723,7 @@ final class CodingWorkspaceStore {
     }
 
     func removeConversation(id: String, delete: Bool, archived: Bool = true) async {
-        guard !actionInFlight, pending == nil else { return }
+        guard !actionInFlight, pending == nil, id != selectedId || !aiReview.busy else { return }
         actionInFlight = true
         defer { actionInFlight = false }
         do {
@@ -715,7 +787,7 @@ final class CodingWorkspaceStore {
     }
 
     func loadOperations(_ run: CodingRun) async {
-        guard !run.isActive else { return }
+        guard !run.isActive, run.sessionId == selectedId else { return }
         let generation = selectionGeneration
         var projection = CodingProjection()
         do {
@@ -729,17 +801,18 @@ final class CodingWorkspaceStore {
                 mergeApprovals(records, runId: run.id)
             }
         } catch is CancellationError { return }
-        catch { errorMessage = error.localizedDescription }
+        catch { if selectionGeneration == generation { errorMessage = error.localizedDescription } }
     }
 
     func suspend() {
+        aiReview.suspend()
         observing = false; observer?.cancel(); observer = nil
         checkoutObserver?.cancel(); checkoutObserver = nil
         dismissRepository()
     }
     func resume() async {
         observing = true
-        if let id = selectedId, available { await select(id) } else { await refresh() }
+        await refresh()
     }
 
     private func reconcilePending() {
@@ -833,5 +906,53 @@ final class CodingWorkspaceStore {
                 }
             }
         }
+    }
+}
+
+extension CodingWorkspaceStore: InspectorDirectoryServing {
+    func explorerSource() async -> InspectorDirectorySource? {
+        guard let id = selectedId else { return nil }
+        let generation = selectionGeneration
+        do {
+            let root = try await api.codingExplorerRoot(sessionId: id)
+            guard !Task.isCancelled, generation == selectionGeneration, selectedId == id else { return nil }
+            guard root.provider == "coding_checkout", root.sessionId == id, root.readOnly,
+                  root.rootId == checkout?.id, checkout?.status == "ready" else {
+                throw CodingClientError(code: "checkout_invalid", message: "Explorer checkout changed. Refresh the workspace and open Explorer again.")
+            }
+            return InspectorDirectorySource(context: .coding(id), root: root, provider: self)
+        } catch {
+            if !Task.isCancelled, generation == selectionGeneration {
+                errorMessage = (error as? CodingClientError)?.code == "http_404"
+                    ? "Explorer requires the updated backend. Restart the intended backend checkout, then refresh Code."
+                    : error.localizedDescription
+            }
+            return nil
+        }
+    }
+
+    private func requireExplorerRoot(_ root: InspectorRoot) throws {
+        guard root.provider == "coding_checkout", root.sessionId == selectedId,
+              root.rootId == checkout?.id, checkout?.status == "ready", workspace?.isActive == true else {
+            throw CodingClientError(code: "checkout_invalid", message: "This file tab belongs to another or unavailable checkout. Open Explorer again.")
+        }
+    }
+
+    func inspectorDirectory(root: InspectorRoot, path: String, offset: Int, version: String?) async throws -> InspectorDirectoryPage {
+        try requireExplorerRoot(root)
+        let generation = selectionGeneration
+        let value = try await api.codingExplorerDirectory(sessionId: root.sessionId, rootId: root.rootId, path: path, offset: offset, version: version)
+        guard !Task.isCancelled, generation == selectionGeneration else { throw CancellationError() }
+        try requireExplorerRoot(root)
+        return value
+    }
+
+    func inspectorFile(root: InspectorRoot, path: String) async throws -> InspectorFileContent {
+        try requireExplorerRoot(root)
+        let generation = selectionGeneration
+        let value = try await api.codingExplorerFile(sessionId: root.sessionId, rootId: root.rootId, path: path)
+        guard !Task.isCancelled, generation == selectionGeneration else { throw CancellationError() }
+        try requireExplorerRoot(root)
+        return value
     }
 }

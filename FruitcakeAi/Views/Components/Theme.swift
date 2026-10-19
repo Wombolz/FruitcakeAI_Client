@@ -49,11 +49,49 @@ enum Theme {
     static let onDevice  = Color(hex: 0xE2A94B)
     static let incognito = Color(hex: 0xB98AE0)   // incognito session accents
     static let ok        = Color(hex: 0x4FC98C)   // grounded/healthy — shared with Tasks' "OK" chip
+    static let codeAccent = Color(hex: 0x3F8C8F)
+    static let danger = Color(hex: 0xE07A7A)
+
+    // Diff evidence is intentionally brighter than surrounding application chrome.
+    static let diffAddition = Color(hex: 0x4FC98C)
+    static let diffRemoval = Color(hex: 0xF47878)
+    static let diffAdditionText = Color(hex: 0x9FE0BE)
+    static let diffRemovalText = Color(hex: 0xE8A3A3)
+    static let diffAdditionFill = Color(hex: 0x173B2C)
+    static let diffRemovalFill = Color(hex: 0x432329)
+
+    static let messageTimestampFormat: Date.FormatStyle =
+        .dateTime.month(.abbreviated).day().hour().minute()
 
     /// Mono label style — model names, tool names, section headers, timestamps.
     /// The mono/system font pairing is the core of the visual language.
     static func mono(_ size: CGFloat = 11, weight: Font.Weight = .medium) -> Font {
         .system(size: size, weight: weight, design: .monospaced)
+    }
+}
+
+struct MessageTimestamp: View {
+    let date: Date
+    var provisional = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            if provisional { Image(systemName: "clock").font(.system(size: 9)) }
+            Text(date.formatted(Theme.messageTimestampFormat)).font(Theme.mono(10))
+        }
+        .help(provisional ? "Response started at this time; still streaming" : date.formatted(date: .complete, time: .standard))
+    }
+}
+
+/// Safe inline Markdown shared by ordinary Chat and Code. Never renders HTML.
+struct MessageProse: View {
+    let text: String
+
+    var body: some View {
+        if let attributed = try? AttributedString(markdown: text,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
+            Text(attributed).textSelection(.enabled)
+        } else { Text(text).textSelection(.enabled) }
     }
 }
 

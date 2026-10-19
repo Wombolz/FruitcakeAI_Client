@@ -335,6 +335,7 @@ private let recentSendGuardWindowSeconds: TimeInterval = 300
 struct ChatView: View {
 
     @Environment(AuthManager.self) private var authManager
+    @Environment(ArtifactInspectorState.self) private var inspector
     @Environment(ConnectivityMonitor.self) private var connectivity
     @Environment(OnDeviceAgent.self) private var onDeviceAgent
     @Environment(\.modelContext) private var modelContext
@@ -768,13 +769,15 @@ struct ChatView: View {
             await loadNavigation()
             await loadChatCapabilities()
         }
-        .onChange(of: applicationDestinationIsActive) { _, _ in
+        .onChange(of: applicationDestinationIsActive, initial: true) { _, active in
+            inspector.setChatSession(selectedSession?.id, active: active)
             updateApplicationToolbarState()
         }
         .onChange(of: applicationToolbarState.commandSequence) { _, _ in
             handleApplicationToolbarCommand()
         }
-        .onChange(of: selectedSession?.id) { _, _ in
+        .onChange(of: selectedSession?.id) { _, id in
+            inspector.setChatSession(id, active: applicationDestinationIsActive)
             updateApplicationToolbarState()
         }
         .onChange(of: connectivity.isBackendReachable) { _, reachable in
@@ -980,6 +983,8 @@ struct ChatView: View {
         case .chatNewIncognitoConversation:
             guard authManager.currentUser?.isAdmin == true else { return }
             Task { await createSession(incognito: true) }
+        case .chatOpenExplorer:
+            inspector.openChatExplorer()
         case .chatEditProfile:
             guard selectedSession != nil else { return }
             prepareProfileEditor()

@@ -813,6 +813,88 @@ enum APIError: LocalizedError {
 // MARK: - Read-only coding API
 
 extension APIClient: CodingServing {
+    func codingExplorerRoot(sessionId: String) async throws -> InspectorRoot {
+        try await codingBrowserRequest("/coding/sessions/\(sessionId)/explorer")
+    }
+    func codingExplorerDirectory(sessionId: String, rootId: String, path: String, offset: Int, version: String?) async throws -> InspectorDirectoryPage {
+        var query = URLComponents()
+        query.queryItems = [URLQueryItem(name: "root_id", value: rootId), URLQueryItem(name: "path", value: path),
+                            URLQueryItem(name: "offset", value: String(offset))]
+        if let version { query.queryItems?.append(URLQueryItem(name: "version", value: version)) }
+        return try await codingBrowserRequest("/coding/sessions/\(sessionId)/explorer/directory?\(query.percentEncodedQuery ?? "")")
+    }
+    func codingExplorerFile(sessionId: String, rootId: String, path: String) async throws -> InspectorFileContent {
+        var query = URLComponents()
+        query.queryItems = [URLQueryItem(name: "root_id", value: rootId), URLQueryItem(name: "path", value: path)]
+        return try await codingBrowserRequest("/coding/sessions/\(sessionId)/explorer/file?\(query.percentEncodedQuery ?? "")")
+    }
+    private func codingBrowserRequest<T: Decodable>(_ path: String) async throws -> T {
+        var request = try await buildRequest(path, method: "GET", timeout: 45)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validateCoding(response, data: data)
+        guard data.count <= 2 * 1024 * 1024 else { throw CodingClientError(code: "inspection_limit", message: "Inspection response exceeds the client display limit.") }
+        return try decode(T.self, from: data)
+    }
+    func codingReviewOptions(sessionId: String, scope: String) async throws -> CodingReviewOptions {
+        let query = scope.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        return try await codingRequest("/coding/sessions/\(sessionId)/review-options?scope=\(query)", timeout: 45)
+    }
+    func startCodingReview(sessionId: String, request: CodingReviewRequest) async throws -> CodingAIReview {
+        try await codingRequest("/coding/sessions/\(sessionId)/reviews", method: "POST", body: request, timeout: 45)
+    }
+    func codingReviews(sessionId: String, offset: Int) async throws -> [CodingAIReview] {
+        try await codingRequest("/coding/sessions/\(sessionId)/reviews?limit=50&offset=\(offset)")
+    }
+    func codingReview(id: String) async throws -> CodingAIReview { try await codingRequest("/coding/reviews/\(id)", timeout: 45) }
+    func stopCodingReview(id: String) async throws {
+        struct Result: Decodable { let stopRequested: Bool }
+        let _: Result = try await codingRequest("/coding/reviews/\(id)/stop", method: "POST", timeout: 45)
+    }
+    func codingReviewApprovals(id: String) async throws -> [CodingReviewApproval] { try await codingRequest("/coding/reviews/\(id)/approvals") }
+    func resolveCodingReviewApproval(reviewId: String, approvalId: String, approved: Bool) async throws {
+        struct Body: Encodable { let approved: Bool }
+        try await codingVoid("/coding/reviews/\(reviewId)/approvals/\(approvalId)/resolve", body: Body(approved: approved))
+    }
+    func setCodingFinding(reviewId: String, findingId: String, disposition: String, reason: String?) async throws -> CodingReviewFinding {
+        struct Body: Encodable { let disposition: String; let reason: String? }
+        return try await codingRequest("/coding/reviews/\(reviewId)/findings/\(findingId)", method: "PATCH", body: Body(disposition: disposition, reason: reason))
+    }
+    func codingCapturedDiff(captureId: String, path: String) async throws -> CodingReviewDiff {
+        var query = URLComponents()
+        query.queryItems = [URLQueryItem(name: "path", value: path)]
+        return try await codingRequest("/coding/review-captures/\(captureId)/diff?\(query.percentEncodedQuery ?? "")", timeout: 45)
+    }
+    func streamCodingReview(id: String, after: Int, onEvent: @escaping @MainActor (CodingReviewEvent) async throws -> Void) async throws {
+        var request = try await buildRequest("/coding/reviews/\(id)/events?after=\(after)&follow=true", method: "GET", timeout: 60)
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.setValue(String(after), forHTTPHeaderField: "Last-Event-ID")
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
+        guard (200...299).contains(http.statusCode) else {
+            var data = Data()
+            for try await byte in bytes { data.append(byte); if data.count >= 8192 { break } }
+            throw CodingClientError.response(status: http.statusCode, data: data)
+        }
+        guard http.value(forHTTPHeaderField: "Content-Type")?.hasPrefix("text/event-stream") == true else {
+            throw CodingClientError(code: "invalid_stream", message: "The backend did not return a review event stream.")
+        }
+        var parser = CodingSSEParser()
+        for try await byte in bytes {
+            try Task.checkCancellation()
+            guard let frame = try parser.feed(byte: byte) else { continue }
+            if frame.event == "stream.error" {
+                let fields = try JSONDecoder().decode([String: String].self, from: frame.data)
+                throw CodingClientError(code: fields["code"] ?? "stream_unavailable", message: fields["message"] ?? "Review stream interrupted.")
+            }
+            let event = try decode(CodingReviewEvent.self, from: frame.data)
+            guard frame.id == String(event.sequence), frame.event == event.kind, event.reviewId == id else {
+                throw CodingClientError(code: "invalid_event", message: "The review stream returned a mismatched event.")
+            }
+            try await onEvent(event)
+        }
+    }
     func codingAvailability() async throws -> CodingAvailability { try await codingRequest("/coding/status") }
     func codingWorkspaces() async throws -> [CodingWorkspace] { try await codingRequest("/coding/workspaces") }
     func codingModels() async throws -> [CodingModelOption] { try await codingRequest("/coding/models") }

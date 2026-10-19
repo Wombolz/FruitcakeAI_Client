@@ -94,6 +94,35 @@ private final class FakeCodingAPI: CodingServing {
     var delayDelivery = false
     var delayedDelivery: CheckedContinuation<CodingDeliveryResult, Never>?
     var joinedCheckouts: [String] = []
+    var explorerRootFixture: InspectorRoot?
+    var explorerReads: [(String, String, String)] = []
+    var delayExplorerRead = false
+    var explorerWaiter: CheckedContinuation<InspectorFileContent, Error>?
+    func codingExplorerRoot(sessionId: String) async throws -> InspectorRoot { try #require(explorerRootFixture) }
+    func codingExplorerDirectory(sessionId: String, rootId: String, path: String, offset: Int, version: String?) async throws -> InspectorDirectoryPage {
+        .init(root: try #require(explorerRootFixture), basis: "current_worktree", observedAt: Date(), path: path,
+              version: String(repeating: "a", count: 64), entries: [], nextOffset: nil)
+    }
+    func explorerFileFixture(path: String) throws -> InspectorFileContent {
+        .init(root: try #require(explorerRootFixture), basis: "current_worktree", observedAt: Date(), path: path, status: .text,
+              byteCount: 9, version: String(repeating: "a", count: 64), text: "complete\n", lineCount: 2)
+    }
+    func codingExplorerFile(sessionId: String, rootId: String, path: String) async throws -> InspectorFileContent {
+        explorerReads.append((sessionId, rootId, path))
+        if delayExplorerRead { return try await withCheckedThrowingContinuation { explorerWaiter = $0 } }
+        return try explorerFileFixture(path: path)
+    }
+    var reviewFixture: CodingAIReview?
+
+    func codingReviews(sessionId: String, offset: Int) async throws -> [CodingAIReview] { reviewFixture.map { [$0] } ?? [] }
+    func codingReview(id: String) async throws -> CodingAIReview { try #require(reviewFixture) }
+    func codingReviewApprovals(id: String) async throws -> [CodingReviewApproval] {
+        guard reviewFixture?.status == "waiting_approval" else { return [] }
+        return [CodingReviewApproval(id: "read-approval", reviewId: id, status: "pending", path: "src/a&b.py", side: "before", createdAt: Date(), resolvedAt: nil)]
+    }
+    func streamCodingReview(id: String, after: Int, onEvent: @escaping @MainActor (CodingReviewEvent) async throws -> Void) async throws {
+        try await Task.sleep(for: .seconds(3600))
+    }
 
     func codingSessionPage(offset: Int, archived: Bool) async throws -> [CodingSession] {
         sessionList.filter { ($0.archivedAt != nil) == archived }
@@ -134,7 +163,7 @@ private final class FakeCodingAPI: CodingServing {
     }
 
     func codingAvailability() async throws -> CodingAvailability {
-        CodingAvailability(enabled: availability, mode: mode, eventSchemaVersion: 1, managedCheckouts: checkoutSupport, approvedEdits: true, containerCommands: true)
+        CodingAvailability(enabled: availability, mode: mode, eventSchemaVersion: 1, managedCheckouts: checkoutSupport, approvedEdits: true, containerCommands: true, aiReviews: reviewFixture != nil)
     }
     func setCodingEditMode(sessionId: String, enabled: Bool) async throws -> CodingSession {
         let index = try #require(sessionList.firstIndex { $0.id == sessionId })
@@ -254,6 +283,22 @@ private func diffFixture(_ path: String) -> CodingRepositoryDiff {
 
 @Suite @MainActor
 struct CodingWorkspaceTests {
+    @Test func historicalTimelineLoadsOnlyForItsSelectedConversation() async throws {
+        let api = FakeCodingAPI()
+        api.remote["run-a"] = try runFixture("completed")
+        let store = CodingWorkspaceStore(api: api)
+        await store.refresh()
+        let run = try #require(store.runs.first)
+        await store.loadOperations(run)
+        #expect(store.projections[run.id]?.timeline.first?.text == "Hello world")
+        let requests = api.streamCursors.count
+        await store.select("b")
+        await store.loadOperations(run)
+        #expect(api.streamCursors.count == requests && store.projections[run.id] == nil)
+        #expect(api.submissions.isEmpty)
+        store.suspend()
+    }
+
     @Test func timelineInterleavesMessagesOperationsAndApprovalsWithoutSnapshotDuplicates() throws {
         var projection = CodingProjection()
         let records: [(String, [String: JSONValue])] = [
@@ -643,22 +688,120 @@ struct CodingWorkspaceTests {
         #expect(inspector.isVisible)
         #expect(inspector.hasSelection)
         #expect(inspector.codingReview === store)
-        #expect(inspector.selected == document)
+        #expect(inspector.selected == nil)
+        let codingTabID = inspector.selectedTab?.id
         let otherStore = CodingWorkspaceStore(api: FakeCodingAPI())
         inspector.closeCoding(for: otherStore)
         #expect(inspector.isVisible)
         inspector.open(document)
         #expect(inspector.codingReview == nil)
-        #expect(store.repository == nil)
+        #expect(store.repository != nil)
         #expect(inspector.selected == document)
         await store.refreshRepository()
         inspector.openCoding(store)
         inspector.closeCoding(for: store)
         #expect(!inspector.isVisible)
-        #expect(inspector.codingReview == nil)
-        #expect(store.repository == nil)
+        #expect(inspector.codingReview === store)
+        #expect(store.repository != nil)
+        #expect(inspector.selectedTab?.id == codingTabID)
+        inspector.show()
+        #expect(inspector.isVisible)
         #expect(api.stops == 0)
         #expect(api.submissions.isEmpty)
+    }
+
+    @Test func reviewTabsOwnSelectionAndNeverFollowAnotherReview() async throws {
+        let api = FakeCodingAPI()
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        decoder.dateDecodingStrategy = .iso8601
+        api.reviewFixture = try decoder.decode(CodingAIReview.self, from: Data(reviewJSON(id: "first", session: "a").utf8))
+        let workspace = CodingWorkspaceStore(api: api)
+        await workspace.refresh()
+        await workspace.aiReview.select("first")
+        workspace.aiReview.inspectorMode = "review"
+        let inspector = ArtifactInspectorState()
+        inspector.setDestination("coding")
+        inspector.openCoding(workspace)
+        let first = try #require(inspector.selectedTab)
+        let review = try #require(first.review)
+        await review.resume(reviewID: "first")
+        review.tab = "files"
+        api.reviewFixture = try decoder.decode(CodingAIReview.self, from: Data(reviewJSON(id: "second", session: "a").utf8))
+        await workspace.aiReview.select("second")
+        inspector.openCoding(workspace)
+        #expect(inspector.tabs.count == 2)
+        #expect(first.review !== workspace.aiReview)
+        #expect(first.review?.selected?.id == "first")
+        #expect(first.review?.tab == "files")
+        let second = try #require(inspector.selectedTab)
+        workspace.aiReview.inspectorMode = "changes"
+        inspector.openCoding(workspace)
+        #expect(inspector.tabs.count == 3)
+        #expect(inspector.selectedTab?.resource.title == "Live Changes")
+        #expect(first.review?.selected?.id == "first")
+        inspector.select(second.id)
+        #expect(inspector.selectedTab?.id == second.id)
+        inspector.closeTab(second.id)
+        #expect(api.stops == 0 && api.submissions.isEmpty)
+        #expect(workspace.aiReview.selected?.id == "second")
+        inspector.reopenClosed()
+        #expect(inspector.tabs.count == 3)
+        #expect(inspector.selectedTab?.id != second.id)
+        #expect(inspector.selectedTab?.review !== second.review)
+        inspector.configure(account: nil)
+        workspace.suspend()
+    }
+
+    @Test func changedFileTabsHaveIndependentObservationAndSafeSessionIdentity() async throws {
+        let api = FakeCodingAPI(), workspace: CodingWorkspaceStore
+        workspace = CodingWorkspaceStore(api: api)
+        await workspace.refresh()
+        await workspace.refreshRepository()
+        let file = try #require(workspace.repository?.files.first)
+        let inspector = ArtifactInspectorState()
+        inspector.openCoding(workspace)
+        inspector.openChangedFile(workspace, sessionID: "a", path: file.path)
+        #expect(inspector.tabs.count == 2)
+        #expect(inspector.selectedTab?.resource.identity.provider == .changedFile)
+        let diff = try await workspace.inspectChangedFile(sessionID: "a", path: file.path)
+        workspace.showObservedDiff(diff, sessionID: "a")
+        #expect(workspace.diffVisible)
+        await workspace.refreshRepository(preserveDiff: true)
+        #expect(workspace.diffVisible && workspace.repositoryDiff?.path == file.path)
+        await workspace.select("b")
+        workspace.showObservedDiff(diff, sessionID: "a")
+        #expect(!workspace.diffVisible)
+        inspector.setCodingSession("b", active: true)
+        inspector.openChangedFile(workspace, sessionID: "a", path: file.path)
+        #expect(inspector.allTabs.count == 2)
+        #expect(api.stops == 0 && api.submissions.isEmpty)
+        workspace.suspend()
+    }
+
+    @Test func explorerAdapterUsesOnlyTheSessionBackendAndRejectsLateOrDifferentCheckoutResults() async throws {
+        let api = FakeCodingAPI()
+        api.checkouts["a"] = CodingCheckout(id: "root", sessionId: "a", canonicalPath: "/remote-backend-only/managed/a",
+                                           baselineCommit: "base", status: "ready", errorCode: nil)
+        api.explorerRootFixture = InspectorRoot(provider: "coding_checkout", rootId: "root", sessionId: "a", label: "Repository",
+                                                readOnly: true, byteLimit: 262144, lineLimit: 12000, entryLimit: 100)
+        let workspace = CodingWorkspaceStore(api: api)
+        await workspace.refresh()
+        let source = try #require(await workspace.explorerSource())
+        let file = try await source.file(path: "unchanged.py")
+        #expect(file.text == "complete\n")
+        #expect(api.explorerReads.first?.0 == "a" && api.explorerReads.first?.1 == "root")
+        api.delayExplorerRead = true
+        let read = Task { try await source.file(path: "unchanged.py") }
+        while api.explorerWaiter == nil { await Task.yield() }
+        await workspace.select("b")
+        api.explorerWaiter?.resume(returning: try api.explorerFileFixture(path: "unchanged.py"))
+        await #expect(throws: CancellationError.self) { try await read.value }
+        await #expect(throws: CodingClientError.self) { try await source.file(path: "unchanged.py") }
+        #expect(api.explorerReads.count == 2)
+        #expect(await workspace.explorerSource() == nil)
+        #expect(api.stops == 0 && api.submissions.isEmpty)
+        workspace.suspend()
     }
 
     @Test func repositoryReviewIsExplicitAndIndependentOfSubmission() async throws {
@@ -1344,5 +1487,53 @@ struct CodingSSETransportTests {
         #expect(bitmap.pixelsWide >= Int(width))
     }
     store.suspend()
+}
+#endif
+
+@Test @MainActor func correctionDraftPreservesComposerAndBuilderModelWithoutSending() async throws {
+    let api = FakeCodingAPI()
+    api.reviewFixture = try fixture(reviewJSON(session: "a"))
+    let store = CodingWorkspaceStore(api: api)
+    await store.refresh()
+    store.draft = "Existing instructions"
+    let finding = try #require(store.aiReview.selected?.findings?.first)
+    await store.draftCorrection(finding)
+    #expect(store.draft.hasPrefix("Existing instructions\n\n"))
+    #expect(store.draft.contains("Finding: finding"))
+    #expect(store.selected?.modelProfileId == 1)
+    #expect(api.submissions.isEmpty && store.pending == nil)
+    store.suspend()
+}
+
+@Test @MainActor func activeReviewBlocksBuilderWithoutChangingItsOptIns() async throws {
+    let api = FakeCodingAPI()
+    api.reviewFixture = try fixture(reviewJSON(session: "a", status: "waiting_approval"))
+    let store = CodingWorkspaceStore(api: api)
+    await store.refresh()
+    store.draft = "A builder instruction"
+    #expect(store.aiReview.busy && !store.canSubmit && !store.canManageWorkspace)
+    #expect(store.activeRun == nil && api.stops == 0)
+    #expect(store.selected?.modelProfileId == 1)
+    store.suspend()
+}
+
+#if os(macOS)
+@Test @MainActor func reviewInspectorRendersNarrowAndWideWithHistoricalStates() async throws {
+    for status in ["completed", "waiting_approval", "interrupted", "failed"] {
+        let api = FakeCodingAPI()
+        api.reviewFixture = try fixture(reviewJSON(session: "a", status: status, content: status == "interrupted" ? "expired" : "available", applicability: "stale"))
+        let store = CodingWorkspaceStore(api: api)
+        await store.refresh()
+        store.aiReview.tab = "findings"
+        for width in [300.0, 440.0] {
+            let host = NSHostingView(rootView: CodingAIReviewInspector(workspace: store, close: {}).frame(width: width, height: 700))
+            host.frame = NSRect(x: 0, y: 0, width: width, height: 700)
+            host.layoutSubtreeIfNeeded()
+            let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            #expect(bitmap.pixelsWide >= Int(width))
+        }
+        store.suspend()
+    }
 }
 #endif

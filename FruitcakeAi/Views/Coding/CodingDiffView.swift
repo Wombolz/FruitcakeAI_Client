@@ -2,6 +2,36 @@
 import SwiftUI
 import AppKit
 
+enum CodingDiffTone: Equatable {
+    case addition, removal, context, header
+
+    static func unified(_ line: String) -> Self {
+        if line.hasPrefix("+++ ") || line.hasPrefix("--- ") || line.hasPrefix("@@")
+            || line.hasPrefix("diff --git ") || line.hasPrefix("index ") { return .header }
+        if line.hasPrefix("+") { return .addition }
+        if line.hasPrefix("-") { return .removal }
+        return .context
+    }
+
+    var foreground: Color {
+        switch self {
+        case .addition: Theme.diffAdditionText
+        case .removal: Theme.diffRemovalText
+        case .header: Theme.textDim
+        case .context: Theme.textMid
+        }
+    }
+
+    var background: Color {
+        switch self {
+        case .addition: Theme.diffAdditionFill
+        case .removal: Theme.diffRemovalFill
+        case .header: Theme.field
+        case .context: Theme.bg
+        }
+    }
+}
+
 struct CodingDiffDrawer: View {
     let store: CodingWorkspaceStore
     let popOut: () -> Void
@@ -38,14 +68,36 @@ struct CodingDiffPreview: View {
     @State private var sectionIndex = 0
     @State private var unified = false
 
+    init(diff: CodingRepositoryDiff, initialUnified: Bool = false) {
+        self.diff = diff
+        _unified = State(initialValue: initialUnified)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
+            if let capture = diff.captureId {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("REVIEWED CAPTURE \(capture.prefix(12)) · Base \((diff.base ?? "unknown").prefix(12)) · HEAD \((diff.head ?? "unknown").prefix(12))")
+                        .font(Theme.mono(9)).foregroundStyle(Theme.textDim)
+                    if let side = diff.reviewAnchorSide, let start = diff.reviewAnchorStart, let end = diff.reviewAnchorEnd {
+                        Text("Finding anchor: \(side) L\(start)-\(end) · retained snapshot, not live code").font(Theme.mono(10))
+                    }
+                    if let text = diff.reviewQualification, !text.isEmpty { Text(text).font(.caption).foregroundStyle(Theme.onDevice) }
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
+            }
             HStack(spacing: 10) {
                 Picker("Change stage", selection: $sectionIndex) {
                     ForEach(Array(diff.sections.enumerated()), id: \.offset) { index, section in
                         Text(section.kind.capitalized).tag(index)
                     }
                 }.labelsHidden().fixedSize()
+                Button {
+                    guard !diff.sections.isEmpty else { return }
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(diff.sections[min(sectionIndex, diff.sections.count - 1)].text, forType: .string)
+                } label: { Image(systemName: "doc.on.doc") }
+                    .buttonStyle(.plain).disabled(diff.sections.isEmpty)
+                    .help("Copy the complete returned diff text").accessibilityLabel("Copy diff")
                 Spacer(minLength: 8)
                 Picker("Diff layout", selection: $unified) {
                     Text("Split").tag(false)
@@ -55,12 +107,13 @@ struct CodingDiffPreview: View {
             if !diff.sections.isEmpty {
                 let section = diff.sections[min(sectionIndex, diff.sections.count - 1)]
                 let split = CodingSplitDiff.parse(section.text)
+                if let side = diff.reviewAnchorSide, let line = diff.reviewAnchorStart,
+                   !split.rows.contains(where: { (side == "before" ? $0.beforeNumber : $0.afterNumber) == line }) {
+                    Text("Finding anchor is outside the displayed hunks or split-view limit. Its captured evidence remains in Findings; no live file is substituted.")
+                        .font(.system(size: 10)).foregroundStyle(Theme.onDevice).padding(6)
+                }
                 if unified || split.rows.isEmpty {
-                    ScrollView([.horizontal, .vertical]) {
-                        Text(section.text.isEmpty ? "No textual diff available." : section.text)
-                            .font(Theme.mono(11)).textSelection(.enabled)
-                            .fixedSize(horizontal: true, vertical: true).padding(12)
-                    }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    unifiedBody(section.text)
                 } else {
                     splitBody(split, kind: section.kind)
                 }
@@ -70,10 +123,11 @@ struct CodingDiffPreview: View {
                         .font(.system(size: 10)).foregroundStyle(Theme.onDevice).padding(6)
                 }
             } else { Spacer() }
-            Text("\(diff.basis == "approval" ? "Complete approval snapshot · see saved record for outcome" : diff.basis == "saved_change" ? "Saved host change record · not current worktree" : "Changed hunks only") · \(diff.observedAt.formatted(date: .omitted, time: .standard))")
+            Text("\(diff.basis == "review_capture" ? "Frozen reviewed diff · no live-file substitution" : diff.basis == "approval" ? "Complete approval snapshot · see saved record for outcome" : diff.basis == "saved_change" ? "Saved host change record · not current worktree" : "Changed hunks only") · \(diff.observedAt.formatted(date: .omitted, time: .standard))")
                 .font(Theme.mono(9)).foregroundStyle(Theme.textFaint).padding(6)
         }
         .onChange(of: diff.path) { _, _ in sectionIndex = 0 }
+        .background(Theme.bg).foregroundStyle(Theme.text).tint(Theme.codeAccent)
     }
 
     private func splitBody(_ split: CodingSplitDiff, kind: String) -> some View {
@@ -83,16 +137,41 @@ struct CodingDiffPreview: View {
                 HStack(spacing: 1) {
                     Text(diff.basis != "current_worktree" ? "BEFORE · REVIEWED SNAPSHOT" : kind == "staged" ? "BEFORE · HEAD" : kind == "untracked" ? "BEFORE · EMPTY" : "BEFORE · INDEX")
                         .frame(width: columnWidth, alignment: .leading)
-                    Text(diff.basis == "approval" ? "AFTER · PROPOSED" : diff.basis == "saved_change" ? "AFTER · APPROVED CONTENT (SEE STATUS)" : kind == "staged" ? "AFTER · INDEX" : "AFTER · WORKING TREE")
+                    Text(diff.basis == "review_capture" ? "AFTER · REVIEWED SNAPSHOT" : diff.basis == "approval" ? "AFTER · PROPOSED" : diff.basis == "saved_change" ? "AFTER · APPROVED CONTENT (SEE STATUS)" : kind == "staged" ? "AFTER · INDEX" : "AFTER · WORKING TREE")
                         .frame(width: columnWidth, alignment: .leading)
                 }.font(Theme.mono(9)).foregroundStyle(Theme.textDim).padding(.vertical, 6)
                 // One vertical scroller keeps both sides aligned. Each side has
                 // independent horizontal scrolling; no scroll-offset feedback loop.
-                ScrollView(.vertical) {
-                    HStack(alignment: .top, spacing: 1) {
-                        codeColumn(split.rows, before: true, width: columnWidth)
-                        codeColumn(split.rows, before: false, width: columnWidth)
-                    }.background(Theme.strokeUp)
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical) {
+                        HStack(alignment: .top, spacing: 1) {
+                            codeColumn(split.rows, before: true, width: columnWidth)
+                            codeColumn(split.rows, before: false, width: columnWidth)
+                        }.background(Theme.strokeUp)
+                    }.task(id: anchorIdentity) {
+                        if let side = diff.reviewAnchorSide, let line = diff.reviewAnchorStart {
+                            proxy.scrollTo("\(side)-\(line)", anchor: .center)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var anchorIdentity: String { "\(diff.captureId ?? ""):\(diff.path):\(diff.reviewAnchorSide ?? ""):\(diff.reviewAnchorStart ?? 0)" }
+
+    private func unifiedBody(_ text: String) -> some View {
+        GeometryReader { geometry in
+            ScrollView([.horizontal, .vertical]) {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array((text.isEmpty ? "No textual diff available." : text).components(separatedBy: "\n").enumerated()), id: \.offset) { _, line in
+                        let tone = CodingDiffTone.unified(line)
+                        Text(line.isEmpty ? " " : line).font(Theme.mono(11)).foregroundStyle(tone.foreground)
+                            .textSelection(.enabled).fixedSize(horizontal: true, vertical: false)
+                            .padding(.horizontal, 12).frame(height: 20)
+                            .frame(minWidth: max(1, geometry.size.width), alignment: .leading)
+                            .background(tone.background)
+                    }
                 }
             }
         }
@@ -101,19 +180,28 @@ struct CodingDiffPreview: View {
     private func codeColumn(_ rows: [CodingSplitDiff.Row], before: Bool, width: CGFloat) -> some View {
         ScrollView(.horizontal) {
             VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
                     let number = before ? row.beforeNumber : row.afterNumber
                     let text = before ? row.before : row.after
+                    let changed = row.kind == .change && text != nil
+                    let tone: CodingDiffTone = changed ? (before ? .removal : .addition) : row.kind == .hunk ? .header : .context
+                    let anchored = diff.reviewAnchorSide == (before ? "before" : "after")
+                        && number.map { $0 >= (diff.reviewAnchorStart ?? Int.max) && $0 <= (diff.reviewAnchorEnd ?? -1) } == true
                     HStack(spacing: 8) {
-                        Text(number.map(String.init) ?? "").foregroundStyle(Theme.textFaint)
+                        Text(number.map(String.init) ?? "").foregroundStyle(changed ? tone.foreground : Theme.textFaint)
                             .frame(width: 38, alignment: .trailing)
-                        Text(text ?? " ").foregroundStyle(row.kind == .hunk ? Theme.textDim : Theme.text)
+                        Text(changed ? (before ? "-" : "+") : " ").foregroundStyle(tone.foreground).frame(width: 8)
+                        Text(text ?? " ").foregroundStyle(tone.foreground)
                             .textSelection(.enabled).fixedSize(horizontal: true, vertical: false)
                     }
                     .font(Theme.mono(11)).frame(height: 18)
                     .frame(minWidth: width, alignment: .leading)
-                    .background(row.kind == .change && text != nil
-                                ? (before ? Color.red : Theme.ok).opacity(0.12) : Theme.bg)
+                    .background(tone.background)
+                    .overlay(alignment: .leading) {
+                        if anchored { Rectangle().fill(Theme.onDevice).frame(width: 3) }
+                    }
+                    .overlay(Rectangle().stroke(anchored ? Theme.onDevice.opacity(0.65) : .clear, lineWidth: 1))
+                    .id(number.map { "\(before ? "before" : "after")-\($0)" } ?? "\(before ? "before" : "after")-row-\(index)")
                 }
             }.frame(minWidth: width, alignment: .leading)
         }.frame(width: width, height: CGFloat(rows.count) * 18).background(Theme.bg)

@@ -39,6 +39,9 @@ struct CodingWorkspaceView: View {
     @Environment(ArtifactInspectorState.self) private var inspector
     @State private var store: CodingWorkspaceStore?
     @State private var showingNew = false
+    @State private var openingExplorer = false
+    @State private var showingReview = false
+    @State private var reviewPage = CodingReviewPage.setup
     @State private var repositorySetup: CodingRepositorySetupMode?
     @State private var lastDragX: CGFloat?
     @State private var diffDragStartHeight: Double?
@@ -49,6 +52,7 @@ struct CodingWorkspaceView: View {
     @State private var confirmingEdits = false
     @State private var confirmingCommands = false
     @State private var confirmingDelete = false
+    @State private var checkoutDetailsExpanded = false
     @State private var deletingSessionId: String?
 
     init(store: CodingWorkspaceStore? = nil) {
@@ -62,14 +66,19 @@ struct CodingWorkspaceView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.bg)
+        .tint(Theme.codeAccent)
         .task {
             if store == nil { store = CodingWorkspaceStore(api: APIClient(authManager: auth)) }
             if isActive { await store?.resume() }
         }
+        .onChange(of: store?.selectedId) { _, id in
+            inspector.setCodingSession(id, active: isActive)
+        }
         .onChange(of: isActive) { _, active in
+            inspector.setCodingSession(store?.selectedId, active: active)
             if active { Task { await store?.resume() } }
             else {
-                if let store { inspector.closeCoding(for: store); store.suspend() }
+                store?.suspend()
             }
         }
         .onDisappear {
@@ -87,6 +96,14 @@ struct CodingWorkspaceView: View {
         }
         .sheet(isPresented: $showingNew) {
             if let store { CodingSessionSetup(store: store) }
+        }
+        .sheet(isPresented: $showingReview) {
+            if let store {
+                CodingReviewSetup(workspace: store, initialPage: reviewPage) {
+                    store.aiReview.inspectorMode = "review"
+                    inspector.openCoding(store)
+                }
+            }
         }
         .sheet(item: $repositorySetup) { mode in
             if let store, let user = auth.currentUser { CodingGrantSheet(store: store, userId: user.id, mode: mode) }
@@ -116,7 +133,7 @@ struct CodingWorkspaceView: View {
         .confirmationDialog("Enable approved edits in this checkout?", isPresented: $confirmingEdits) {
             Button("Enable Approved Edits") { if let store { Task { await store.setEditMode(true) } } }
         } message: {
-            Text("Fruitcake will ask you to review each complete file change before applying it to this isolated checkout. Files are limited to 4 KiB. Shell commands, commits, and source-repository writes remain unavailable.")
+            Text("Fruitcake will ask you to review each complete, bounded file change before applying it to this isolated checkout. This enables file proposals only. Commands require their separate opt-in and approval; commits and source delivery remain separate explicit actions.")
         }
     }
 
@@ -246,11 +263,10 @@ struct CodingWorkspaceView: View {
                         Button { Task { await store.select(session.id) } } label: {
                             VStack(alignment: .leading, spacing: 5) {
                                 Text(session.title).font(.system(size: 13, weight: .medium)).lineLimit(2)
-                                Text(session.status.replacingOccurrences(of: "_", with: " "))
-                                    .font(Theme.mono(10)).foregroundStyle(Theme.textDim)
+                                CodingStatusBadge(status: session.status, compact: true)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading).padding(12)
-                            .background(store.selectedId == session.id ? PersonaAccent.color(for: "family_assistant").opacity(0.2) : .clear,
+                            .background(store.selectedId == session.id ? Theme.codeAccent.opacity(0.2) : .clear,
                                         in: RoundedRectangle(cornerRadius: 8))
                             .contentShape(Rectangle())
                         }.buttonStyle(.plain)
@@ -277,18 +293,68 @@ struct CodingWorkspaceView: View {
     }
 
     private func header(_ store: CodingWorkspaceStore) -> some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
+            Image(systemName: "folder.badge.gearshape").font(.system(size: 16))
+                .foregroundStyle(Theme.codeAccent).frame(width: 34, height: 34)
+                .background(Theme.codeAccent.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
             VStack(alignment: .leading, spacing: 4) {
-                Text(store.selected?.title ?? "Coding workspace").font(.system(size: 14, weight: .semibold))
+                Text(store.selected?.title ?? "Coding workspace").font(.system(size: 15, weight: .semibold)).lineLimit(1)
                 Text(store.checkout?.canonicalPath ?? store.workspace?.canonicalPath ?? store.connection)
                     .font(Theme.mono(10)).foregroundStyle(Theme.textDim).lineLimit(1).truncationMode(.middle)
             }
             Spacer(minLength: 8)
-            ConsoleChip(text: store.available ? store.modeLabel.uppercased() : "UNAVAILABLE", accentDot: store.available ? Theme.ok : Theme.onDevice)
+            ViewThatFits(in: .horizontal) {
+                headerActions(store).labelStyle(.titleAndIcon)
+                headerActions(store).labelStyle(.iconOnly)
+            }
+        }
+        .foregroundStyle(Theme.text).padding(.horizontal, 16).padding(.vertical, 12)
+        .overlay(alignment: .bottom) { Rectangle().fill(Theme.strokeUp).frame(height: 1) }
+    }
+
+    private func headerActions(_ store: CodingWorkspaceStore) -> some View {
+        HStack(spacing: 6) {
             if store.selected != nil {
-                Button("Changes", systemImage: "doc.text.magnifyingglass") { inspector.openCoding(store) }
+                Button("Explorer", systemImage: "folder") {
+                    guard !openingExplorer else { return }
+                    openingExplorer = true
+                    Task {
+                        defer { openingExplorer = false }
+                        let sessionID = store.selectedId
+                        if let source = await store.explorerSource(), store.selectedId == sessionID, isActive {
+                            inspector.openExplorer(source)
+                        }
+                    }
+                }
+                .disabled(openingExplorer || !store.available || store.checkout?.status != "ready")
+                .help("Browse the ready managed checkout without granting edits or model access")
+                Button("Changes", systemImage: "doc.text.magnifyingglass") {
+                    store.aiReview.inspectorMode = "changes"
+                    inspector.openCoding(store)
+                }
                     .disabled(!store.available || store.workspace?.isActive != true || store.executionPath == nil || (store.checkout != nil && store.checkout?.status != "ready"))
-                    .help("Review current repository changes independently of the agent")
+                    .help("Inspect live Git changes without an AI model call")
+                HStack(spacing: 4) {
+                    Button("Review", systemImage: "checkmark.bubble") {
+                        Task {
+                            let sessionId = store.selectedId
+                            let reopened = await store.aiReview.reopen()
+                            guard store.selectedId == sessionId, isActive else { return }
+                            if reopened { inspector.openCoding(store) }
+                            else {
+                                reviewPage = store.aiReview.error == nil ? .setup : .history
+                                showingReview = true
+                            }
+                        }
+                    }
+                    .help("Reopen saved review findings without another model call; set up a review if none exist")
+                    Menu {
+                        Button("New Review\u{2026}") { reviewPage = .setup; showingReview = true }
+                        Button("Review History\u{2026}") { reviewPage = .history; showingReview = true }
+                    } label: { Image(systemName: "chevron.down") }
+                    .menuIndicator(.hidden).fixedSize().help("New review or saved review history")
+                }
+                .disabled(!store.available || !store.aiReview.enabled || store.aiReview.loading)
             }
             if let path = store.executionPath {
                 Menu {
@@ -317,38 +383,51 @@ struct CodingWorkspaceView: View {
                     }
                     Divider()
                     Button("Close Coding Session") { Task { await store.closeSelected() } }
-                        .disabled(store.activeRun != nil || store.selected?.isClosed == true || store.actionInFlight || store.pending != nil || store.checkout?.isBusy == true)
+                        .disabled(store.aiReview.busy || store.activeRun != nil || store.selected?.isClosed == true || store.actionInFlight || store.pending != nil || store.checkout?.isBusy == true)
                 } label: { Image(systemName: "ellipsis") }
             }
         }
-        .foregroundStyle(Theme.text).padding(16)
-        .overlay(alignment: .bottom) { Rectangle().fill(Theme.strokeUp).frame(height: 1) }
+        .buttonStyle(CodingActionStyle()).controlSize(.small)
     }
 
     private func checkoutStatus(_ store: CodingWorkspaceStore) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            VStack(alignment: .leading, spacing: 5) {
-                if let checkout = store.checkout {
-                    Text("ISOLATED CHECKOUT · \(checkout.status.uppercased())").font(Theme.mono(10))
-                    if let baseline = checkout.baselineCommit {
-                        Text("Baseline \(baseline.prefix(12)) · \(store.modeLabel)").font(Theme.mono(10)).foregroundStyle(Theme.textDim)
-                    }
-                    if let branch = checkout.branchName {
-                        Text("\(branch) · HEAD \((checkout.headCommit ?? "").prefix(12))").font(Theme.mono(10)).foregroundStyle(Theme.textDim)
-                    }
-                    if let error = checkout.errorCode {
-                        Text(error == "checkout_dirty" ? "Checkout retained: it contains local changes, untracked files, or ignored files."
-                             : "Checkout needs attention: \(error). The source repository will not be used as a fallback.")
-                            .font(.system(size: 11)).foregroundStyle(Theme.onDevice).textSelection(.enabled)
-                    }
-                } else {
-                    Text(store.checkoutLoaded ? "SOURCE REPOSITORY · READ ONLY" : "CHECKING CHECKOUT STATUS")
-                        .font(Theme.mono(10)).foregroundStyle(Theme.textDim)
-                    Text(store.checkoutCreationBlockReason ?? "To edit, create an isolated checkout, then enable approved edits. Your conversation is preserved; Git needs an existing commit.")
-                        .font(.system(size: 11)).foregroundStyle(Theme.textDim)
-                }
+        VStack(alignment: .leading, spacing: 8) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) { checkoutIdentity(store); Spacer(minLength: 8); checkoutActions(store) }
+                VStack(alignment: .leading, spacing: 8) { checkoutIdentity(store); checkoutActions(store) }
             }
-            Spacer(minLength: 8)
+            if let error = store.checkout?.errorCode {
+                Label(error == "checkout_dirty" ? "Checkout retained: it contains local changes, untracked files, or ignored files."
+                      : "Checkout needs attention: \(error). The source repository will not be used as a fallback.", systemImage: "exclamationmark.triangle")
+                    .font(.system(size: 11)).foregroundStyle(Theme.onDevice).textSelection(.enabled)
+            }
+            if store.checkout == nil {
+                Text(store.checkoutCreationBlockReason ?? "To edit, create an isolated checkout, then enable approved edits. Your conversation is preserved; Git needs an existing commit.")
+                    .font(.system(size: 11)).foregroundStyle(Theme.textDim)
+            }
+            DisclosureGroup("Checkout details", isExpanded: $checkoutDetailsExpanded) {
+                VStack(alignment: .leading, spacing: 4) {
+                    if let baseline = store.checkout?.baselineCommit { Text("Baseline \(baseline.prefix(12))") }
+                    if let branch = store.checkout?.branchName { Text("\(branch) · HEAD \((store.checkout?.headCommit ?? "").prefix(12))") }
+                    Text(store.checkout?.canonicalPath ?? store.workspace?.canonicalPath ?? "Checking execution location")
+                }.font(Theme.mono(10)).foregroundStyle(Theme.textDim).textSelection(.enabled).padding(.top, 4)
+            }.font(.system(size: 11)).foregroundStyle(Theme.textDim)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 10).background(Theme.composer)
+        .overlay(alignment: .bottom) { Rectangle().fill(Theme.strokeUp).frame(height: 1) }
+    }
+
+    private func checkoutIdentity(_ store: CodingWorkspaceStore) -> some View {
+        HStack(spacing: 8) {
+            Text(store.checkout != nil ? "Isolated checkout" : "Source repository").font(.system(size: 12, weight: .medium))
+            if let checkout = store.checkout { CodingStatusBadge(status: checkout.status, compact: true) }
+            ConsoleChip(text: store.commandsEnabled ? "OFFLINE · CHECKOUT WRITABLE" : store.editingEnabled ? "APPROVED EDITS" : "READ ONLY",
+                        accentDot: store.commandsEnabled ? Theme.onDevice : Theme.codeAccent)
+        }.fixedSize(horizontal: true, vertical: false)
+    }
+
+    private func checkoutActions(_ store: CodingWorkspaceStore) -> some View {
+        HStack(spacing: 8) {
             if store.supportsApprovedEdits, store.checkout?.status == "ready", store.selected?.isClosed == false {
                 Button(store.editingEnabled ? "Disable Edits" : "Enable Approved Edits") {
                     if store.editingEnabled { Task { await store.setEditMode(false) } }
@@ -371,8 +450,7 @@ struct CodingWorkspaceView: View {
                 }.disabled(!store.canSetCommandMode)
             }
         }
-        .padding(.horizontal, 16).padding(.vertical, 10)
-        .overlay(alignment: .bottom) { Rectangle().fill(Theme.strokeUp).frame(height: 1) }
+        .buttonStyle(CodingActionStyle()).fixedSize(horizontal: true, vertical: false)
     }
 
     private func transcript(_ store: CodingWorkspaceStore) -> some View {
@@ -381,7 +459,8 @@ struct CodingWorkspaceView: View {
                 if store.hasMoreRuns { Button("Load Earlier Runs") { Task { await store.moreRuns() } }.disabled(store.loadingRuns) }
                 if store.loadingRuns { ProgressView("Loading run history") }
                 if store.runs.isEmpty && !store.loadingRuns {
-                    Text(store.editingEnabled ? "Ask for a small file change. Every change needs your approval; shell commands remain disabled."
+                    Text(store.commandsEnabled ? "Ask for a change or a test. File proposals and offline container commands each require your approval."
+                         : store.editingEnabled ? "Ask for a small file change. Every change needs your approval; commands need a separate opt-in."
                          : "Ask the agent to inspect this repository. It can read and search authorized files. Enable approved edits in an isolated checkout to propose changes.")
                         .foregroundStyle(Theme.textDim).padding(.vertical, 40)
                 }
@@ -430,7 +509,7 @@ struct CodingWorkspaceView: View {
                         .disabled(store.actionInFlight || active.status == "stopping")
                 } else {
                     Button("Send", systemImage: "arrow.up") { Task { await store.submit() } }
-                        .disabled(!store.canSubmit)
+                        .buttonStyle(CodingActionStyle(emphasis: .primary)).disabled(!store.canSubmit)
                 }
             }
         }
@@ -462,6 +541,21 @@ struct CodingRepositoryReview: View {
     let close: () -> Void
 
     var body: some View {
+        if store.aiReview.inspectorMode == "review", store.aiReview.enabled {
+            CodingAIReviewInspector(workspace: store, close: close)
+        } else {
+            CodingLiveRepositoryReview(store: store, close: close)
+        }
+    }
+}
+
+struct CodingLiveRepositoryReview: View {
+    let store: CodingWorkspaceStore
+    let close: () -> Void
+    var openFile: ((CodingChangedFile) -> Void)? = nil
+    var isActive = true
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
                 Image(systemName: "doc.text.magnifyingglass")
@@ -472,7 +566,7 @@ struct CodingRepositoryReview: View {
                     .buttonStyle(.plain).disabled(store.loadingRepository)
                     .help("Refresh repository changes").accessibilityLabel("Refresh repository changes")
                 Button(action: close) { Image(systemName: "xmark") }
-                    .buttonStyle(.plain).help("Close file inspector").accessibilityLabel("Close file inspector")
+                    .buttonStyle(.plain).help("Close Live Changes tab").accessibilityLabel("Close Live Changes tab")
             }.padding(14)
             Rectangle().fill(Theme.strokeUp).frame(height: 1)
             if let error = store.repositoryError {
@@ -482,11 +576,15 @@ struct CodingRepositoryReview: View {
             if store.loadingRepository {
                 ProgressView("Reading repository state").frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let repository = store.repository {
-                GeometryReader { geometry in
-                    VStack(spacing: 0) {
-                        fileList(repository).frame(height: max(100, geometry.size.height * 0.5))
-                        Rectangle().fill(Theme.strokeUp).frame(height: 1)
-                        fileDetails(repository)
+                if openFile != nil {
+                    fileList(repository).frame(maxHeight: .infinity)
+                } else {
+                    GeometryReader { geometry in
+                        VStack(spacing: 0) {
+                            fileList(repository).frame(height: max(100, geometry.size.height * 0.5))
+                            Rectangle().fill(Theme.strokeUp).frame(height: 1)
+                            fileDetails(repository)
+                        }
                     }
                 }
                 VStack(alignment: .leading, spacing: 5) {
@@ -507,8 +605,8 @@ struct CodingRepositoryReview: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.bg).foregroundStyle(Theme.text)
-        .task(id: store.selectedId) {
-            if store.repository == nil { await store.refreshRepository() }
+        .task(id: isActive) {
+            if isActive { await store.refreshRepository(preserveDiff: true) }
         }
     }
 
@@ -520,7 +618,7 @@ struct CodingRepositoryReview: View {
                         .foregroundStyle(Theme.textDim).padding(12)
                 }
                 ForEach(repository.files) { file in
-                    Button { Task { await store.reviewFile(file) } } label: {
+                    Button { if let openFile { openFile(file) } else { Task { await store.reviewFile(file) } } } label: {
                         VStack(alignment: .leading, spacing: 5) {
                             Text(file.path).font(.system(size: 12, weight: .medium)).lineLimit(2)
                             Text(file.statusLabel).font(Theme.mono(10)).foregroundStyle(Theme.textDim)
@@ -574,40 +672,52 @@ private struct CodingRunCard: View {
     let reviewChange: (CodingChangePreview) -> Void
     let reviewSavedChange: (CodingSavedChange) -> Void
     let resolve: (CodingApproval, Bool) -> Void
+    @State private var detailsExpanded = false
+    @State private var requestedHistory = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            CodingUserMessageBubble(text: run.prompt)
+            CodingUserMessageBubble(text: run.prompt, occurredAt: run.createdAt)
             agentContent
                 .frame(maxWidth: Theme.chatAssistantMaxWidth, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .onAppear {
+            // Visible historical messages need their persisted timeline/times,
+            // not a single run summary masquerading as the full conversation.
+            if !run.isActive && projection == nil && !requestedHistory {
+                requestedHistory = true
+                loadOperations()
+            }
         }
     }
 
     private var agentContent: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Text(run.status.replacingOccurrences(of: "_", with: " ").uppercased()).font(Theme.mono(10))
-                if let model = run.modelId { Text(model).font(Theme.mono(9)).lineLimit(1).truncationMode(.middle) }
+            HStack(spacing: 8) {
+                CodingStatusBadge(status: run.status)
+                if let model = run.modelId { Text(model).font(Theme.mono(10)).lineLimit(1).truncationMode(.middle) }
                 if run.isActive { ProgressView().controlSize(.small) }
                 let pendingCount = approvals.filter(\.isPending).count
                 if run.isActive, pendingCount > 0 { Text("\(pendingCount) pending approval\(pendingCount == 1 ? "" : "s")").font(Theme.mono(10)) }
                 if let code = run.errorCode { Text(code).font(Theme.mono(10)).foregroundStyle(Theme.onDevice) }
             }.foregroundStyle(Theme.textDim)
             if projection?.reconstructed == true {
-                Text("Context reconstructed from bounded prior excerpts, not restored process memory.")
-                    .font(.system(size: 11)).foregroundStyle(Theme.onDevice)
+                Label("Context reconstructed from bounded prior excerpts, not restored process memory.", systemImage: "clock.arrow.circlepath")
+                    .font(.system(size: 11)).foregroundStyle(Theme.onDevice).padding(.vertical, 4)
             }
             if projection?.hasAssistantText != true, !run.responseText.isEmpty {
-                Text(run.responseText).font(.system(size: 14)).foregroundStyle(Theme.text).textSelection(.enabled)
+                CodingAssistantMessage(text: run.responseText)
+                Text("Message timing unavailable in this summary. Run started \(run.createdAt.formatted(Theme.messageTimestampFormat)).")
+                    .font(Theme.mono(10)).foregroundStyle(Theme.textFaint)
             }
             if let projection {
                 ForEach(projection.timeline) { entry in
                     switch entry.kind {
                     case .assistant:
-                        if !entry.text.isEmpty { Text(entry.text).font(.system(size: 14)).foregroundStyle(Theme.text).textSelection(.enabled) }
+                        if !entry.text.isEmpty { CodingAssistantMessage(text: entry.text, occurredAt: entry.occurredAt, provisional: entry.timestampIsProvisional) }
                     case .control:
-                        Text(entry.text).font(.system(size: 12)).foregroundStyle(Theme.textDim).textSelection(.enabled)
+                        CodingUserMessageBubble(text: entry.text, occurredAt: entry.occurredAt)
                     case .operation:
                         if let operation = projection.operations.first(where: { $0.id == entry.text }) { operationRow(operation) }
                     case .approval:
@@ -619,31 +729,76 @@ private struct CodingRunCard: View {
             let placed = Set((projection?.timeline ?? []).filter { $0.kind == .approval }.map(\.text))
             ForEach(approvals.filter { !placed.contains($0.id) }) { approvalRow($0) }
             if !run.isActive {
-                Button(projection == nil ? "Load Operation History" : "Reload Operation History", action: loadOperations)
-                    .font(.system(size: 11))
+                runDetails
             }
-            if supportsChanges {
-                Button("Load Saved Changes", action: loadChanges).font(.system(size: 11))
-                if let savedChanges {
-                    if savedChanges.isEmpty { Text("No host-applied change records for this run.").font(Theme.mono(10)) }
+        }
+    }
+
+    private var runDetails: some View {
+        DisclosureGroup(isExpanded: $detailsExpanded) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Button("Refresh History", systemImage: "arrow.clockwise", action: loadOperations)
+                    if supportsChanges { Button("Refresh Changes", action: loadChanges) }
+                }.buttonStyle(CodingActionStyle())
+                if supportsChanges, let savedChanges {
+                    if savedChanges.isEmpty {
+                        Text("No host-applied change records for this run. Container-command changes are separate.")
+                            .font(.system(size: 11)).foregroundStyle(Theme.textDim)
+                    }
                     ForEach(savedChanges) { change in
                         Button { reviewSavedChange(change) } label: {
-                            HStack { Text(change.path); Spacer(); Text(change.status.uppercased()) }
-                        }.font(Theme.mono(11))
+                            HStack {
+                                Image(systemName: "doc.text").foregroundStyle(Theme.codeAccent)
+                                Text(change.path).lineLimit(2)
+                                Spacer(minLength: 4)
+                                CodingStatusBadge(status: change.status, compact: true)
+                            }.font(Theme.mono(11)).padding(.vertical, 4)
+                        }.buttonStyle(.plain)
                         if let error = change.errorCode { Text(error).font(Theme.mono(10)).foregroundStyle(Theme.onDevice) }
                     }
                 }
+            }.padding(.top, 10)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "list.bullet.rectangle").foregroundStyle(Theme.textDim)
+                Text("Run details").font(.system(size: 11, weight: .medium))
+                Spacer(minLength: 4)
+                if let projection { Text("\(projection.operations.count) operations").font(Theme.mono(10)).foregroundStyle(Theme.textDim) }
+                if let savedChanges { Text("\(savedChanges.count) host changes").font(Theme.mono(10)).foregroundStyle(Theme.textDim) }
             }
+        }
+        .padding(10).modifier(CodingCard())
+        .onChange(of: detailsExpanded) { _, expanded in
+            guard expanded else { return }
+            if projection == nil { loadOperations() }
+            if supportsChanges && savedChanges == nil { loadChanges() }
         }
     }
 
     private func operationRow(_ operation: CodingOperation) -> some View {
         DisclosureGroup {
-            if !operation.arguments.isEmpty { Text(operation.arguments).textSelection(.enabled) }
-            if !operation.output.isEmpty { Text(operation.output).textSelection(.enabled) }
+            if !operation.arguments.isEmpty { operationText("ARGUMENTS", text: operation.arguments) }
+            if !operation.output.isEmpty { operationText("OUTPUT", text: operation.output) }
         } label: {
-            HStack { Text(operation.tool); Spacer(); Text(operation.status).foregroundStyle(Theme.textDim) }
-        }.font(Theme.mono(11)).padding(10).background(Theme.card, in: RoundedRectangle(cornerRadius: 8))
+            HStack(spacing: 8) {
+                Image(systemName: "terminal").foregroundStyle(Theme.codeAccent)
+                Text(operation.tool)
+                Spacer()
+                CodingStatusBadge(status: operation.status, compact: true)
+            }
+        }.font(Theme.mono(11)).padding(10).modifier(CodingCard())
+    }
+
+    private func operationText(_ title: String, text: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(Theme.mono(9)).foregroundStyle(Theme.textDim)
+            ScrollView([.horizontal, .vertical]) {
+                Text(text).font(Theme.mono(11)).foregroundStyle(Theme.textMid)
+                    .textSelection(.enabled).fixedSize(horizontal: true, vertical: true).padding(8)
+            }.frame(height: min(240, max(40, CGFloat(text.components(separatedBy: "\n").count) * 16 + 16)))
+                .background(Theme.composer, in: RoundedRectangle(cornerRadius: 6))
+        }.padding(.top, 8)
     }
 
     private func approvalRow(_ approval: CodingApproval) -> some View {
@@ -651,7 +806,11 @@ private struct CodingRunCard: View {
             let pending = approval.status == "pending" && !approval.isExpired(at: context.date) && run.isActive
             VStack(alignment: .leading, spacing: 8) {
                 if pending {
-                    Text(approval.title).font(.system(size: 13, weight: .semibold))
+                    HStack {
+                        Label(approval.title, systemImage: "hand.raised").font(.system(size: 13, weight: .semibold))
+                        Spacer()
+                        CodingStatusBadge(status: "waiting_approval", compact: true)
+                    }
                     if approval.expiresAt == nil {
                         Text("Waiting for you. No approval timeout.")
                             .font(.system(size: 11)).foregroundStyle(Theme.textDim)
@@ -659,7 +818,9 @@ private struct CodingRunCard: View {
                     approvalDetails(approval)
                     HStack {
                         Button("Deny") { resolve(approval, false) }
+                            .buttonStyle(CodingActionStyle())
                         Button(approval.command != nil ? "Approve Command" : approval.change == nil ? "Allow Read" : "Approve Change") { resolve(approval, true) }
+                            .buttonStyle(CodingActionStyle(emphasis: .primary))
                             .disabled(approval.change.map { !reviewedChanges.contains($0.id) } ?? false)
                     }.disabled(actionInFlight)
                 } else {
@@ -667,13 +828,12 @@ private struct CodingRunCard: View {
                         HStack {
                             Text(approval.title).font(.system(size: 12, weight: .medium))
                             Spacer()
-                            Text(approval.status == "pending" ? (approval.isExpired(at: context.date) ? "Expired" : "Run ended") : approval.status.capitalized)
-                                .font(Theme.mono(10)).foregroundStyle(Theme.textDim)
+                            CodingStatusBadge(status: approval.status == "pending" ? (approval.isExpired(at: context.date) ? "expired" : "run ended") : approval.status, compact: true)
                         }
                     }
                 }
             }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
-                .background((pending ? Theme.onDevice.opacity(0.1) : Theme.card), in: RoundedRectangle(cornerRadius: 8))
+                .modifier(CodingCard(accent: pending ? Theme.onDevice : nil))
         }
     }
 
