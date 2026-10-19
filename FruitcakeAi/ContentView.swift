@@ -33,6 +33,7 @@ enum ApplicationToolbarCommand: Equatable {
     case toggleContextSidebar
     case chatNewConversation
     case chatNewIncognitoConversation
+    case chatOpenExplorer
     case chatEditProfile
     case codingNewSession
     case codingRefresh
@@ -493,15 +494,13 @@ struct MainTabView: View {
             #if os(macOS)
             if artifactInspector.isVisible {
                 artifactInspectorResizeHandle
-                Group {
-                    if let store = artifactInspector.codingReview {
-                        CodingRepositoryReview(store: store, close: { artifactInspector.close() })
-                    } else {
-                        ArtifactInspectorView()
-                    }
-                }
-                    .frame(width: workspaceLayoutState.inspectorWidth)
             }
+            WorkspaceInspectorView()
+                .frame(width: workspaceLayoutState.inspectorWidth)
+                .frame(width: artifactInspector.isVisible ? workspaceLayoutState.inspectorWidth : 0)
+                .clipped()
+                .allowsHitTesting(artifactInspector.isVisible)
+                .accessibilityHidden(!artifactInspector.isVisible)
             #endif
         }
         .environment(\.applicationToolbarState, applicationToolbarState)
@@ -533,6 +532,11 @@ struct MainTabView: View {
         #endif
         .onChange(of: selectedDestination) { _, destination in
             visitedDestinations.insert(destination)
+            artifactInspector.setDestination(destination.rawValue)
+        }
+        .onDisappear { artifactInspector.configure(account: nil) }
+        .onChange(of: inspectorAccount, initial: true) { _, account in
+            artifactInspector.configure(account: account)
         }
         .onChange(of: artifactInspector.isVisible, initial: true) { _, isVisible in
             workspaceLayoutState.inspectorVisible = isVisible
@@ -542,9 +546,14 @@ struct MainTabView: View {
             get: { artifactInspector.isVisible },
             set: { if !$0 { artifactInspector.close() } }
         )) {
-            ArtifactInspectorView()
+            WorkspaceInspectorView()
         }
         #endif
+    }
+
+    private var inspectorAccount: InspectorAccountScope? {
+        guard let server = authManager.serverURL, let user = authManager.currentUser else { return nil }
+        return InspectorAccountScope(server: server.absoluteString, userID: user.id)
     }
 
     @ViewBuilder
@@ -620,6 +629,10 @@ struct MainTabView: View {
             }
         case .chat:
             ToolbarItem(placement: .automatic) {
+                Button { applicationToolbarState.send(.chatOpenExplorer) } label: { Label("Workspace Explorer", systemImage: "folder") }
+                    .help("Inspect an explicitly attached workspace; Chat projects do not grant directory access")
+            }
+            ToolbarItem(placement: .automatic) {
                 Button {
                     applicationToolbarState.send(.chatEditProfile)
                 } label: {
@@ -675,13 +688,13 @@ struct MainTabView: View {
             }
         }
 
-        if artifactInspector.hasSelection {
+        if artifactInspector.hasSelection || artifactInspector.canReopen || artifactInspector.notice != nil {
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     if artifactInspector.isVisible {
                         artifactInspector.close()
-                    } else if let selected = artifactInspector.selected {
-                        artifactInspector.open(selected)
+                    } else {
+                        artifactInspector.show()
                     }
                 } label: {
                     Label(

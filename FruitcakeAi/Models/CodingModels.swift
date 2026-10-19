@@ -7,6 +7,7 @@ struct CodingAvailability: Decodable {
     var managedCheckouts: Bool? = nil
     var approvedEdits: Bool? = nil
     var containerCommands: Bool? = nil
+    var aiReviews: Bool? = nil
 }
 
 struct CodingCheckout: Decodable, Identifiable {
@@ -165,6 +166,7 @@ struct CodingEvent: Decodable {
     let sequence: Int
     let kind: String
     let payload: [String: JSONValue]
+    var occurredAt: Date? = nil
     func text(_ key: String) -> String { payload[key]?.stringValue ?? "" }
 }
 
@@ -207,6 +209,13 @@ struct CodingRepositoryDiff: Decodable {
     let observedAt: Date
     let path: String
     let sections: [Section]
+    var captureId: String? = nil
+    var base: String? = nil
+    var head: String? = nil
+    var reviewAnchorSide: String? = nil
+    var reviewAnchorStart: Int? = nil
+    var reviewAnchorEnd: Int? = nil
+    var reviewQualification: String? = nil
 }
 
 struct CodingTimelineEntry: Identifiable {
@@ -214,6 +223,8 @@ struct CodingTimelineEntry: Identifiable {
     let id: Int
     let kind: Kind
     var text: String
+    var occurredAt: Date? = nil
+    var timestampIsProvisional = false
 }
 
 struct CodingProjection {
@@ -238,15 +249,20 @@ struct CodingProjection {
         case "assistant.text_delta":
             text += event.text("delta")
             if streamingTextIndex == nil {
-                timeline.append(.init(id: event.sequence, kind: .assistant, text: ""))
+                timeline.append(.init(id: event.sequence, kind: .assistant, text: "",
+                    occurredAt: event.occurredAt, timestampIsProvisional: true))
                 streamingTextIndex = timeline.count - 1
             }
             timeline[streamingTextIndex!].text += event.text("delta")
         case "assistant.message":
             text = event.text("text")
-            if let index = streamingTextIndex { timeline[index].text = text }
+            if let index = streamingTextIndex {
+                timeline[index].text = text
+                timeline[index].occurredAt = event.occurredAt ?? timeline[index].occurredAt
+                timeline[index].timestampIsProvisional = event.occurredAt == nil
+            }
             else {
-                timeline.append(.init(id: event.sequence, kind: .assistant, text: text))
+                timeline.append(.init(id: event.sequence, kind: .assistant, text: text, occurredAt: event.occurredAt))
                 streamingTextIndex = timeline.count - 1
             }
             // Empty snapshot/reset + deltas is how oversized messages are
@@ -256,7 +272,7 @@ struct CodingProjection {
         case "user.steered", "user.follow_up":
             let value = (event.kind == "user.steered" ? "Steering: " : "Follow-up: ") + event.text("message")
             controls.append(value)
-            timeline.append(.init(id: event.sequence, kind: .control, text: value))
+            timeline.append(.init(id: event.sequence, kind: .control, text: value, occurredAt: event.occurredAt))
         case "approval.requested":
             let id = event.text("approval_id")
             if !id.isEmpty, !timeline.contains(where: { $0.kind == .approval && $0.text == id }) {

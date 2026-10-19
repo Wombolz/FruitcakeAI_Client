@@ -15,97 +15,49 @@ struct ArtifactReference: Identifiable, Hashable {
     let origin: Origin
 }
 
-@Observable @MainActor
-final class ArtifactInspectorState {
-    var selected: ArtifactReference?
-    private(set) var codingReview: CodingWorkspaceStore?
-    var isVisible = false
-    var hasSelection: Bool { selected != nil || codingReview != nil }
-
-    func open(_ artifact: ArtifactReference) {
-        codingReview?.releaseRepositoryInspector()
-        codingReview = nil
-        selected = artifact
-        isVisible = true
-    }
-
-    func openCoding(_ store: CodingWorkspaceStore) {
-        if codingReview !== store { codingReview?.releaseRepositoryInspector() }
-        codingReview = store
-        isVisible = true
-    }
-
-    func closeCoding(for store: CodingWorkspaceStore) {
-        guard codingReview === store else { return }
-        close()
-    }
-
-    func close() {
-        codingReview?.releaseRepositoryInspector()
-        codingReview = nil
-        isVisible = false
-    }
-}
-
 struct ArtifactInspectorView: View {
     @Environment(AuthManager.self) private var authManager
+    let artifact: ArtifactReference
+    let isActive: Bool
     @Environment(ArtifactInspectorState.self) private var inspector
 
     @State private var data: Data?
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var authorized = false
+    @State private var refreshRevision = 0
+    private struct LoadKey: Hashable { let active: Bool; let revision: Int }
 
     var body: some View {
         VStack(spacing: 0) {
-            header
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(originLabel(artifact.origin)).font(Theme.mono(9)).foregroundStyle(Theme.textDim)
+                    Text(artifact.path).font(Theme.mono(10)).lineLimit(2).textSelection(.enabled)
+                }
+                Spacer(minLength: 4)
+                Button { refreshRevision += 1 } label: { Image(systemName: "arrow.clockwise") }
+                    .buttonStyle(.plain).disabled(isLoading)
+                    .accessibilityLabel("Refresh artifact")
+            }.padding(12)
             Divider()
-            content
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            ZStack {
+                content.opacity(authorized ? 1 : 0).allowsHitTesting(authorized).accessibilityHidden(!authorized)
+                if isLoading { ProgressView("Loading artifact…") }
+                else if let errorMessage {
+                    ContentUnavailableView("Artifact Unavailable", systemImage: "exclamationmark.triangle",
+                                           description: Text(errorMessage))
+                }
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(Theme.bg)
-        .task(id: inspector.selected?.id) {
-            await loadSelectedArtifact()
-        }
-    }
-
-    private var header: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "doc.text.magnifyingglass")
-                .foregroundStyle(PersonaAccent.color(for: "family_assistant"))
-            VStack(alignment: .leading, spacing: 2) {
-                Text(inspector.selected?.title ?? "Artifact")
-                    .font(.headline)
-                    .lineLimit(1)
-                if let selected = inspector.selected {
-                    Text(originLabel(selected.origin))
-                        .font(Theme.mono(9.5))
-                        .foregroundStyle(Theme.textFaint)
-                }
-            }
-            Spacer()
-            Button {
-                inspector.close()
-            } label: {
-                Image(systemName: "xmark")
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Close artifact inspector")
-        }
-        .padding(14)
+        .task(id: LoadKey(active: isActive, revision: refreshRevision)) { if isActive, !Task.isCancelled { await loadSelectedArtifact() } }
     }
 
     @ViewBuilder
     private var content: some View {
-        if isLoading {
-            ProgressView("Loading artifact…")
-        } else if let errorMessage {
-            ContentUnavailableView(
-                "Artifact Unavailable",
-                systemImage: "exclamationmark.triangle",
-                description: Text(errorMessage)
-            )
-        } else if let selected = inspector.selected, let data {
-            artifactContent(selected, data: data)
+        if let data {
+            artifactContent(artifact, data: data)
         } else {
             ContentUnavailableView("No Artifact Selected", systemImage: "doc")
         }
@@ -148,11 +100,12 @@ struct ArtifactInspectorView: View {
 
     @MainActor
     private func loadSelectedArtifact() async {
-        data = nil
+        authorized = false
         errorMessage = nil
-        guard let selected = inspector.selected else { return }
+        let selected = artifact
+        let account = inspector.account
         guard let baseURL = authManager.serverURL, let token = try? authManager.token() else {
-            errorMessage = "Not connected to the server."
+            data = nil; errorMessage = "Not connected to the server."
             return
         }
         var components = URLComponents(
@@ -161,16 +114,18 @@ struct ArtifactInspectorView: View {
         )
         components?.queryItems = [URLQueryItem(name: "path", value: selected.path)]
         guard let url = components?.url else {
-            errorMessage = "The artifact path is invalid."
+            data = nil; errorMessage = "The artifact path is invalid."
             return
         }
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 60
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         isLoading = true
-        defer { isLoading = false }
+        defer { isLoading = false; if !authorized, !Task.isCancelled { data = nil } }
         do {
             let (loaded, response) = try await URLSession.shared.data(for: request)
+            guard !Task.isCancelled, inspector.account == account, isActive else { return }
             guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
                 errorMessage = "The server could not load this artifact."
                 return
@@ -179,10 +134,12 @@ struct ArtifactInspectorView: View {
                 errorMessage = "This artifact is too large for the inline preview."
                 return
             }
-            data = loaded
+            if data != loaded { data = loaded }
+            authorized = true
         } catch is CancellationError {
             return
         } catch {
+            guard !Task.isCancelled, inspector.account == account else { return }
             errorMessage = "The artifact could not be loaded."
         }
     }
@@ -210,6 +167,8 @@ struct ArtifactInspectorView: View {
 #if os(macOS)
 private struct PDFArtifactView: NSViewRepresentable {
     let data: Data
+    final class Coordinator { var data: Data? }
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> PDFView {
         let view = PDFView()
@@ -218,12 +177,17 @@ private struct PDFArtifactView: NSViewRepresentable {
     }
 
     func updateNSView(_ view: PDFView, context: Context) {
-        view.document = PDFDocument(data: data)
+        if context.coordinator.data != data {
+            context.coordinator.data = data
+            view.document = PDFDocument(data: data)
+        }
     }
 }
 #else
 private struct PDFArtifactView: UIViewRepresentable {
     let data: Data
+    final class Coordinator { var data: Data? }
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeUIView(context: Context) -> PDFView {
         let view = PDFView()
@@ -232,7 +196,10 @@ private struct PDFArtifactView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: PDFView, context: Context) {
-        view.document = PDFDocument(data: data)
+        if context.coordinator.data != data {
+            context.coordinator.data = data
+            view.document = PDFDocument(data: data)
+        }
     }
 }
 #endif

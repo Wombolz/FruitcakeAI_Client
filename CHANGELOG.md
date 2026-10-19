@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.2.4
+
+- add independent AI review setup, recoverable history, read approvals, findings and draft-only corrections
+- align coding messages with Chat timestamps and Markdown, with brighter split/unified diffs
+- share context-isolated inspector tabs across Chat, Code and Tasks with close/reopen and retained view state
+- add lazy managed-checkout Explorer and persistent read-only source tabs with line numbers, Find and Copy
+- preserve existing titlebar, sidebar and resizable inspector/diff geometry
+
 ## v0.2.3
 
 - Added transient, resizable MCP App dashboards with detached macOS windows and compact durable launchers in chat history.
