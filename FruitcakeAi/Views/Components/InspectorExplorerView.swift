@@ -13,7 +13,7 @@ struct InspectorExplorerView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Label(store.source.root?.label ?? "Workspace Explorer", systemImage: "folder").font(.system(size: 13, weight: .semibold))
                     if let root = store.source.root {
-                        Text("CHECKOUT \(root.rootId.prefix(8)) · READ ONLY").font(Theme.mono(9)).foregroundStyle(Theme.textDim)
+                        Text("\(store.source.isUserWorkspace ? "MY WORKSPACE" : "CHECKOUT") \(root.rootId.prefix(8)) · READ ONLY").font(Theme.mono(9)).foregroundStyle(Theme.textDim)
                     }
                 }
                 Spacer(minLength: 4)
@@ -40,7 +40,7 @@ struct InspectorExplorerView: View {
                 .allowsHitTesting(!store.validating)
                 .accessibilityHidden(store.validating)
                 .overlay { if store.validating { ProgressView("Rechecking directory access") } }
-                Text("Sensitive, ignored and linked paths are excluded. Files open in persistent read-only tabs; no edit or model permission is added.")
+                Text("Hidden, sensitive and linked paths are excluded; Code also applies Git ignores. Opening a file does not attach it to Chat or grant edits.")
                     .font(.system(size: 10)).foregroundStyle(Theme.textDim).padding(12)
             }
         }
@@ -83,6 +83,7 @@ struct InspectorExplorerView: View {
 }
 
 struct InspectorSourceFileView: View {
+    @Environment(ArtifactInspectorState.self) private var inspector
     let store: InspectorFileStore
     let active: Bool
     @State private var refreshRevision = 0
@@ -99,6 +100,14 @@ struct InspectorSourceFileView: View {
                         .buttonStyle(.plain).disabled(store.loading).accessibilityLabel("Refresh file")
                 }
                 Text(store.path).font(Theme.mono(11)).textSelection(.enabled)
+                if store.source.isUserWorkspace, let content = store.content, !store.loading, store.error == nil {
+                    WorkspaceFileActions(source: store.source, path: store.path, sizeBytes: content.byteCount)
+                    if ["pdf", "png", "jpg", "jpeg", "gif", "webp"].contains((store.path as NSString).pathExtension.lowercased()), content.byteCount <= 20_000_000 {
+                        Button("Open Preview", systemImage: "doc.viewfinder") { inspector.openWorkspacePreview(source: store.source, path: store.path) }
+                            .buttonStyle(.plain).font(.system(size: 11))
+                    }
+                }
+
                 if let root = store.source.root {
                     Text("\(root.provider) · \(root.rootId.prefix(8)) · live observation")
                         .font(Theme.mono(9)).foregroundStyle(Theme.textDim)
@@ -124,12 +133,12 @@ struct InspectorSourceFileView: View {
             ZStack {
                 if let content = store.content, let text = content.text {
                     #if os(macOS)
-                    InspectorSourceTextView(text: text, version: content.version ?? "", findRequest: findRequest)
+                    InspectorSourceTextView(text: text, version: content.version ?? "", language: .resolve(path: store.path), findRequest: findRequest)
                         .opacity(store.loading || store.error != nil ? 0 : 1)
                         .allowsHitTesting(!store.loading && store.error == nil)
                         .accessibilityHidden(store.loading || store.error != nil)
                     #else
-                    ScrollView([.horizontal, .vertical]) { Text(text).font(Theme.mono(12)).textSelection(.enabled).padding() }
+                    InspectorPortableSourceText(text: text, path: store.path)
                     #endif
                 }
                 if store.loading { ProgressView("Rechecking file access") }
@@ -137,7 +146,7 @@ struct InspectorSourceFileView: View {
                     ContentUnavailableView("File Unavailable", systemImage: "exclamationmark.triangle", description: Text(error))
                 } else if let content = store.content, content.status != .text {
                     ContentUnavailableView(content.status == .binary ? "Binary File" : "File Too Large", systemImage: "doc",
-                                           description: Text("Only complete UTF-8 text up to 256 KiB and 12,000 lines is displayed. No truncated source is substituted."))
+                                           description: Text(store.source.isUserWorkspace ? "Use Download to save this file, or Open Preview for supported images and PDFs. Complete text previews are limited to 256 KiB and 12,000 lines." : "Only complete UTF-8 text up to 256 KiB and 12,000 lines is displayed. No truncated source is substituted."))
                 }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -157,14 +166,31 @@ struct InspectorSourceFileView: View {
     }
 }
 
+private struct InspectorPortableSourceText: View {
+    let text: String
+    let path: String
+    @AppStorage(CodeTheme.preferenceKey) private var themeID = CodeTheme.Preset.fruitcake.rawValue
+    var body: some View {
+        ScrollView([.horizontal, .vertical]) {
+            CodeSourceText(text: text, language: .resolve(path: path), size: 12, theme: .resolve(themeID)).padding()
+        }.background(Color(hex: CodeTheme.resolve(themeID).background))
+    }
+}
+
 #if os(macOS)
-private struct InspectorSourceTextView: NSViewRepresentable {
+struct InspectorSourceTextView: NSViewRepresentable {
     let text: String
     let version: String
+    let language: CodeLanguage
     let findRequest: Int
+    @AppStorage(CodeTheme.preferenceKey) private var themeID = CodeTheme.Preset.fruitcake.rawValue
 
     final class Coordinator {
         var version: String?
+        var text: String?
+        var language: CodeLanguage?
+        var theme: CodeTheme?
+        var tokens: [CodeToken] = []
         var findRequest = 0
     }
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -192,12 +218,27 @@ private struct InspectorSourceTextView: NSViewRepresentable {
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let view = scroll.documentView as? NSTextView else { return }
-        if context.coordinator.version != version {
-            context.coordinator.version = version
+        let coordinator = context.coordinator
+        let theme = CodeTheme.resolve(themeID)
+        let documentChanged = coordinator.version != version || coordinator.text != text
+        let languageChanged = coordinator.language != language
+        if documentChanged {
+            coordinator.version = version
+            coordinator.text = text
             view.string = text
-            view.sizeToFit()
             (scroll.verticalRulerView as? InspectorLineRuler)?.setText(text)
         }
+        if documentChanged || languageChanged {
+            coordinator.language = language
+            coordinator.tokens = CodeSyntax.tokens(text, language: language)
+        }
+        if documentChanged || languageChanged || coordinator.theme != theme {
+            coordinator.theme = theme
+            CodeTextStorageStyle.apply(view, tokens: coordinator.tokens, theme: theme)
+            scroll.backgroundColor = NSColor(Color(hex: theme.background))
+            (scroll.verticalRulerView as? InspectorLineRuler)?.theme = theme
+        }
+        if documentChanged { view.sizeToFit() }
         if findRequest != context.coordinator.findRequest {
             context.coordinator.findRequest = findRequest
             scroll.window?.makeFirstResponder(view)
@@ -210,6 +251,7 @@ private struct InspectorSourceTextView: NSViewRepresentable {
 
 private final class InspectorLineRuler: NSRulerView {
     private var starts = [0]
+    var theme = CodeTheme.palette(.fruitcake) { didSet { needsDisplay = true } }
     override var isFlipped: Bool { true }
 
     init(scrollView: NSScrollView, textView: NSTextView) {
@@ -225,14 +267,14 @@ private final class InspectorLineRuler: NSRulerView {
     }
 
     override func drawHashMarksAndLabels(in rect: NSRect) {
-        NSColor(Theme.field).setFill(); bounds.fill()
+        NSColor(Color(hex: theme.gutter)).setFill(); bounds.fill()
         guard let view = clientView as? NSTextView, let manager = view.layoutManager, let container = view.textContainer else { return }
         var visible = view.visibleRect
         visible.origin.x -= view.textContainerOrigin.x; visible.origin.y -= view.textContainerOrigin.y
         let glyphs = manager.glyphRange(forBoundingRect: visible, in: container)
         let paragraph = NSMutableParagraphStyle(); paragraph.alignment = .right
         let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: 10, weight: .regular),
-            .foregroundColor: NSColor(Theme.textDim), .paragraphStyle: paragraph]
+            .foregroundColor: NSColor(Color(hex: theme.secondary)), .paragraphStyle: paragraph]
         manager.enumerateLineFragments(forGlyphRange: glyphs) { line, _, _, glyphRange, _ in
             let character = manager.characterIndexForGlyph(at: glyphRange.location)
             var lower = 0, upper = self.starts.count

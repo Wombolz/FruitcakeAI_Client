@@ -36,14 +36,14 @@ enum InspectorResource {
         case .explorer(let source):
             return .init(provider: .explorer, context: source.context, resource: "explorer", version: nil, rootID: source.root?.rootId)
         case .sourceFile(let source, let path):
-            return .init(provider: .sourceFile, context: source.context, resource: path, version: "current_worktree", rootID: source.root?.rootId)
+            return .init(provider: .sourceFile, context: source.context, resource: path, version: source.basis, rootID: source.root?.rootId)
         case .artifact(let artifact):
             let context: InspectorContext
             switch artifact.origin {
             case .chat(let id): context = .chat(id)
             case .task(let id, let run): context = .task(id, run)
             }
-            return .init(provider: .artifact, context: context, resource: artifact.path, version: nil)
+            return .init(provider: .artifact, context: context, resource: artifact.path, version: nil, rootID: artifact.workspaceRootID)
         case .changes(_, let id):
             return .init(provider: .changes, context: .coding(id), resource: "changes", version: nil)
         case .review(_, let session, let review, let capture):
@@ -55,7 +55,7 @@ enum InspectorResource {
 
     var title: String {
         switch self {
-        case .explorer: "Explorer"
+        case .explorer(let source): source.isUserWorkspace ? "My Workspace" : "Explorer"
         case .sourceFile(_, let path): (path as NSString).lastPathComponent
         case .artifact(let value): value.title
         case .changes: "Live Changes"
@@ -126,6 +126,7 @@ final class ArtifactInspectorState {
     private(set) var account: InspectorAccountScope?
     private(set) var context: InspectorContext? = .chat(nil)
     var notice: String?
+    private(set) var workspaceDraftAttachment: WorkspaceDraftAttachment?
 
     private var group: InspectorTabGroup? { context.flatMap { groups[$0] } }
     var tabs: [InspectorTab] { group?.tabs ?? [] }
@@ -146,6 +147,7 @@ final class ArtifactInspectorState {
         allTabs.forEach { $0.suspend() }
         groups.removeAll(); rememberedContexts.removeAll(); closedOrder.removeAll()
         self.account = account
+        workspaceDraftAttachment = nil
         notice = nil
         setDestination(destination)
     }
@@ -170,7 +172,7 @@ final class ArtifactInspectorState {
     }
 
     private func setContext(_ value: InspectorContext?) {
-        if context != value { selectedTab?.suspend(); notice = nil }
+        if context != value { selectedTab?.suspend(); notice = nil; workspaceDraftAttachment = nil }
         context = value
     }
 
@@ -178,7 +180,7 @@ final class ArtifactInspectorState {
         var value = artifact
         if case .chat(nil) = artifact.origin {
             value = ArtifactReference(id: artifact.id, path: artifact.path, filename: artifact.filename,
-                                      mediaType: artifact.mediaType, title: artifact.title, origin: .chat(sessionID: chatSessionID))
+                                      mediaType: artifact.mediaType, title: artifact.title, origin: .chat(sessionID: chatSessionID), workspaceRootID: artifact.workspaceRootID, workspaceOwnerID: artifact.workspaceOwnerID)
         }
         open(.artifact(value))
     }
@@ -202,9 +204,37 @@ final class ArtifactInspectorState {
         open(.sourceFile(source, path: path))
     }
 
-    func openChatExplorer() {
-        openExplorer(InspectorDirectorySource(unavailable: .chat(chatSessionID),
-            reason: "This conversation has no explicitly authorized directory root. Chat projects and artifact references do not grant filesystem browsing. Existing artifact tabs remain available."))
+    func openWorkspacePreview(source: InspectorDirectorySource, path: String) {
+        guard source.isUserWorkspace, source.context == context, let root = source.root,
+              root.userId == account?.userID, case .chat(let sessionID) = context,
+              InspectorDirectorySource.validPath(path) else { return }
+        let file = path as NSString
+        let mediaType: String
+        switch file.pathExtension.lowercased() {
+        case "pdf": mediaType = "application/pdf"
+        case "png": mediaType = "image/png"
+        case "jpg", "jpeg": mediaType = "image/jpeg"
+        case "gif": mediaType = "image/gif"
+        case "webp": mediaType = "image/webp"
+        default: return
+        }
+        open(ArtifactReference(id: "workspace:\(root.rootId):\(path)", path: path, filename: file.lastPathComponent,
+            mediaType: mediaType, title: file.lastPathComponent, origin: .chat(sessionID: sessionID),
+            workspaceRootID: root.rootId, workspaceOwnerID: root.userId))
+    }
+
+    func stageWorkspaceAttachment(source: InspectorDirectorySource, path: String, sizeBytes: Int) {
+        guard let account, source.isUserWorkspace, source.root?.userId == account.userID,
+              source.context == context, case .chat(let sessionID) = context, let sessionID,
+              InspectorDirectorySource.validPath(path), sizeBytes >= 0 else { return }
+        workspaceDraftAttachment = .init(account: account, sessionID: sessionID, path: path, sizeBytes: sizeBytes)
+    }
+
+    func takeWorkspaceAttachment(sessionID: Int, account: InspectorAccountScope) -> WorkspaceDraftAttachment? {
+        guard let value = workspaceDraftAttachment, value.account == account, self.account == account,
+              value.sessionID == sessionID, context == .chat(sessionID) else { return nil }
+        workspaceDraftAttachment = nil
+        return value
     }
 
     func openChangedFile(_ store: CodingWorkspaceStore, sessionID: String, path: String) {

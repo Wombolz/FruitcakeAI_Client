@@ -629,8 +629,8 @@ struct MainTabView: View {
             }
         case .chat:
             ToolbarItem(placement: .automatic) {
-                Button { applicationToolbarState.send(.chatOpenExplorer) } label: { Label("Workspace Explorer", systemImage: "folder") }
-                    .help("Inspect an explicitly attached workspace; Chat projects do not grant directory access")
+                Button { applicationToolbarState.send(.chatOpenExplorer) } label: { Label("My Workspace", systemImage: "folder") }
+                    .help("Browse your Fruitcake workspace files; opening a file does not attach it to Chat")
             }
             ToolbarItem(placement: .automatic) {
                 Button {

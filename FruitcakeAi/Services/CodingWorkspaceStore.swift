@@ -931,28 +931,29 @@ extension CodingWorkspaceStore: InspectorDirectoryServing {
         }
     }
 
-    private func requireExplorerRoot(_ root: InspectorRoot) throws {
-        guard root.provider == "coding_checkout", root.sessionId == selectedId,
+    private func requireExplorerRoot(_ root: InspectorRoot) throws -> String {
+        guard root.provider == "coding_checkout", let sessionID = root.sessionId, sessionID == selectedId,
               root.rootId == checkout?.id, checkout?.status == "ready", workspace?.isActive == true else {
             throw CodingClientError(code: "checkout_invalid", message: "This file tab belongs to another or unavailable checkout. Open Explorer again.")
         }
+        return sessionID
     }
 
     func inspectorDirectory(root: InspectorRoot, path: String, offset: Int, version: String?) async throws -> InspectorDirectoryPage {
-        try requireExplorerRoot(root)
+        let sessionID = try requireExplorerRoot(root)
         let generation = selectionGeneration
-        let value = try await api.codingExplorerDirectory(sessionId: root.sessionId, rootId: root.rootId, path: path, offset: offset, version: version)
+        let value = try await api.codingExplorerDirectory(sessionId: sessionID, rootId: root.rootId, path: path, offset: offset, version: version)
         guard !Task.isCancelled, generation == selectionGeneration else { throw CancellationError() }
-        try requireExplorerRoot(root)
+        _ = try requireExplorerRoot(root)
         return value
     }
 
     func inspectorFile(root: InspectorRoot, path: String) async throws -> InspectorFileContent {
-        try requireExplorerRoot(root)
+        let sessionID = try requireExplorerRoot(root)
         let generation = selectionGeneration
-        let value = try await api.codingExplorerFile(sessionId: root.sessionId, rootId: root.rootId, path: path)
+        let value = try await api.codingExplorerFile(sessionId: sessionID, rootId: root.rootId, path: path)
         guard !Task.isCancelled, generation == selectionGeneration else { throw CancellationError() }
-        try requireExplorerRoot(root)
+        _ = try requireExplorerRoot(root)
         return value
     }
 }

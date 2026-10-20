@@ -813,6 +813,30 @@ enum APIError: LocalizedError {
 // MARK: - Read-only coding API
 
 extension APIClient: CodingServing {
+    func workspaceExplorerRoot() async throws -> InspectorRoot {
+        try await codingBrowserRequest("/workspace/explorer")
+    }
+    func inspectorDirectory(root: InspectorRoot, path: String, offset: Int, version: String?) async throws -> InspectorDirectoryPage {
+        var query = URLComponents()
+        query.queryItems = [URLQueryItem(name: "root_id", value: root.rootId), URLQueryItem(name: "path", value: path), URLQueryItem(name: "offset", value: String(offset))]
+        if let version { query.queryItems?.append(URLQueryItem(name: "version", value: version)) }
+        return try await codingBrowserRequest("/workspace/explorer/directory?\(query.percentEncodedQuery ?? "")")
+    }
+    func inspectorFile(root: InspectorRoot, path: String) async throws -> InspectorFileContent {
+        var query = URLComponents()
+        query.queryItems = [URLQueryItem(name: "root_id", value: root.rootId), URLQueryItem(name: "path", value: path)]
+        return try await codingBrowserRequest("/workspace/explorer/file?\(query.percentEncodedQuery ?? "")")
+    }
+    func workspaceDownload(rootID: String, path: String) async throws -> Data {
+        var query = URLComponents()
+        query.queryItems = [URLQueryItem(name: "root_id", value: rootID), URLQueryItem(name: "path", value: path)]
+        var request = try await buildRequest("/workspace/explorer/download?\(query.percentEncodedQuery ?? "")", method: "GET", timeout: 45)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validateCoding(response, data: data)
+        guard data.count <= 20_000_000 else { throw CodingClientError(code: "inspection_limit", message: "Workspace downloads are limited to 20 MB.") }
+        return data
+    }
     func codingExplorerRoot(sessionId: String) async throws -> InspectorRoot {
         try await codingBrowserRequest("/coding/sessions/\(sessionId)/explorer")
     }
@@ -1048,3 +1072,5 @@ extension APIClient: CodingServing {
         }
     }
 }
+
+extension APIClient: UserWorkspaceServing {}

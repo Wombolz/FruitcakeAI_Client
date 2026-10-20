@@ -178,10 +178,10 @@ import AppKit
         store.suspend()
     }
 
-    @Test func chatWithoutAnExplicitDirectoryGrantIsHonestlyUnavailable() async {
+    @Test func unavailableDirectoryProvidersDoNotInferAccessFromChatProjects() async {
         let inspector = ArtifactInspectorState()
         inspector.setChatSession(10, active: true)
-        inspector.openChatExplorer()
+        inspector.openExplorer(InspectorDirectorySource(unavailable: .chat(10), reason: "No provider available"))
         let store = inspector.selectedTab?.explorer
         #expect(store?.source.root == nil && store?.source.unavailableReason != nil)
         await #expect(throws: CodingClientError.self) { try await store!.source.directory(path: "") }

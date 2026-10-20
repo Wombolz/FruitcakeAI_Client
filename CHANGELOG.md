@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.5
+
+- Add Fruitcake, Paper and High Contrast code palettes with live Settings previews and local syntax highlighting.
+- Apply shared code appearance to Chat/Code blocks, Explorer source and split/unified/detached diffs without changing app chrome.
+- Open Chat's My Workspace in shared inspector tabs, with read-only files, bounded downloads and inert image/PDF previews.
+- Stage workspace references explicitly in conversation-specific drafts; keep Code repository permissions separate.
+
 ## v0.2.4
 
 - add independent AI review setup, recoverable history, read approvals, findings and draft-only corrections

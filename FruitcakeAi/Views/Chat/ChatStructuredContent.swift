@@ -67,6 +67,8 @@ struct ChatStructuredContentBlockView: View {
 }
 
 struct ChatCodeArtifactBlockView: View {
+    @AppStorage(CodeTheme.preferenceKey) private var codeThemeID = CodeTheme.Preset.fruitcake.rawValue
+    private var codeTheme: CodeTheme { .resolve(codeThemeID) }
     let block: ChatContentBlock
     let accent: Color
 
@@ -141,7 +143,7 @@ struct ChatCodeArtifactBlockView: View {
                     HStack(alignment: .top, spacing: 13) {
                         Text(lineNumbers(for: artifact.content))
                             .font(Theme.mono(11))
-                            .foregroundStyle(Theme.textFaint.opacity(0.75))
+                            .foregroundStyle(Color(hex: codeTheme.secondary))
                             .multilineTextAlignment(.trailing)
                             .textSelection(.disabled)
 
@@ -150,14 +152,11 @@ struct ChatCodeArtifactBlockView: View {
                             .frame(width: 1)
                             .frame(maxHeight: .infinity)
 
-                        Text(artifact.content)
-                            .font(Theme.mono(11.5))
-                            .foregroundStyle(Theme.textMid)
-                            .textSelection(.enabled)
+                        CodeSourceText(text: artifact.content, language: .resolve(hint: artifact.language, path: artifact.filename ?? ""), size: 11.5, theme: codeTheme)
                             .fixedSize(horizontal: true, vertical: true)
                     }
                     .padding(13)
-                }
+                }.background(Color(hex: codeTheme.background))
 
                 if let errorMessage {
                     Text(errorMessage)

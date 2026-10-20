@@ -354,7 +354,7 @@ struct MessageBubble: View {
 
     @ViewBuilder
     private func markdownText(text: String) -> some View {
-        MessageProse(text: text)
+        MessageCodeBody(text: text)
     }
 }
 
