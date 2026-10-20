@@ -80,6 +80,11 @@ import AppKit
             #expect(attachment.path == path)
             #expect(attachment.toolPath == "workspace/7/\(path)")
         }
+        for path in ["report.txt ", "workspace/report.txt\u{00a0}"] {
+            #expect(!WorkspaceDraftAttachment.supportsToolReference(path))
+            inspector.stageWorkspaceAttachment(source: source, path: path, sizeBytes: 9)
+            #expect(inspector.workspaceDraftAttachment == nil)
+        }
     }
 
     @Test func accountChangeRejectsDelayedReadAndDoesNotOpenAnotherConversation() async throws {

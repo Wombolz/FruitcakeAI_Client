@@ -226,7 +226,7 @@ final class ArtifactInspectorState {
     func stageWorkspaceAttachment(source: InspectorDirectorySource, path: String, sizeBytes: Int) {
         guard let account, source.isUserWorkspace, source.root?.userId == account.userID,
               source.context == context, case .chat(let sessionID) = context, let sessionID,
-              InspectorDirectorySource.validPath(path), sizeBytes >= 0 else { return }
+              InspectorDirectorySource.validPath(path), WorkspaceDraftAttachment.supportsToolReference(path), sizeBytes >= 0 else { return }
         workspaceDraftAttachment = .init(account: account, sessionID: sessionID, path: path, sizeBytes: sizeBytes)
     }
 

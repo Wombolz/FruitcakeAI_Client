@@ -56,4 +56,8 @@ struct WorkspaceDraftAttachment: Identifiable, Equatable {
     // Disambiguate a real workspace/ subfolder from the filesystem tool's
     // legacy workspace/<user>/ prefix without exposing an absolute host path.
     var toolPath: String { "workspace/\(account.userID)/\(path)" }
+
+    static func supportsToolReference(_ path: String) -> Bool {
+        !path.isEmpty && path.last?.isWhitespace == false
+    }
 }

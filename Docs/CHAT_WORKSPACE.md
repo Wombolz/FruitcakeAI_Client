@@ -11,6 +11,8 @@ draft, with no model call or automatic Send. References use an explicit
 `workspace/<user>/<relative-path>` tool prefix, preserving real workspace/
 subfolders without ambiguity. Workspace reference drafts remain
 conversation-specific and clear on account/server change.
+Legacy tools trim trailing whitespace, so those filenames remain browseable and
+downloadable but Attach to Chat is disabled with an explanatory tooltip.
 
 The account-bound provider rejects wrong owners, changed server/account identities,
 root mismatches and a repository response basis. Inspection cache/lifecycle and

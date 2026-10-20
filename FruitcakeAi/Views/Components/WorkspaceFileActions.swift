@@ -27,7 +27,9 @@ struct WorkspaceFileActions: View {
                     Button("Attach to Chat", systemImage: "paperclip") {
                         inspector.stageWorkspaceAttachment(source: source, path: path, sizeBytes: sizeBytes)
                     }.disabled(!canAttach)
-                        .help("Add a file reference to the draft. Nothing is sent until you send the message.")
+                        .help(WorkspaceDraftAttachment.supportsToolReference(path)
+                              ? "Add a file reference to the draft. Nothing is sent until you send the message."
+                              : "Files ending in whitespace can be downloaded, but cannot be attached with the current workspace tools.")
                     Button(downloading ? "Downloading" : "Download", systemImage: "arrow.down.to.line") { Task { await download() } }
                         .disabled(downloading || sizeBytes > 20_000_000)
                 }.buttonStyle(.plain).font(.system(size: 11))
@@ -44,6 +46,7 @@ struct WorkspaceFileActions: View {
     }
 
     private var canAttach: Bool {
+        guard WorkspaceDraftAttachment.supportsToolReference(path) else { return false }
         if case .chat(let id) = inspector.context { return id != nil && source.context == inspector.context }
         return false
     }
