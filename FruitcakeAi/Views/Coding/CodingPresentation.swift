@@ -73,74 +73,12 @@ struct CodingCard: ViewModifier {
     }
 }
 
-struct CodingMessageBlock: Identifiable {
-    let id: Int
-    let text: String
-    let isCode: Bool
-    let language: String
-
-    static func parse(_ text: String) -> [Self] {
-        var blocks: [Self] = [], buffer = "", fence: String?, language = ""
-        func flush(code: Bool) {
-            guard code || !buffer.isEmpty else { return }
-            blocks.append(.init(id: blocks.count, text: buffer, isCode: code, language: code ? language : ""))
-            buffer = ""
-        }
-        let lines = text.components(separatedBy: "\n")
-        for (index, line) in lines.enumerated() {
-            let marker = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if let current = fence {
-                if marker.count >= current.count && marker.allSatisfy({ $0 == current.first }) {
-                    flush(code: true); fence = nil; language = ""; continue
-                }
-            } else if marker.hasPrefix("```") || marker.hasPrefix("~~~") {
-                flush(code: false)
-                let delimiter = String(marker.prefix { $0 == marker.first })
-                fence = delimiter
-                language = String(marker.dropFirst(delimiter.count)).trimmingCharacters(in: .whitespaces)
-                continue
-            }
-            buffer += line + (index < lines.count - 1 ? "\n" : "")
-        }
-        flush(code: fence != nil)
-        return blocks
-    }
-}
-
 struct CodingMessageBody: View {
     let text: String
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ForEach(CodingMessageBlock.parse(text)) { block in
-                if block.isCode {
-                    VStack(alignment: .leading, spacing: 0) {
-                        HStack {
-                            Text(block.language.isEmpty ? "CODE" : block.language.uppercased()).font(Theme.mono(9))
-                            Spacer()
-                            Button("Copy", systemImage: "doc.on.doc") {
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(block.text, forType: .string)
-                            }.buttonStyle(.plain).font(.system(size: 10)).help("Copy code (does not execute it)")
-                        }.foregroundStyle(Theme.textDim).padding(9)
-                        Rectangle().fill(Theme.stroke).frame(height: 1)
-                        ScrollView(.horizontal) {
-                            Text(block.text.isEmpty ? " " : block.text).font(Theme.mono(11))
-                                .foregroundStyle(Theme.textMid).textSelection(.enabled)
-                                .fixedSize(horizontal: true, vertical: true).padding(10)
-                        }
-                    }.background(Theme.composer, in: RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.strokeUp, lineWidth: 1))
-                } else {
-                    let prose = block.text.trimmingCharacters(in: .newlines)
-                    if !prose.isEmpty {
-                        MessageProse(text: prose).font(.system(size: 13.5))
-                            .foregroundStyle(Theme.textMid).lineSpacing(4)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }
-        }.tint(Theme.codeAccent)
+        MessageCodeBody(text: text).font(.system(size: 13.5))
+            .foregroundStyle(Theme.textMid).lineSpacing(4)
+            .fixedSize(horizontal: false, vertical: true).tint(Theme.codeAccent)
     }
 }
 

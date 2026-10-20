@@ -281,3 +281,14 @@ needed. **Load Operation History** replays the same ordering for completed runs.
 Forty-one focused checks include a seven-approval transcript render, pending
 request retention, stale snapshots, and fragmented text. See backend
 `Docs/coding_transcript.md` for the operator test and verification limits.
+
+## Code Appearance
+
+Settings > Appearance > Code selects the shared code-only palette for source
+inspection, Chat/Code code blocks and split/unified/pop-out diffs. See
+[Code Appearance](CODE_APPEARANCE.md) for the isolated build checkout, supported
+languages, lexical limitations and verification. Theme importing is not enabled.
+
+Chat's **My Workspace** now has its own user-scoped provider. It does not reuse or
+widen coding repository grants. See [Chat Workspace](CHAT_WORKSPACE.md) for scope,
+explicit attachment/download behavior and the paired backend testing instructions.

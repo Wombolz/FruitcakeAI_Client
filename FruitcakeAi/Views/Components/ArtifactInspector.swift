@@ -13,6 +13,8 @@ struct ArtifactReference: Identifiable, Hashable {
     let mediaType: String
     let title: String
     let origin: Origin
+    var workspaceRootID: String? = nil
+    var workspaceOwnerID: Int? = nil
 }
 
 struct ArtifactInspectorView: View {
@@ -109,10 +111,14 @@ struct ArtifactInspectorView: View {
             return
         }
         var components = URLComponents(
-            url: baseURL.appendingPathComponent("workspace/files"),
+            url: baseURL.appendingPathComponent(selected.workspaceRootID == nil ? "workspace/files" : "workspace/explorer/download"),
             resolvingAgainstBaseURL: false
         )
         components?.queryItems = [URLQueryItem(name: "path", value: selected.path)]
+        if let rootID = selected.workspaceRootID {
+            guard selected.workspaceOwnerID == account?.userID else { data = nil; return }
+            components?.queryItems?.append(URLQueryItem(name: "root_id", value: rootID))
+        }
         guard let url = components?.url else {
             data = nil; errorMessage = "The artifact path is invalid."
             return

@@ -268,6 +268,7 @@ private struct PendingChatAttachment: Identifiable, Hashable {
     let mediaType: String
     let sizeBytes: Int
     let isImage: Bool
+    var workspaceSessionID: Int? = nil
 }
 
 private struct ChatModelOption: Decodable, Identifiable, Hashable {
@@ -374,7 +375,16 @@ struct ChatView: View {
     @State private var evidenceExpandedKeys: Set<String> = []
 
     @State private var inputText: String = ""
-    @State private var pendingAttachments: [PendingChatAttachment] = []
+    @State private var isOpeningWorkspace = false
+    @State private var pendingUploadedAttachments: [PendingChatAttachment] = []
+    @State private var workspaceAttachmentDrafts: [Int: [PendingChatAttachment]] = [:]
+    private var pendingAttachments: [PendingChatAttachment] {
+        get { pendingUploadedAttachments + (selectedSession.flatMap { workspaceAttachmentDrafts[$0.id] } ?? []) }
+        nonmutating set {
+            pendingUploadedAttachments = newValue.filter { $0.workspaceSessionID == nil }
+            if let id = selectedSession?.id { workspaceAttachmentDrafts[id] = newValue.filter { $0.workspaceSessionID == id } }
+        }
+    }
     @State private var pendingNativeContextBySession: [Int: ChatNativeContextAttachment] = [:]
     @State private var isAttachmentImporterPresented: Bool = false
     @State private var isUploadingAttachment: Bool = false
@@ -773,6 +783,8 @@ struct ChatView: View {
             inspector.setChatSession(selectedSession?.id, active: active)
             updateApplicationToolbarState()
         }
+        .onChange(of: inspector.account) { _, _ in workspaceAttachmentDrafts = [:] }
+        .onChange(of: inspector.workspaceDraftAttachment?.id) { _, _ in receiveWorkspaceAttachment() }
         .onChange(of: applicationToolbarState.commandSequence) { _, _ in
             handleApplicationToolbarCommand()
         }
@@ -968,6 +980,32 @@ struct ChatView: View {
         applicationToolbarState.chatProfileAvailable = selectedSession != nil
     }
 
+    @MainActor private func openUserWorkspace() async {
+        guard !isOpeningWorkspace, let account = inspector.account, let context = inspector.context,
+              case .chat = context else { return }
+        isOpeningWorkspace = true
+        defer { isOpeningWorkspace = false }
+        do {
+            let source = try await UserWorkspaceProvider.source(api: APIClient(authManager: authManager), account: account, context: context,
+                                                               currentAccount: { inspector.account })
+            guard applicationDestinationIsActive, inspector.context == context, inspector.account == account else { return }
+            inspector.openExplorer(source)
+        } catch {
+            guard applicationDestinationIsActive, inspector.context == context, inspector.account == account else { return }
+            loadingError = "Could not open My Workspace: \(error.localizedDescription)"
+        }
+    }
+
+    private func receiveWorkspaceAttachment() {
+        guard applicationDestinationIsActive, let sessionID = selectedSession?.id, let account = inspector.account,
+              let attachment = inspector.takeWorkspaceAttachment(sessionID: sessionID, account: account) else { return }
+        guard !pendingAttachments.contains(where: { $0.path == attachment.toolPath }) else { return }
+        let url = URL(fileURLWithPath: attachment.path)
+        let mediaType = mimeType(forAttachment: url)
+        pendingAttachments.append(PendingChatAttachment(filename: url.lastPathComponent, path: attachment.toolPath,
+            mediaType: mediaType, sizeBytes: attachment.sizeBytes, isImage: mediaType.hasPrefix("image/"), workspaceSessionID: sessionID))
+    }
+
     private func handleApplicationToolbarCommand() {
         guard applicationDestinationIsActive, let command = applicationToolbarState.command else { return }
         switch command {
@@ -984,7 +1022,7 @@ struct ChatView: View {
             guard authManager.currentUser?.isAdmin == true else { return }
             Task { await createSession(incognito: true) }
         case .chatOpenExplorer:
-            inspector.openChatExplorer()
+            Task { await openUserWorkspace() }
         case .chatEditProfile:
             guard selectedSession != nil else { return }
             prepareProfileEditor()

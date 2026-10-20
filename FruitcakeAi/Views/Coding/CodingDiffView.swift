@@ -13,23 +13,26 @@ enum CodingDiffTone: Equatable {
         return .context
     }
 
-    var foreground: Color {
+    var foreground: Color { Color(hex: foreground(in: .palette(.fruitcake))) }
+    var background: Color { Color(hex: background(in: .palette(.fruitcake))) }
+
+    func foreground(in theme: CodeTheme) -> UInt {
         switch self {
-        case .addition: Theme.diffAdditionText
-        case .removal: Theme.diffRemovalText
-        case .header: Theme.textDim
-        case .context: Theme.textMid
+        case .addition: theme.additionText
+        case .removal: theme.removalText
+        case .header: theme.secondary
+        case .context: theme.foreground
+        }
+    }
+    func background(in theme: CodeTheme) -> UInt {
+        switch self {
+        case .addition: theme.additionFill
+        case .removal: theme.removalFill
+        case .header: theme.gutter
+        case .context: theme.background
         }
     }
 
-    var background: Color {
-        switch self {
-        case .addition: Theme.diffAdditionFill
-        case .removal: Theme.diffRemovalFill
-        case .header: Theme.field
-        case .context: Theme.bg
-        }
-    }
 }
 
 struct CodingDiffDrawer: View {
@@ -65,6 +68,8 @@ struct CodingDiffDrawer: View {
 
 struct CodingDiffPreview: View {
     let diff: CodingRepositoryDiff
+    @AppStorage(CodeTheme.preferenceKey) private var codeThemeID = CodeTheme.Preset.fruitcake.rawValue
+    private var codeTheme: CodeTheme { .resolve(codeThemeID) }
     @State private var sectionIndex = 0
     @State private var unified = false
 
@@ -147,8 +152,8 @@ struct CodingDiffPreview: View {
                         HStack(alignment: .top, spacing: 1) {
                             codeColumn(split.rows, before: true, width: columnWidth)
                             codeColumn(split.rows, before: false, width: columnWidth)
-                        }.background(Theme.strokeUp)
-                    }.task(id: anchorIdentity) {
+                        }.background(Color(hex: codeTheme.secondary).opacity(0.25))
+                    }.background(Color(hex: codeTheme.background)).task(id: anchorIdentity) {
                         if let side = diff.reviewAnchorSide, let line = diff.reviewAnchorStart {
                             proxy.scrollTo("\(side)-\(line)", anchor: .center)
                         }
@@ -160,20 +165,33 @@ struct CodingDiffPreview: View {
 
     private var anchorIdentity: String { "\(diff.captureId ?? ""):\(diff.path):\(diff.reviewAnchorSide ?? ""):\(diff.reviewAnchorStart ?? 0)" }
 
+    // Hunks are fragments, not complete files: lexical state is local to each
+    // displayed line. We never fetch live source to color a retained capture.
+    private func diffText(_ text: String, tone: CodingDiffTone, unified: Bool) -> some View {
+        let prefix = unified && tone != .header && !text.isEmpty ? String(text.prefix(1)) : ""
+        let source = prefix.isEmpty ? text : String(text.dropFirst())
+        let language: CodeLanguage = tone == .header ? .plain : .resolve(path: diff.path)
+        let colored = CodeHighlight.attributed(source, language: language, theme: codeTheme,
+                                              foreground: tone.foreground(in: codeTheme), fill: tone.background(in: codeTheme))
+        var marker = AttributedString(prefix)
+        marker.foregroundColor = Color(hex: tone.foreground(in: codeTheme))
+        return Text(marker + colored).font(Theme.mono(11))
+    }
+
     private func unifiedBody(_ text: String) -> some View {
         GeometryReader { geometry in
             ScrollView([.horizontal, .vertical]) {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(Array((text.isEmpty ? "No textual diff available." : text).components(separatedBy: "\n").enumerated()), id: \.offset) { _, line in
                         let tone = CodingDiffTone.unified(line)
-                        Text(line.isEmpty ? " " : line).font(Theme.mono(11)).foregroundStyle(tone.foreground)
+                        diffText(line.isEmpty ? " " : line, tone: tone, unified: true)
                             .textSelection(.enabled).fixedSize(horizontal: true, vertical: false)
                             .padding(.horizontal, 12).frame(height: 20)
                             .frame(minWidth: max(1, geometry.size.width), alignment: .leading)
-                            .background(tone.background)
+                            .background(Color(hex: tone.background(in: codeTheme)))
                     }
                 }
-            }
+            }.background(Color(hex: codeTheme.background))
         }
     }
 
@@ -188,23 +206,23 @@ struct CodingDiffPreview: View {
                     let anchored = diff.reviewAnchorSide == (before ? "before" : "after")
                         && number.map { $0 >= (diff.reviewAnchorStart ?? Int.max) && $0 <= (diff.reviewAnchorEnd ?? -1) } == true
                     HStack(spacing: 8) {
-                        Text(number.map(String.init) ?? "").foregroundStyle(changed ? tone.foreground : Theme.textFaint)
+                        Text(number.map(String.init) ?? "").foregroundStyle(Color(hex: changed ? tone.foreground(in: codeTheme) : codeTheme.secondary))
                             .frame(width: 38, alignment: .trailing)
-                        Text(changed ? (before ? "-" : "+") : " ").foregroundStyle(tone.foreground).frame(width: 8)
-                        Text(text ?? " ").foregroundStyle(tone.foreground)
+                        Text(changed ? (before ? "-" : "+") : " ").foregroundStyle(Color(hex: tone.foreground(in: codeTheme))).frame(width: 8)
+                        diffText(text ?? " ", tone: tone, unified: false)
                             .textSelection(.enabled).fixedSize(horizontal: true, vertical: false)
                     }
                     .font(Theme.mono(11)).frame(height: 18)
                     .frame(minWidth: width, alignment: .leading)
-                    .background(tone.background)
+                    .background(Color(hex: tone.background(in: codeTheme)))
                     .overlay(alignment: .leading) {
-                        if anchored { Rectangle().fill(Theme.onDevice).frame(width: 3) }
+                        if anchored { Rectangle().fill(Color(hex: codeTheme.findingMarker)).frame(width: 3) }
                     }
-                    .overlay(Rectangle().stroke(anchored ? Theme.onDevice.opacity(0.65) : .clear, lineWidth: 1))
+                    .overlay(Rectangle().stroke(anchored ? Color(hex: codeTheme.findingMarker).opacity(0.65) : .clear, lineWidth: 1))
                     .id(number.map { "\(before ? "before" : "after")-\($0)" } ?? "\(before ? "before" : "after")-row-\(index)")
                 }
             }.frame(minWidth: width, alignment: .leading)
-        }.frame(width: width, height: CGFloat(rows.count) * 18).background(Theme.bg)
+        }.frame(width: width, height: CGFloat(rows.count) * 18).background(Color(hex: codeTheme.background))
     }
 }
 

@@ -64,6 +64,7 @@ struct SettingsView: View {
                 settingsLink("Profile", systemImage: "person.crop.circle", destination: .profile)
                 settingsLink("Chat & Models", systemImage: "cpu", destination: .assistantPreferences)
                 settingsLink("Connected Accounts", systemImage: "link", destination: .connectedAccounts)
+                settingsLink("Appearance", systemImage: "paintpalette", destination: .appearance)
                 settingsLink("Experience", systemImage: "slider.horizontal.3", destination: .experience)
                 settingsLink("Secrets", systemImage: "key", destination: .secrets)
             }
@@ -115,6 +116,8 @@ struct SettingsView: View {
         case .connectedAccounts:
             ConnectedAccountsView()
                 .environment(authManager)
+        case .appearance:
+            CodeAppearanceView()
         case .experience:
             PersonalExperienceSettingsView()
                 .environment(authManager)
@@ -342,6 +345,7 @@ private enum SettingsDestination: String, Hashable, CaseIterable {
     case profile
     case assistantPreferences
     case connectedAccounts
+    case appearance
     case experience
     case server
     case pushTesting

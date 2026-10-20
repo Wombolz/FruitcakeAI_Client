@@ -3,7 +3,8 @@ import Foundation
 struct InspectorRoot: Decodable, Hashable {
     let provider: String
     let rootId: String
-    let sessionId: String
+    let sessionId: String?
+    var userId: Int? = nil
     let label: String
     let readOnly: Bool
     let byteLimit: Int
@@ -63,6 +64,9 @@ struct InspectorFileContent: Decodable {
         self.context = context; root = nil; provider = nil; unavailableReason = reason
     }
 
+    var isUserWorkspace: Bool { root?.provider == "user_workspace" }
+    var basis: String { isUserWorkspace ? "user_workspace" : "current_worktree" }
+
     static func validPath(_ value: String, directory: Bool = false) -> Bool {
         if value.isEmpty { return directory }
         return value.utf8.count <= 1024 && !value.hasPrefix("/") && !value.contains("\\")
@@ -81,7 +85,7 @@ struct InspectorFileContent: Decodable {
         let page = try await provider.inspectorDirectory(root: root, path: path, offset: offset, version: version)
         try Task.checkCancellation()
         try validate(page.root)
-        guard page.basis == "current_worktree", page.path == path, page.version.count == 64,
+        guard page.basis == basis, page.path == path, page.version.count == 64,
               version == nil || page.version == version, page.entries.count <= root.entryLimit,
               Set(page.entries.map(\.path)).count == page.entries.count,
               page.entries.allSatisfy({ Self.validPath($0.path) && !$0.name.isEmpty && !$0.name.contains("/")
@@ -96,7 +100,7 @@ struct InspectorFileContent: Decodable {
         let value = try await provider.inspectorFile(root: root, path: path)
         try Task.checkCancellation()
         try validate(value.root)
-        guard value.basis == "current_worktree", value.path == path, value.byteCount >= 0 else { throw invalid() }
+        guard value.basis == basis, value.path == path, value.byteCount >= 0 else { throw invalid() }
         if value.status == .text {
             guard let text = value.text, let version = value.version, version.count == 64,
                   text.utf8.count == value.byteCount, value.byteCount <= root.byteLimit, !text.contains("\0"),
