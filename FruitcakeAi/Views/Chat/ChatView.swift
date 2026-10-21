@@ -78,6 +78,7 @@ private struct SessionHistoryResponse: Decodable {
     let projectId: Int?
     let isPinned: Bool?
     let messages: [HistoryMessage]
+    let personaSelection: PersonaSessionSelection?
 }
 
 private struct ProjectSummary: Codable, Identifiable, Hashable {
@@ -415,11 +416,15 @@ struct ChatView: View {
     @State private var showProfileSheet: Bool = false
     @State private var availablePersonas: [String] = []
     @State private var availablePersonaInfo: [String: ChatPersonaInfo] = [:]
+    @State private var availablePersonaRevisions: [String: Int] = [:]
+    @State private var sessionPersonaSelections: [Int: PersonaSessionSelection] = [:]
     @State private var availableTools: [String] = []
     @State private var availableModels: [ChatModelOption] = []
     @State private var sessionModelOverrides: [Int: String] = [:]
     @State private var sessionToolOverrides: [Int: SessionToolOverrides] = [:]
     @State private var profilePersona: String = "family_assistant"
+    @State private var profileRevision: Int?
+    @State private var profileSelectionVersion: Int?
     @State private var profileBlockedTools: Set<String> = []
     @State private var profileError: String?
 
@@ -782,6 +787,16 @@ struct ChatView: View {
         .onChange(of: applicationDestinationIsActive, initial: true) { _, active in
             inspector.setChatSession(selectedSession?.id, active: active)
             updateApplicationToolbarState()
+            if active && !availablePersonas.isEmpty {
+                Task {
+                    await loadSessions()
+                    if let id = selectedSession?.id {
+                        let api = APIClient(authManager: authManager)
+                        sessionPersonaSelections[id] = try? await api.request("/chat/sessions/\(id)/persona")
+                    }
+                    await loadChatCapabilities()
+                }
+            }
         }
         .onChange(of: inspector.account) { _, _ in workspaceAttachmentDrafts = [:] }
         .onChange(of: inspector.workspaceDraftAttachment?.id) { _, _ in receiveWorkspaceAttachment() }
@@ -820,7 +835,7 @@ struct ChatView: View {
         .onChange(of: activeClientSendID) { _, newValue in
             trace("active_client_send_id_changed value=\(newValue ?? "nil")")
         }
-        .onChange(of: openSessionId) { _, id in
+        .onChange(of: openSessionId, initial: true) { _, id in
             guard let id else { return }
             openSessionId = nil
             // Reload sessions then select the new one
@@ -935,6 +950,10 @@ struct ChatView: View {
 
                 Form {
                     Section("Persona") {
+                        if let revision = profileRevision {
+                            Text("Selected revision: v\(revision). Tap a newer card to explicitly update this conversation.")
+                                .font(.caption).foregroundStyle(Theme.textDim)
+                        }
                         ForEach(availablePersonas, id: \.self) { persona in
                             personaCard(persona)
                                 .listRowInsets(EdgeInsets())
@@ -1715,6 +1734,17 @@ struct ChatView: View {
             if session.incognito {
                 incognitoBanner
             }
+            if let pinned = sessionPersonaSelections[session.id], let options = pinned.testOptions {
+                HStack(spacing: 8) {
+                    Image(systemName: "testtube.2")
+                    Text("PERSONA TEST · \(pinned.selection.personality.displayName)" + (pinned.selection.revision.map { " · v\($0)" } ?? " · bundled") + (options.memoryRecallEnabled ? " · automatic recall on" : " · automatic recall off"))
+                        .font(Theme.mono(10))
+                    Spacer()
+                }
+                .foregroundStyle(Theme.codeAccent).padding(.horizontal, 16).padding(.vertical, 7)
+                .background(Theme.codeAccent.opacity(0.08))
+                .help("A fresh conversation with a pinned persona. Memory-writing tools and explicit memory searches retain normal policy.")
+            }
 
             ConnectionStatus()
 
@@ -2446,9 +2476,33 @@ struct ChatView: View {
         guard connectivity.isBackendReachable else { return }
         let api = APIClient(authManager: authManager)
         do {
-            let personas: [String: ChatPersonaInfo] = try await api.request("/chat/personas")
-            availablePersonaInfo = personas
-            availablePersonas = personas.keys.sorted()
+            do {
+                var offset = 0
+                var info: [String: ChatPersonaInfo] = [:]
+                var versions: [String: Int] = [:]
+                while true {
+                    let page: PersonaCatalog = try await api.request("/personas?limit=100&offset=\(offset)")
+                    for item in page.bundled {
+                        let style = item.personality
+                        info[item.persona] = .init(displayName: style.displayName, description: style.description, tone: style.tone, blockedTools: nil, contentFilter: nil)
+                    }
+                    for item in page.custom where !item.archived {
+                        let style = item.personality
+                        info[item.persona] = .init(displayName: style.displayName, description: style.description, tone: style.tone, blockedTools: nil, contentFilter: nil)
+                        versions[item.persona] = item.version
+                    }
+                    if page.custom.count < page.limit { break }
+                    offset += page.limit
+                }
+                availablePersonaInfo = info
+                availablePersonaRevisions = versions
+                availablePersonas = info.keys.sorted()
+            } catch APIError.notFound {
+                let personas: [String: ChatPersonaInfo] = try await api.request("/chat/personas")
+                availablePersonaInfo = personas
+                availablePersonaRevisions = [:]
+                availablePersonas = personas.keys.sorted()
+            }
             let toolsResp: ChatToolsResponse = try await api.request("/chat/tools")
             availableTools = toolsResp.tools.sorted()
             let modelsResp: ChatModelListResponse = try await api.request("/llm/models")
@@ -2628,6 +2682,8 @@ struct ChatView: View {
     private func prepareProfileEditor() {
         guard let selected = currentSelectedSession else { return }
         profilePersona = selected.persona
+        profileRevision = sessionPersonaSelections[selected.id]?.selection.revision
+        profileSelectionVersion = sessionPersonaSelections[selected.id]?.version
         let overrides = sessionToolOverrides[selected.id] ?? SessionToolOverrides()
         profileBlockedTools = Set(overrides.blockedTools)
         profileError = nil
@@ -2636,15 +2692,16 @@ struct ChatView: View {
     @ViewBuilder
     private func personaCard(_ key: String) -> some View {
         let info = availablePersonaInfo[key]
-        let isSelected = profilePersona == key
+        let isSelected = profilePersona == key && profileRevision == availablePersonaRevisions[key]
         let accent = PersonaAccent.color(for: key)
         Button {
             profilePersona = key
+            profileRevision = availablePersonaRevisions[key]
         } label: {
             HStack(spacing: 12) {
                 PersonaAvatar(personaKey: key, displayName: personaDisplayName(key), size: 40)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(personaDisplayName(key))
+                    Text(personaDisplayName(key) + (availablePersonaRevisions[key].map { " · v\($0)" } ?? ""))
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(Theme.text)
                     if let description = info?.description, !description.isEmpty {
@@ -2697,19 +2754,19 @@ struct ChatView: View {
             return
         }
 
-        sessionToolOverrides[selected.id] = SessionToolOverrides(
-            allowedTools: [],
-            blockedTools: Array(profileBlockedTools).sorted()
-        )
-
-        struct PersonaBody: Encodable { let persona: String }
+        if profilePersona.hasPrefix("custom:") && (profileRevision == nil || profileSelectionVersion == nil) {
+            profileError = "Reload the conversation before selecting a custom persona revision."
+            return
+        }
         let api = APIClient(authManager: authManager)
         do {
             let updated: SessionSummary = try await api.request(
                 "/chat/sessions/\(selected.id)/persona",
                 method: "PATCH",
-                body: PersonaBody(persona: profilePersona)
+                body: PersonaSessionBody(persona: profilePersona, revision: profileRevision, expectedVersion: profileSelectionVersion)
             )
+            sessionToolOverrides[selected.id] = SessionToolOverrides(allowedTools: [], blockedTools: Array(profileBlockedTools).sorted())
+            sessionPersonaSelections[selected.id] = try? await api.request("/chat/sessions/\(selected.id)/persona")
             if let idx = sessions.firstIndex(where: { $0.id == selected.id }) { sessions[idx] = updated }
             if selectedSession?.id == selected.id { selectedSession = updated }
             if let cached = cachedConversation(for: selected.id) {
@@ -2719,7 +2776,7 @@ struct ChatView: View {
             profileError = nil
             showProfileSheet = false
         } catch {
-            profileError = "Could not save chat profile."
+            profileError = error.localizedDescription
         }
     }
 
@@ -3076,6 +3133,7 @@ struct ChatView: View {
     private func loadSessionHistory(sessionId: Int) async throws -> SessionHistoryResponse {
         let api = APIClient(authManager: authManager)
         let history: SessionHistoryResponse = try await api.request("/chat/sessions/\(sessionId)")
+        sessionPersonaSelections[sessionId] = history.personaSelection
         if let idx = sessions.firstIndex(where: { $0.id == sessionId }) {
             let existing = sessions[idx]
             let updated = SessionSummary(

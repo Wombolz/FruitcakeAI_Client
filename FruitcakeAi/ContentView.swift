@@ -578,7 +578,13 @@ struct MainTabView: View {
         case .library:
             LibraryView()
         case .settings:
-            SettingsView()
+            let account = inspectorAccount
+            SettingsView(onOpenPersonaTest: { sessionId in
+                guard account == inspectorAccount else { return }
+                openSessionId = sessionId
+                selectedDestination = .chat
+            })
+            .id(account)
         }
     }
 
