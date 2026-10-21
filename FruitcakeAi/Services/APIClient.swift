@@ -106,6 +106,20 @@ final class APIClient {
 
     // MARK: - Multipart file upload
 
+    func uploadPersonaImage(_ data: Data, filename: String) async throws -> PersonaImageAsset {
+        let response = try await upload("/personas/assets", fileData: data, fileName: filename, mimeType: "application/octet-stream")
+        return try decode(PersonaImageAsset.self, from: response)
+    }
+
+    func personaImage(_ id: String) async throws -> Data {
+        guard UUID(uuidString: id) != nil else { throw APIError.invalidResponse }
+        let request = try await buildRequest("/personas/assets/\(id)", method: "GET")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validate(response, data: data)
+        guard data.count <= 8 * 1024 * 1024 else { throw APIError.invalidResponse }
+        return data
+    }
+
     func upload(
         _ path: String,
         fileData: Data,

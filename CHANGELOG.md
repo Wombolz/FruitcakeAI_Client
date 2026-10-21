@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Add Settings persona authoring with Neutral/custom personalities, revision history, conflict-safe saves, personal defaults and prompt/access preview.
+- Add fresh model-selected test chats, explicit pinned Chat Profile revisions and private portrait/turnaround references.
+- Add confirmed persona deletion with affected-chat/default disclosure and retained message history; image-generation handoff remains a follow-up.
+- Scope Settings drafts to the signed-in server/account and refresh chat persona metadata after Settings changes.
+
 ## v0.2.5
 
 - Add Fruitcake, Paper and High Contrast code palettes with live Settings previews and local syntax highlighting.

@@ -9,6 +9,7 @@ import SwiftUI
 import SwiftData
 
 struct SettingsView: View {
+    var onOpenPersonaTest: ((Int) -> Void)? = nil
 
     @Environment(AuthManager.self) private var authManager
     @Environment(ConnectivityMonitor.self) private var connectivity
@@ -24,6 +25,7 @@ struct SettingsView: View {
     @State private var isSendingPushTest = false
     @State private var pushTestMessage: String?
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var personaEditor = PersonaEditorStore()
 
     enum URLSaveState { case idle, saved, error }
 
@@ -130,7 +132,7 @@ struct SettingsView: View {
                 accountDetail
             }
         case .personas:
-            PersonaPicker(embedded: true)
+            PersonaPicker(embedded: true, store: personaEditor, onOpenTest: onOpenPersonaTest)
                 .environment(authManager)
         case .agents:
             AgentPresetsView()
@@ -175,7 +177,7 @@ struct SettingsView: View {
                     LabeledContent("Email", value: user.email)
                     LabeledContent("Role", value: user.role.capitalized)
                     LabeledContent(
-                        "Persona",
+                        "Access baseline",
                         value: user.persona
                             .replacingOccurrences(of: "_", with: " ")
                             .capitalized
