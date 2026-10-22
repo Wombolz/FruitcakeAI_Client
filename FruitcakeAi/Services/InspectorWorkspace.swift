@@ -43,7 +43,7 @@ enum InspectorResource {
             case .chat(let id): context = .chat(id)
             case .task(let id, let run): context = .task(id, run)
             }
-            return .init(provider: .artifact, context: context, resource: artifact.path, version: nil, rootID: artifact.workspaceRootID)
+            return .init(provider: .artifact, context: context, resource: artifact.chatImagePreview?.resourceID ?? artifact.path, version: nil, rootID: artifact.workspaceRootID)
         case .changes(_, let id):
             return .init(provider: .changes, context: .coding(id), resource: "changes", version: nil)
         case .review(_, let session, let review, let capture):
@@ -68,7 +68,7 @@ enum InspectorResource {
         switch self {
         case .explorer: "folder"
         case .sourceFile: "doc.text"
-        case .artifact: "doc.text"
+        case .artifact(let value): value.mediaType.hasPrefix("image/") ? "photo" : "doc.text"
         case .changes: "arrow.triangle.branch"
         case .review: "checklist"
         case .changedFile: "doc.text.magnifyingglass"
@@ -180,7 +180,7 @@ final class ArtifactInspectorState {
         var value = artifact
         if case .chat(nil) = artifact.origin {
             value = ArtifactReference(id: artifact.id, path: artifact.path, filename: artifact.filename,
-                                      mediaType: artifact.mediaType, title: artifact.title, origin: .chat(sessionID: chatSessionID), workspaceRootID: artifact.workspaceRootID, workspaceOwnerID: artifact.workspaceOwnerID)
+                                      mediaType: artifact.mediaType, title: artifact.title, origin: .chat(sessionID: chatSessionID), workspaceRootID: artifact.workspaceRootID, workspaceOwnerID: artifact.workspaceOwnerID, chatImagePreview: artifact.chatImagePreview)
         }
         open(.artifact(value))
     }

@@ -15,6 +15,7 @@ struct ArtifactReference: Identifiable, Hashable {
     let origin: Origin
     var workspaceRootID: String? = nil
     var workspaceOwnerID: Int? = nil
+    var chatImagePreview: ChatImagePreviewReference? = nil
 }
 
 struct ArtifactInspectorView: View {
@@ -35,7 +36,8 @@ struct ArtifactInspectorView: View {
             HStack(alignment: .top, spacing: 10) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(originLabel(artifact.origin)).font(Theme.mono(9)).foregroundStyle(Theme.textDim)
-                    Text(artifact.path).font(Theme.mono(10)).lineLimit(2).textSelection(.enabled)
+                    Text(artifact.chatImagePreview == nil ? artifact.path : "Private ImageLab preview")
+                        .font(Theme.mono(10)).lineLimit(2).textSelection(.enabled)
                 }
                 Spacer(minLength: 4)
                 Button { refreshRevision += 1 } label: { Image(systemName: "arrow.clockwise") }
@@ -70,12 +72,7 @@ struct ArtifactInspectorView: View {
         if artifact.mediaType == "application/pdf" {
             PDFArtifactView(data: data)
         } else if artifact.mediaType.hasPrefix("image/"), let image = platformImage(data: data) {
-            ScrollView([.horizontal, .vertical]) {
-                image
-                    .resizable()
-                    .scaledToFit()
-                    .padding()
-            }
+            InspectorImagePreview(image: image)
         } else if let text = String(data: data, encoding: .utf8) {
             ScrollView([.horizontal, .vertical]) {
                 Text(renderedText(text, mediaType: artifact.mediaType, filename: artifact.filename))
@@ -124,6 +121,10 @@ struct ArtifactInspectorView: View {
             return
         }
         var request = URLRequest(url: url)
+        if let preview = selected.chatImagePreview {
+            guard let previewRequest = ChatImagePresentation.request(baseURL: baseURL, token: token, path: "", preview: preview) else { return }
+            request = previewRequest
+        }
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 60
         request.cachePolicy = .reloadIgnoringLocalCacheData
@@ -133,7 +134,9 @@ struct ArtifactInspectorView: View {
             let (loaded, response) = try await URLSession.shared.data(for: request)
             guard !Task.isCancelled, inspector.account == account, isActive else { return }
             guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
-                errorMessage = "The server could not load this artifact."
+                errorMessage = selected.chatImagePreview != nil
+                    ? "Private preview unavailable. ImageLab must support read-only image resources and authorize this account."
+                    : "The server could not load this artifact."
                 return
             }
             guard loaded.count <= 20_000_000 else {
@@ -167,6 +170,33 @@ struct ArtifactInspectorView: View {
         guard let image = UIImage(data: data) else { return nil }
         return Image(uiImage: image)
         #endif
+    }
+}
+
+private struct InspectorImagePreview: View {
+    let image: Image
+    @State private var zoom: CGFloat = 1
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Button("Fit") { zoom = 1 }
+                Button { zoom = max(1, zoom - 0.5) } label: { Image(systemName: "minus.magnifyingglass") }
+                    .disabled(zoom <= 1)
+                Button { zoom = min(4, zoom + 0.5) } label: { Image(systemName: "plus.magnifyingglass") }
+                    .disabled(zoom >= 4)
+                Text("\(Int(zoom * 100))% fit").font(Theme.mono(10)).foregroundStyle(Theme.textDim)
+                Spacer()
+            }.buttonStyle(.plain).padding(12)
+            GeometryReader { geometry in
+                ScrollView([.horizontal, .vertical]) {
+                    image.resizable().scaledToFit()
+                        .frame(width: max(1, geometry.size.width - 24) * zoom,
+                               height: max(1, geometry.size.height - 24) * zoom)
+                        .padding(12)
+                }
+            }
+        }
     }
 }
 
