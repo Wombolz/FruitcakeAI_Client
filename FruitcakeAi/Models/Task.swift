@@ -764,8 +764,10 @@ struct ChatImageArtifact: Codable, Hashable, Identifiable {
     let width: Int?
     let height: Int?
     let sourceTool: String?
+    var assetId: String? = nil
+    var sourceServer: String? = nil
 
-    var id: String { path }
+    var id: String { assetId.map { "\(sourceServer ?? "imagelab"):\($0)" } ?? path }
 }
 
 struct ChatEvidenceToolDetail: Codable, Hashable {

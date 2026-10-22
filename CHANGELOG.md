@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## v0.2.6
+
+- Add administrator Skills settings with validated folder imports, frozen supporting documents and install/enable/disable/remove controls.
+- Fit generated-image cards to image proportions and open images in shared inspector tabs with fit/zoom controls.
+- Support account-authorized private ImageLab previews without exposing its credentials or automatically exporting images.
 
 - Add Settings persona authoring with Neutral/custom personalities, revision history, conflict-safe saves, personal defaults and prompt/access preview.
 - Add fresh model-selected test chats, explicit pinned Chat Profile revisions and private portrait/turnaround references.

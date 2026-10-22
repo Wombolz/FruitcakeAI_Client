@@ -73,6 +73,9 @@ struct SettingsView: View {
 
             Section("Intelligence") {
                 settingsLink("Personas", systemImage: "person.3", destination: .personas)
+                if authManager.currentUser?.isAdmin == true {
+                    settingsLink("Skills", systemImage: "books.vertical", destination: .skills)
+                }
                 settingsLink("Routing", systemImage: "point.3.connected.trianglepath.dotted", destination: .routing)
                 settingsLink("Memories", systemImage: "brain", destination: .memories)
             }
@@ -134,6 +137,13 @@ struct SettingsView: View {
         case .personas:
             PersonaPicker(embedded: true, store: personaEditor, onOpenTest: onOpenPersonaTest)
                 .environment(authManager)
+        case .skills:
+            if authManager.currentUser?.isAdmin == true {
+                SkillsView()
+                    .environment(authManager)
+            } else {
+                accountDetail
+            }
         case .agents:
             AgentPresetsView()
                 .environment(authManager)
@@ -288,7 +298,7 @@ struct SettingsView: View {
     }
 
     private func normalizeSelection() {
-        if (selection == .pushTesting || selection == .modelProfiles || selection == .users),
+        if (selection == .pushTesting || selection == .modelProfiles || selection == .users || selection == .skills),
            authManager.currentUser?.isAdmin != true {
             selection = .profile
         }
@@ -352,6 +362,7 @@ private enum SettingsDestination: String, Hashable, CaseIterable {
     case server
     case pushTesting
     case personas
+    case skills
     case agents
     case modelProfiles
     case users

@@ -111,7 +111,7 @@ private enum ChatRichContentParser {
             if !before.isEmpty { blocks.append(.text(before)) }
             blocks.append(candidate.block)
             if case .image(let artifact) = candidate.block {
-                consumedPaths.insert(artifact.path)
+                consumedPaths.insert(artifact.id)
             }
             cursor = candidate.range.upperBound
         }
@@ -123,7 +123,7 @@ private enum ChatRichContentParser {
 
         // Older responses may expose artifacts only in metadata. Preserve
         // those images rather than dropping them when no inline marker exists.
-        for artifact in artifacts where !consumedPaths.contains(artifact.path) {
+        for artifact in artifacts where !consumedPaths.contains(artifact.id) {
             blocks.append(.image(artifact))
         }
         return blocks
@@ -141,6 +141,7 @@ private enum ChatRichContentParser {
         let targetName = URL(fileURLWithPath: targetPath).lastPathComponent
 
         return artifacts.first { artifact in
+            guard !artifact.path.isEmpty else { return false }
             let artifactPath = artifact.path.removingPercentEncoding ?? artifact.path
             let artifactName = URL(fileURLWithPath: artifactPath).lastPathComponent
             return decodedTarget == artifactPath
@@ -245,7 +246,7 @@ struct MessageBubble: View {
                     case .text(let text):
                         prose(text: text)
                     case .image(let artifact):
-                        ChatImageAttachmentSection(artifacts: [artifact], accent: accent)
+                        ChatImageAttachmentSection(artifacts: [artifact], accent: accent, messageID: message.serverMessageId, allArtifacts: imageArtifacts)
                     case .structured(let block):
                         ChatStructuredContentBlockView(
                             block: block,
@@ -367,170 +368,173 @@ struct MessageBubble: View {
 private struct ChatImageAttachmentSection: View {
     let artifacts: [ChatImageArtifact]
     let accent: Color
+    let messageID: Int?
+    let allArtifacts: [ChatImageArtifact]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(artifacts) { artifact in
-                ChatImageAttachmentCard(artifact: artifact, accent: accent)
+                ChatImageAttachmentCard(artifact: artifact, accent: accent,
+                    preview: previewReference(for: artifact))
             }
         }
         .padding(.horizontal, 13)
         .padding(.bottom, 12)
+    }
+
+    private func previewReference(for artifact: ChatImageArtifact) -> ChatImagePreviewReference? {
+        guard artifact.path.isEmpty, artifact.assetId != nil, let messageID,
+              let index = allArtifacts.firstIndex(where: { $0.id == artifact.id }) else { return nil }
+        return .init(messageID: messageID, imageIndex: index)
     }
 }
 
 private struct ChatImageAttachmentCard: View {
     let artifact: ChatImageArtifact
     let accent: Color
-
+    let preview: ChatImagePreviewReference?
+    @Environment(ArtifactInspectorState.self) private var inspector
     @State private var copied = false
+    @State private var decodedSize: CGSize?
+
+    private var size: CGSize {
+        ChatImagePresentation.size(width: decodedSize.map { Double($0.width) } ?? artifact.width.map(Double.init),
+                                   height: decodedSize.map { Double($0.height) } ?? artifact.height.map(Double.init))
+    }
+    private var title: String { artifact.title ?? artifact.prompt ?? "Generated image" }
+    private var canOpen: Bool { !artifact.path.isEmpty || preview != nil }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            AuthenticatedWorkspaceImageView(path: artifact.path)
-                .frame(maxWidth: .infinity)
-                .frame(height: 260)
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                )
+        VStack(alignment: .leading, spacing: 0) {
+            Button(action: openImage) {
+                AuthenticatedChatImageView(path: artifact.path, preview: preview, decodedSize: $decodedSize)
+                    .aspectRatio(size.width / size.height, contentMode: .fit)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!canOpen)
+            .help("Open image in inspector")
+            .accessibilityLabel("Open \(title) in inspector")
 
-            VStack(alignment: .leading, spacing: 5) {
-                Text(artifact.title ?? artifact.prompt ?? artifact.path)
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .foregroundStyle(Theme.text)
-                    .lineLimit(2)
-                if let prompt = artifact.prompt, prompt != (artifact.title ?? "") {
-                    Text(prompt)
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(Theme.textDim)
-                        .lineLimit(2)
+            VStack(alignment: .leading, spacing: 7) {
+                Text(title).font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(Theme.text).lineLimit(2)
+                if let prompt = artifact.prompt, prompt != title {
+                    Text(prompt).font(.system(size: 11.5)).foregroundStyle(Theme.textDim).lineLimit(2)
                 }
-                HStack(spacing: 7) {
-                    if let workflow = artifact.workflow, !workflow.isEmpty {
-                        metadataChip(workflow)
-                    }
-                    if let seed = artifact.seed {
-                        metadataChip("seed \(seed)")
-                    }
-                    if let width = artifact.width, let height = artifact.height {
-                        metadataChip("\(width)x\(height)")
-                    }
+                Text(metadata).font(Theme.mono(10)).foregroundStyle(Theme.textDim).lineLimit(2)
+                HStack {
+                    Button(action: openImage) {
+                        Label("Open", systemImage: "sidebar.right")
+                    }.disabled(!canOpen)
                     Spacer(minLength: 8)
-                    Button(copied ? "Copied" : "Copy path") {
+                    Button(copied ? "Copied" : artifact.path.isEmpty ? "Copy reference" : "Copy path") {
+                        let reference = artifact.path.isEmpty ? artifact.assetId ?? "" : artifact.path
                         #if os(macOS)
                         NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(artifact.path, forType: .string)
+                        NSPasteboard.general.setString(reference, forType: .string)
                         #else
-                        UIPasteboard.general.string = artifact.path
+                        UIPasteboard.general.string = reference
                         #endif
                         copied = true
                     }
-                    .buttonStyle(.plain)
-                    .font(Theme.mono(10.5))
-                    .foregroundStyle(copied ? Theme.ok : accent)
-                }
-            }
-            .padding(.horizontal, 10)
-            .padding(.bottom, 10)
+                }.buttonStyle(.plain).font(Theme.mono(10.5)).foregroundStyle(accent)
+            }.padding(10)
         }
-        .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 12))
+        .frame(idealWidth: size.width, maxWidth: size.width, alignment: .leading)
+        .background(Theme.bg)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.stroke, lineWidth: 1))
     }
 
-    private func metadataChip(_ value: String) -> some View {
-        Text(value)
-            .font(Theme.mono(10))
-            .foregroundStyle(Theme.textMid)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 3)
-            .background(Color.black.opacity(0.22), in: RoundedRectangle(cornerRadius: 5))
+    private var metadata: String {
+        var parts: [String] = []
+        if let workflow = artifact.workflow { parts.append(workflow) }
+        if let width = artifact.width, let height = artifact.height { parts.append("\(width) x \(height)") }
+        if let seed = artifact.seed { parts.append("seed \(seed)") }
+        return parts.joined(separator: " · ")
+    }
+
+    private func openImage() {
+        guard canOpen else { return }
+        inspector.open(ArtifactReference(id: artifact.id, path: artifact.path,
+            filename: artifact.path.isEmpty ? "Generated image" : (artifact.path as NSString).lastPathComponent,
+            mediaType: "image/*", title: title, origin: .chat(sessionID: nil), chatImagePreview: preview))
     }
 }
 
-private struct AuthenticatedWorkspaceImageView: View {
+private struct AuthenticatedChatImageView: View {
     let path: String
-
+    let preview: ChatImagePreviewReference?
+    @Binding var decodedSize: CGSize?
     @Environment(AuthManager.self) private var authManager
+    @Environment(ArtifactInspectorState.self) private var inspector
     @State private var image: PlatformImage?
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var loadedAccount: InspectorAccountScope?
+
+    private struct LoadKey: Hashable {
+        let account: InspectorAccountScope?
+        let path: String
+        let preview: ChatImagePreviewReference?
+    }
 
     var body: some View {
         ZStack {
-            if let image {
+            if let image, loadedAccount == inspector.account {
                 #if os(macOS)
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color.black.opacity(0.35))
+                Image(nsImage: image).resizable().scaledToFit()
                 #else
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color.black.opacity(0.35))
+                Image(uiImage: image).resizable().scaledToFit()
                 #endif
             } else if isLoading {
-                ProgressView()
-                    .controlSize(.small)
-                    .tint(Theme.textMid)
+                ProgressView().controlSize(.small).tint(Theme.textMid)
             } else {
-                VStack(spacing: 7) {
-                    Image(systemName: "photo")
-                        .font(.system(size: 24))
-                    Text(errorMessage ?? "Image unavailable")
-                        .font(Theme.mono(10.5))
-                    Text(path)
-                        .font(Theme.mono(9.5))
-                        .lineLimit(1)
-                }
-                .foregroundStyle(Theme.textFaint)
-                .padding(12)
+                VStack(spacing: 8) {
+                    Image(systemName: "photo").font(.system(size: 24))
+                    Text(errorMessage ?? "Image preview unavailable")
+                        .font(Theme.mono(10.5)).multilineTextAlignment(.center)
+                    if preview != nil || path.isEmpty {
+                        Text("Saved in ImageLab. No workspace export was made.")
+                            .font(.system(size: 11)).multilineTextAlignment(.center)
+                    }
+                }.foregroundStyle(Theme.textDim).padding(16)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.black.opacity(0.35))
-        .task(id: path) { await load() }
+        .background(Theme.bg)
+        .task(id: LoadKey(account: inspector.account, path: path, preview: preview)) { await load() }
     }
 
-    private func load() async {
-        guard image == nil else { return }
-        guard let request = imageRequest() else {
-            errorMessage = "Not connected"
+    @MainActor private func load() async {
+        image = nil
+        decodedSize = nil
+        errorMessage = nil
+        let account = inspector.account
+        guard let baseURL = authManager.serverURL, let token = try? authManager.token(),
+              let request = ChatImagePresentation.request(baseURL: baseURL, token: token, path: path, preview: preview) else {
+            errorMessage = path.isEmpty ? "Private preview not available yet" : "Not connected"
             return
         }
         isLoading = true
-        errorMessage = nil
         defer { isLoading = false }
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
-                errorMessage = "Image load failed"
-                return
-            }
-            guard let loaded = PlatformImage(data: data) else {
-                errorMessage = "Invalid image"
+            guard !Task.isCancelled, inspector.account == account else { return }
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+                  http.mimeType?.hasPrefix("image/") == true, data.count <= 20_000_000,
+                  let loaded = PlatformImage(data: data) else {
+                errorMessage = preview == nil ? "Image unavailable" : "Private preview unavailable. ImageLab preview support or account access is required."
                 return
             }
             image = loaded
+            loadedAccount = account
+            decodedSize = loaded.size
         } catch {
-            errorMessage = "Image load failed"
+            guard !Task.isCancelled, inspector.account == account else { return }
+            errorMessage = "Image preview could not be loaded"
         }
-    }
-
-    private func imageRequest() -> URLRequest? {
-        guard let baseURL = authManager.serverURL,
-              let token = try? authManager.token() else { return nil }
-        let url = baseURL.appendingPathComponent("workspace/images")
-        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
-        components?.queryItems = [URLQueryItem(name: "path", value: path)]
-        guard let finalURL = components?.url else { return nil }
-        var request = URLRequest(url: finalURL)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 30
-        return request
     }
 }
 
